@@ -611,6 +611,11 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   creation/removal of our barrier directories is reported on the temporary folder, their parent, and replayed by
   the next run. `UpdateReport.events` now counts only events inside the tree (§2's "raw event count" and §3's
   "including ones outside the root" are superseded); `FIL_TIMINGS=1` prints every replayed event path.
+- #5 second review (2026-10-18): fseventsd reports changes under a data-volume root by their firmlink path, so
+  every event of such a root was dropped (a new file or a replaced root went unseen). `rootPrefixes` now adds the
+  firmlink spelling of a root under a firmlink target (`FirmlinkTable.firmlinkPath`, the reverse of
+  `dataVolumePath`), for events and the mount table alike. A root at `/System/Volumes/Data` itself has no single
+  firmlink spelling: its mount-table names are still rewritten in `mountChanges`; its events are not (open).
 
 ## Glossary additions
 

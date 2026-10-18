@@ -391,6 +391,50 @@ struct IncrementalFSEventsTests {
         }
     }
 
+    @Test("a root given by its data-volume path sees the changes fseventsd reports under the firmlink path",
+          .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))
+    func dataVolumeRootEvents() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("t/x/a", bytes: 300_000)
+                let root = FirmlinkTable.system.dataRoot + f.path("t")
+                try Snapshot.save(try Scanner.scan(root), in: dir)
+                try f.mk("t/y/new", bytes: 50_000)
+                let tree = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir))
+                guard case .success(let report) = Incremental.update(tree) else {
+                    Issue.record("update failed")
+                    return
+                }
+                #expect(report.treeChanged, "\(report)")
+                #expect(Totals(tree) == Totals(try Scanner.scan(root)))
+                #expect(tree.root.totalAlloc == f.duBytes("t"))
+            }
+        }
+    }
+
+    @Test("a root given by its data-volume path that is replaced is not updated in place",
+          .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))
+    func dataVolumeRootReplaced() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("t/x/a", bytes: 300_000)
+                let root = FirmlinkTable.system.dataRoot + f.path("t")
+                try Snapshot.save(try Scanner.scan(root), in: dir)
+                try f.move("t", to: "t.old")
+                try f.mk("t/b", bytes: 10_000)
+                let tree = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir))
+                switch Incremental.update(tree) {
+                case .failure(let why):
+                    // RootChanged: a full scan follows.
+                    if case .historyUntrusted = why {} else { Issue.record("unexpected failure: \(why)") }
+                case .success(let report):
+                    #expect(report.treeChanged, "\(report)")
+                    #expect(Totals(tree) == Totals(try Scanner.scan(root)), "replaced root: \(Totals(tree))")
+                }
+            }
+        }
+    }
+
     @Test("a root given by its data-volume path finds mounts the mount table names by the firmlink path",
           .enabled(if: DiskImage.isAvailable, "hdiutil is not available"),
           .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))

@@ -96,7 +96,7 @@ public enum Incremental {
         // Only changes inside the tree count. The stream also watches the barrier directory, and the creation and
         // removal of the previous barrier directories are reported on their parent, the temporary folder: one event
         // on almost every run that is not a change of the tree (unless the tree holds that folder).
-        let prefixes = rootPrefixes(tree.rootPath)
+        let prefixes = rootPrefixes(tree.rootPath, firmlinks: options.firmlinks)
         let events = history.events.filter { relativeComponents($0.path, prefixes: prefixes, aliases: tree.aliases) != nil }
         report.events = events.count
         report.historyTime = ContinuousClock.now - start
@@ -135,7 +135,7 @@ public enum Incremental {
     /// not to the size of the tree: child lists are kept on the tree, totals are fixed up along ancestor chains.
     private static func apply(_ events: [EventHistory.Event], to tree: DiskTree, options: ScanOptions,
                               report: inout UpdateReport) -> UpdateFailure? {
-        let prefixes = rootPrefixes(tree.rootPath)
+        let prefixes = rootPrefixes(tree.rootPath, firmlinks: options.firmlinks)
         let aliases = tree.aliases
         // FSEvents keeps no Mount or Unmount event in its history (they are delivered live only), so a volume mounted
         // on a directory of the tree since the snapshot, or unmounted from a recorded mount point, is found in the
@@ -539,13 +539,17 @@ public enum Incremental {
         return ok
     }
 
-    /// FSEvents may report a path through the Data volume's firmlink rather than the path we scanned.
-    static func rootPrefixes(_ root: String) -> [String] {
+    /// FSEvents may report a path through the Data volume's firmlink rather than the path we scanned, and the mount
+    /// table names mount points that way: a root given by its data-volume path
+    /// (`/System/Volumes/Data/private/tmp/t`) is also matched under its firmlink spelling (`/private/tmp/t`).
+    static func rootPrefixes(_ root: String, firmlinks: FirmlinkTable = .system) -> [String] {
         var out = [root]
         if let real = realpath(root, nil) {
             out.append(String(cString: real))
             free(real)
         }
+        // Never inside the tree: a firmlink source lies on the system volume, outside /System/Volumes/Data.
+        if let linked = firmlinks.firmlinkPath(root) { out.append(linked) }
         // Only a twin outside the tree: for "/" or "/System" this path is a real directory of the tree itself
         // (events there must keep their own path), not another view of the root.
         let twin = "/System/Volumes/Data" + (root == "/" ? "" : root)
