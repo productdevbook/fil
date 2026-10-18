@@ -121,6 +121,23 @@ private struct WorkItem {
     let path: String
     /// NUL-terminated bytes to open when a component of the path is not valid UTF-8 (`DiskTree.rawNames`).
     var cPath: [CChar]? = nil
+    /// Its own name is not valid UTF-8. Such a folder can exist and still not open by its bytes (a FAT volume with a
+    /// lone UTF-16 surrogate), so `ENOENT` does not prove it gone.
+    var rawName = false
+
+    /// The parent directory still exists at its path (one `lstat`; only for a child that turned out gone).
+    var parentExists: Bool {
+        var st = stat()
+        if let cPath {
+            let bytes = cPath.dropLast()
+            guard let slash = bytes.lastIndex(of: CChar(UInt8(ascii: "/"))) else { return true }
+            var parent = Array(bytes[..<slash])
+            if parent.isEmpty { parent = [CChar(UInt8(ascii: "/"))] }
+            parent.append(0)
+            return lstat(parent, &st) == 0
+        }
+        return lstat((path as NSString).deletingLastPathComponent, &st) == 0
+    }
 }
 
 private final class ParallelScan: @unchecked Sendable {
@@ -215,6 +232,10 @@ private final class ParallelScan: @unchecked Sendable {
                 out.stats.cloneDupes += c.dupes
             }
             progress?.add(files: out.files, bytes: out.cloneAware)
+            // Gone between its parent's listing and its own open. If the parent's path is gone too (renamed or removed
+            // during the walk), whatever the parent held is lost from here on: the parent is flagged incomplete.
+            let vanished = out.isGone && item.id >= rootIds.count && !item.rawName
+            let parentLost = vanished && !item.parentExists
 
             cond.lock()
             if item.id < rootIds.count && out.isGone { failedRoots.append((item.id, out.openError)) }
@@ -222,8 +243,9 @@ private final class ParallelScan: @unchecked Sendable {
             nodes[Int(item.id)].ownLogical = out.logical
             nodes[Int(item.id)].ownFiles = out.files
             nodes[Int(item.id)].ownCloneAware = out.cloneAware
-            if out.isGone && item.id >= rootIds.count {
+            if vanished {
                 // Removed (or replaced by a file or symlink) after its parent listed it. `openErrors` still counts it.
+                if parentLost { nodes[Int(nodes[Int(item.id)].parent)].incomplete = true }
                 nodes[Int(item.id)].parent = DirNode.dead
             } else {
                 nodes[Int(item.id)].unreadable = !out.opened
@@ -247,7 +269,8 @@ private final class ParallelScan: @unchecked Sendable {
                     nodes.append(DirNode(parent: item.id, name: name))
                     if let r = raw[k] { rawNames[id] = r }
                     let bytes = parentBytes + [UInt8(ascii: "/")] + (raw[k] ?? Array(name.utf8)) + [0]
-                    queue.append(WorkItem(id: id, path: base + "/" + name, cPath: bytes.map { CChar(bitPattern: $0) }))
+                    queue.append(WorkItem(id: id, path: base + "/" + name, cPath: bytes.map { CChar(bitPattern: $0) },
+                                          rawName: raw[k] != nil))
                 }
             }
             active -= 1
@@ -345,6 +368,7 @@ struct DirReader {
         var out = DirOutcome()
 #if DEBUG
         if config.faults.removeBeforeOpen.contains(path) { try? FileManager.default.removeItem(atPath: path) }
+        if let move = config.faults.renameBeforeOpen[path], move.count == 2 { rename(move[0], move[1]) }
 #endif
         let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
         let fd = cPath.map { open($0, flags) } ?? open(path, flags)
@@ -602,6 +626,8 @@ struct DirFaults: Sendable {
     var entryError: Set<String> = []
     /// Directories removed, with their contents, right before they are opened (gone between listing and opening).
     var removeBeforeOpen: Set<String> = []
+    /// Right before the key path is opened, the first path of the value is renamed to the second.
+    var renameBeforeOpen: [String: [String]] = [:]
 
     /// From `FIL_TEST_FAULTS` (debug builds only, for tests of the `fil` binary): one fault per line,
     /// `bulk <errno>[,<errno>...] <path>`, `entry <path>` or `remove <path>`.

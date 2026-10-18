@@ -565,6 +565,13 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
   (`rescanSubtrees` is shared); the root of a rescan or re-read keeps its old handling (removed by the caller).
   `Scanner.scan` compacts the tree after the walk, so a fresh tree holds no dead node. Fault: `removeBeforeOpen`
   (`remove <path>` in `FIL_TEST_FAULTS`) deletes the folder right before its `open`.
+- Review fixes (2026-10-18): (1) `ENOENT` does not prove a raw-named folder gone (a FAT name with a lone surrogate
+  lists but never opens): such a folder stays `unreadable` in a full scan, an update re-read and a rescan. A child
+  gone because its parent's own path is gone (parent renamed or removed mid-walk; one `lstat` per gone child) marks
+  the parent `incomplete`; a child deleted on its own does not. Fault `renameBeforeOpen`. (2) The update diff keys
+  children by their bytes (`rawNames` bytes, else UTF-8 of the name), so names whose display forms collide stay
+  apart and a rename between two raw names is a removal plus an addition. (3) An incomplete re-read keeps known
+  children it did not list (the listing proves nothing about them); only new names are added.
 
 ## Glossary additions
 

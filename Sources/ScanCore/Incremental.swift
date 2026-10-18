@@ -215,7 +215,8 @@ public enum Incremental {
         for (id, out) in zip(reread, outcomes) {
             guard out.opened else {
                 if id == 0 { return .rootUnreadable(errno: out.openError) }
-                if out.isGone {
+                // A raw name that does not open by its bytes may still exist: kept unreadable, like a full scan keeps it.
+                if out.isGone && !(out.openError != EXDEV && tree.rawNames[id] != nil) {
                     if out.openError == EXDEV {
                         newMounts.append(MountPoint(parent: tree.nodes[Int(id)].parent, name: tree.nodes[Int(id)].name))
                     }
@@ -334,7 +335,7 @@ public enum Incremental {
         report.subtreesScanned = targets.count
         let gone = Scanner.rescanSubtrees(targets, in: tree, options: options, checkRootDevice: true)
         if let e = gone[0] { return .rootUnreadable(errno: e) }
-        for (id, e) in gone {
+        for (id, e) in gone where e == EXDEV || tree.rawNames[id] == nil {
             if e == EXDEV { tree.mountPoints.append(MountPoint(parent: tree.nodes[Int(id)].parent, name: tree.nodes[Int(id)].name)) }
             changed.append(tree.nodes[Int(id)].parent)
             tree.nodes[Int(id)].parent = DirNode.dead

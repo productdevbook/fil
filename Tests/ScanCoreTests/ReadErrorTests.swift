@@ -46,6 +46,33 @@ struct RawNameTests {
             let k = try #require(out.rawChildDirs.first?.index)
             #expect(out.childDirs[k] == "longname_ab\u{FFFD}\u{FFFD}\u{FFFD}")
             #expect(Set(out.childDirs) == ["plain", out.childDirs[k]])
+
+            // Its bytes do not open it (the kernel cannot look the name up), yet it exists: kept unreadable, not
+            // dropped as gone.
+            let tree = try Scanner.scan(box.path("mnt"))
+            let id = try #require(tree.node(at: box.path("mnt/" + out.childDirs[k])))
+            #expect(tree.nodes[id].unreadable)
+            #expect(tree.rawNames[Int32(id)] == raw)
+            #expect(tree.stats.openErrors == 1)
+        }
+    }
+
+    @Test("an update keeps a raw-named folder that its bytes do not open, in a re-read and in a rescan")
+    func updateKeepsUnopenableRawName() throws {
+        for subtree in [false, true] {
+            try Fixture.with { f in
+                try f.mk("real/a", bytes: 200_000)
+                let tree = try Scanner.scan(f.root)
+                let id = try #require(tree.node(at: f.path("real")))
+                tree.nodes[id].name = badDisplay
+                tree.rawNames[Int32(id)] = Array("no such name".utf8)
+                var report = UpdateReport()
+                #expect(Incremental.applyTracked([EventHistory.Event(path: f.path(badDisplay), mustScanSubDirs: subtree)],
+                                                 to: tree, options: ScanOptions(), report: &report) == nil)
+                let kept = try #require(tree.node(at: f.path(badDisplay)), "subtree \(subtree)")
+                #expect(tree.nodes[kept].unreadable, "subtree \(subtree)")
+                #expect(report.dirsRemoved == 0, "subtree \(subtree)")
+            }
         }
     }
 
@@ -207,11 +234,28 @@ struct GoneDuringScanTests {
             let tree = try Scanner.scan(f.root, options: faulty { $0.removeBeforeOpen.insert(f.path("x/gone")) })
             #expect(!f.exists("x/gone"))
             #expect(tree.node(at: f.path("x/gone")) == nil)
-            #expect(!tree.nodes.contains { $0.unreadable || $0.isDead })
+            #expect(!tree.nodes.contains { $0.unreadable || $0.isDead || $0.incomplete })
             #expect(tree.stats.openErrors == 1)
             #expect(tree.root.totalDirs + 1 == 3)
             #expect(tree.root.totalAlloc == f.duBytes())
             #expect(Totals(tree) == Totals(try Scanner.scan(f.root)))
+        }
+    }
+
+    @Test("a child gone because its parent was renamed mid-scan flags the parent incomplete")
+    func parentRenamed() throws {
+        try Fixture.with { f in
+            try f.mk("x/p/c/file", bytes: 100_000)
+            try f.mk("x/p/d/file", bytes: 100_000)
+            let tree = try Scanner.scan(f.root, options: faulty {
+                $0.renameBeforeOpen[f.path("x/p/c")] = [f.path("x/p"), f.path("x/q")]
+                $0.renameBeforeOpen[f.path("x/p/d")] = [f.path("x/p"), f.path("x/q")]
+            })
+            #expect(f.exists("x/q/c") && !f.exists("x/p"))
+            let p = try #require(tree.node(at: f.path("x/p")))
+            #expect(tree.nodes[p].incomplete)
+            #expect(tree.node(at: f.path("x/p/c")) == nil && tree.node(at: f.path("x/p/d")) == nil)
+            #expect(!tree.nodes.contains { $0.unreadable })
         }
     }
 
