@@ -6,7 +6,7 @@ import ScanCore
 // fil clean <candidate-id|rule-id>... [--home DIR] [--yes]
 func runCleanup(_ command: String, _ arguments: [String]) async throws {
     var args = arguments
-    var home = NSHomeDirectory()
+    var givenHome = NSHomeDirectory()
     var json = false
     var yes = false
     var timings = false
@@ -17,7 +17,7 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         switch a {
         case "--home":
             guard !args.isEmpty else { fail("--home needs a directory") }
-            home = (args.removeFirst() as NSString).standardizingPath
+            givenHome = args.removeFirst()
         case "--json": json = true
         case "--yes": yes = true
         case "--timings": timings = true
@@ -29,6 +29,7 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     }
 
     UI.setup(noColor: noColor)
+    let home = try resolveDirectory(givenHome)
     let clock = ContinuousClock()
     let start = clock.now
     func phase(_ name: String, _ since: ContinuousClock.Instant, _ extra: String = "") {

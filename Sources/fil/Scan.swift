@@ -6,7 +6,7 @@ import ScanCore
 // scan); --tolerant-hardlinks counts it and reports `uncertain=` bytes, as the app does.
 func runScan(_ arguments: [String]) throws {
     var args = arguments
-    var path = NSHomeDirectory()
+    var given = NSHomeDirectory()
     var options = ScanOptions()
     var top = 15
     var naive = false
@@ -31,11 +31,12 @@ func runScan(_ arguments: [String]) throws {
         case "--tolerant-hardlinks": options.strictHardlinks = false
         default:
             if a.hasPrefix("-") { usageError("unknown option \(a) for 'fil scan'") }
-            path = (a as NSString).standardizingPath
+            given = a
         }
     }
 
     UI.setup(noColor: noColor)
+    let path = try resolveDirectory(given)
 
     if naive {
         // What most cleaner apps do: FileManager enumerator + per-file resource values.
@@ -206,4 +207,21 @@ private func printTree(_ ids: [Int], nodes: [DirNode], total: Int64, size: (DirN
     }
     let tops = children[0] ?? []
     for t in tops { walk(t, prefix: "", last: true, depth: 0) }
+}
+
+/// Resolves a directory argument with `realpath(3)` (symlinks, `.`, `..`, relative paths) and checks that it is
+/// a directory. Errors name the argument as the user typed it: `fil: <arg>: No such file or directory`,
+/// `fil: <arg>: not a directory`.
+func resolveDirectory(_ arg: String) throws -> String {
+    guard let resolved = realpath(arg, nil) else {
+        throw CLIError(description: errorMessage(POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO), path: arg))
+    }
+    defer { free(resolved) }
+    let path = String(cString: resolved)
+    var st = stat()
+    guard stat(path, &st) == 0 else {
+        throw CLIError(description: errorMessage(POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO), path: arg))
+    }
+    guard (st.st_mode & S_IFMT) == S_IFDIR else { throw CLIError(description: "\(arg): not a directory") }
+    return path
 }
