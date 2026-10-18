@@ -158,12 +158,24 @@ func runScan(_ arguments: [String]) throws {
         timing   \(ms(scanTime)) [\(mode)]
                  snapshot saved in \(ms(saveTime))
         """))
-        // After an update the counters are the last full scan's, labelled as such (chapter 03 §9); `denied` is the
-        // current number of unreadable folders. A snapshot without them shows none.
-        let skipped: (label: String, denied: Int)? = !usedIncremental ? ("skipped", s.openErrors)
-            : scanned.fullScanStart.map { ("skipped (as of full scan at \(lastKnownTime($0)))", unreadableCount) }
-        if let skipped {
-            print(UI.dim("\(skipped.label)  denied \(skipped.denied) · errors \(s.entryErrors) · hardlinks \(s.hardlinkDupes) · mounts \(s.mountsSkipped) · cloud-dirs \(s.datalessDirs) (cloud files \(human(s.datalessLogical)))"))
+        // `denied` is current in both modes: unreadable folders that still exist (one deleted during the scan is not
+        // denied). The other counters are the last full scan's; after an update they are labelled as such (chapter 03
+        // §9), and a snapshot without them shows none.
+        let denied = unreadable.filter { item in
+            var st = stat()
+            return lstat(item.path, &st) == 0
+        }.count
+        let counters = "errors \(s.entryErrors) · hardlinks \(s.hardlinkDupes) · mounts \(s.mountsSkipped) · "
+            + "cloud-dirs \(s.datalessDirs) (cloud files \(human(s.datalessLogical)))"
+        let known = !usedIncremental || scanned.fullScanStart != nil
+        if !usedIncremental {
+            print(UI.dim("skipped  denied \(denied) · \(counters)"))
+        } else if let at = scanned.fullScanStart {
+            print(UI.dim("skipped  denied \(denied) · as of full scan at \(lastKnownTime(at)): \(counters)"))
+        } else {
+            print(UI.dim("skipped  denied \(denied)"))
+        }
+        if known {
             print(UI.dim("         firmlinked data dirs \(s.firmlinksSkipped) · clone files counted once \(s.cloneDupes)"))
         }
     }

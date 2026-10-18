@@ -62,9 +62,20 @@ struct SnapshotCLITests {
         #expect(full.stdout.contains("\nskipped  denied 1 · "), "\(full.stdout)")
         let incremental = try cli.run(args, snapshotDir: snap)
         #expect(incremental.stdout.contains("[incremental: "), "\(incremental.stdout)")
-        // HH:mm today: the label comes from the snapshot's full scan, `denied` from the current tree.
-        #expect(incremental.stdout.range(of: #"\nskipped \(as of full scan at \d\d:\d\d\)  denied 1 · "#,
+        // `denied` is current and outside the label; the other counters are labelled with the full scan's time.
+        #expect(incremental.stdout.range(of: #"\nskipped  denied 1 · as of full scan at \d\d:\d\d: errors 0 · "#,
                                          options: .regularExpression) != nil, "\(incremental.stdout)")
         #expect(incremental.stdout.contains("         firmlinked data dirs "), "\(incremental.stdout)")
+        // Same definition in both modes: a forced full scan of the unchanged disk shows the same value.
+        let again = try cli.run(args + ["--full"], snapshotDir: snap)
+        #expect(again.stdout.contains("\nskipped  denied 1 · errors 0 · "), "\(again.stdout)")
+
+        // A second denied folder seen only by an update is counted at once.
+        try FileManager.default.createDirectory(atPath: root + "/locked2", withIntermediateDirectories: true)
+        #expect(chmod(root + "/locked2", 0o000) == 0)
+        defer { chmod(root + "/locked2", 0o755) }
+        let updated = try cli.run(args, snapshotDir: snap)
+        #expect(updated.stdout.contains("[incremental: "), "\(updated.stdout)")
+        #expect(updated.stdout.contains("\nskipped  denied 2 · as of full scan at "), "\(updated.stdout)")
     }
 }
