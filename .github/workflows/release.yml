@@ -76,7 +76,6 @@ jobs:
           security import $RUNNER_TEMP/cert.p12 -k "$KEYCHAIN" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
           security list-keychains -d user -s "$KEYCHAIN"
-          rm $RUNNER_TEMP/cert.p12
 
       - name: Build, sign and notarize
         env:
@@ -87,7 +86,6 @@ jobs:
           export FIL_NOTARY_KEY=$RUNNER_TEMP/AuthKey.p8
           printf '%s' "$ASC_KEY_P8" > "$FIL_NOTARY_KEY"
           scripts/release.sh "$VERSION"
-          rm "$FIL_NOTARY_KEY"
 
       - name: Checksum
         id: sum
@@ -103,9 +101,11 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Remove the signing keychain
+      - name: Remove the signing material
         if: always()
-        run: security delete-keychain $RUNNER_TEMP/signing.keychain-db || true
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/AuthKey.p8"
 
   publish:
     needs: [test, build]
@@ -150,20 +150,60 @@ jobs:
     permissions: {}
     env:
       VERSION: ${{ needs.test.outputs.version }}
-      SHA: ${{ needs.build.outputs.sha256 }}
+      SHA256: ${{ needs.build.outputs.sha256 }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_FROM_API: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
     steps:
-      - name: Update the Homebrew cask
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Tap
         env:
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
         run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/tap_key && chmod 600 ~/.ssh/tap_key
-          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
-          git clone --depth 1 git@github.com:productdevbook/homebrew-tap.git $RUNNER_TEMP/tap
-          cd $RUNNER_TEMP/tap
-          sed -i '' -E "s/^  version \".*\"/  version \"$VERSION\"/; s/^  sha256 \".*\"/  sha256 \"$SHA\"/" Casks/fil.rb
-          git diff --stat
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -am "fil $VERSION"
-          git push origin HEAD
-          rm ~/.ssh/tap_key
+          printf '%s\n' "$TAP_DEPLOY_KEY" > "$RUNNER_TEMP/tap_key"
+          chmod 600 "$RUNNER_TEMP/tap_key"
+          # GitHub's own SSH host keys, not trust-on-first-use.
+          curl -fsSL https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$RUNNER_TEMP/known_hosts"
+          [[ -s "$RUNNER_TEMP/known_hosts" ]] || { echo "::error::no GitHub host keys"; exit 1; }
+          SSH="ssh -i $RUNNER_TEMP/tap_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes"
+          echo "GIT_SSH_COMMAND=$SSH" >> "$GITHUB_ENV"
+          export GIT_SSH_COMMAND=$SSH
+          brew tap productdevbook/tap git@github.com:productdevbook/homebrew-tap.git
+          echo "TAP=$(brew --repository productdevbook/tap)" >> "$GITHUB_ENV"
+
+      - name: Write the cask
+        run: |
+          CASK=$TAP/Casks/fil.rb
+          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256@/$SHA256/" packaging/homebrew/fil.rb.in > "$CASK"
+          grep -qxF "  version \"$VERSION\"" "$CASK" || { echo "::error::version not written"; exit 1; }
+          grep -qxF "  sha256 \"$SHA256\"" "$CASK" || { echo "::error::sha256 not written"; exit 1; }
+          ! grep -q '@[A-Z0-9]*@' "$CASK" || { echo "::error::placeholder left in cask"; exit 1; }
+          git -C "$TAP" diff --stat
+
+      - name: Audit the cask
+        run: brew audit --cask --strict --online productdevbook/tap/fil
+
+      # Also exercises Gatekeeper on a quarantined download of the published tarball.
+      - name: Install smoke test
+        run: |
+          brew install --cask productdevbook/tap/fil
+          [[ "$(fil --version)" == "fil $VERSION" ]]
+          fil scan "$RUNNER_TEMP" --porcelain | grep -q '^mode=full '
+          brew uninstall --cask fil
+
+      - name: Push the cask
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          git -C "$TAP" commit -m "fil $VERSION" -- Casks/fil.rb
+          git -C "$TAP" push origin HEAD:main
+
+      - name: Remove the tap key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/tap_key" "$RUNNER_TEMP/known_hosts"
