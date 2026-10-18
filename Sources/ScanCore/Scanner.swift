@@ -76,6 +76,7 @@ public enum Scanner {
             tree.nodes[Int(id)].ownFiles = job.nodes[i].ownFiles
             tree.nodes[Int(id)].ownCloneAware = job.nodes[i].ownCloneAware
             tree.nodes[Int(id)].unreadable = job.nodes[i].unreadable
+            tree.nodes[Int(id)].incomplete = job.nodes[i].incomplete
         }
         let base = Int32(tree.nodes.count)
         // One bulk append: grows geometrically, unlike an exact reserveCapacity on every update.
@@ -218,6 +219,7 @@ private final class ParallelScan: @unchecked Sendable {
             nodes[Int(item.id)].ownFiles = out.files
             nodes[Int(item.id)].ownCloneAware = out.cloneAware
             nodes[Int(item.id)].unreadable = !out.opened
+            nodes[Int(item.id)].incomplete = out.incomplete
             stats.merge(out.stats)
             for name in out.mountPoints { mountPoints.append(MountPoint(parent: gid, name: name)) }
             let base = item.path == "/" ? "" : item.path
@@ -270,6 +272,8 @@ struct DirOutcome {
     var deferredLinks: [(inode: UInt64, alloc: Int64, logical: Int64, cloneAware: Int64)] = []
     var stats = ScanStats()
     var opened = true
+    /// Opened, but not every entry could be read (`getattrlistbulk` failed, or an entry carried `ATTR_CMN_ERROR`).
+    var incomplete = false
     /// errno of the failed `open`, 0 if it opened.
     var openError: Int32 = 0
 
@@ -296,6 +300,9 @@ struct DirReader {
         /// update opens on their own: a listing checks its children, but nothing has checked these since the snapshot,
         /// and one may now be a mount point. One syscall per directory, none per file.
         var checkOwnDevice = false
+#if DEBUG
+        let faults: DirFaults
+#endif
 
         init(rootDev: dev_t, options: ScanOptions, userAccess: Bool = false, exclusions: [String: Set<String>] = [:],
              checkOwnDevice: Bool = false) {
@@ -304,6 +311,9 @@ struct DirReader {
             self.userAccess = userAccess
             self.exclusions = exclusions
             self.checkOwnDevice = checkOwnDevice
+#if DEBUG
+            faults = options.faults
+#endif
         }
     }
 
@@ -359,12 +369,43 @@ struct DirReader {
         let opts = UInt64(FSOPT_NOFOLLOW) | UInt64(FSOPT_ATTR_CMN_EXTENDED)
         let skip = config.exclusions.isEmpty ? nil : config.exclusions[path]
 
+#if DEBUG
+        var faultCall = 0
+        let bulkFaults = config.faults.bulk[path] ?? []
+        var entryFault = config.faults.entryError.contains(path)
+#endif
+        var interrupted = 0
         while true {
-            let count = getattrlistbulk(fd, &al, buf, DirReader.bufSize, opts)
-            if count <= 0 {
-                if count < 0 { out.stats.entryErrors += 1 }
+            let count: Int32
+#if DEBUG
+            if faultCall < bulkFaults.count && bulkFaults[faultCall] != 0 {
+                count = -1
+                errno = bulkFaults[faultCall]
+            } else {
+                count = getattrlistbulk(fd, &al, buf, DirReader.bufSize, opts)
+            }
+            faultCall += 1
+#else
+            count = getattrlistbulk(fd, &al, buf, DirReader.bufSize, opts)
+#endif
+            if count == 0 { break }
+            if count < 0 {
+                // Entries already parsed stay; an interrupted call is made again, up to 3 times in a row.
+                if errno == EINTR && interrupted < 3 {
+                    interrupted += 1
+                    continue
+                }
+                out.stats.entryErrors += 1
+                out.incomplete = true
                 break
             }
+            interrupted = 0
+#if DEBUG
+            if entryFault {
+                entryFault = false
+                Self.injectEntryError(buf)
+            }
+#endif
             var entry = UnsafeRawPointer(buf)
             for _ in 0..<count {
                 let length = Int(entry.loadUnaligned(as: UInt32.self))
@@ -401,7 +442,11 @@ struct DirReader {
         if common & attrgroup_t(ATTR_CMN_ERROR) != 0 {
             let err = f.loadUnaligned(as: UInt32.self)
             f += 4
-            if err != 0 { out.stats.entryErrors += 1; return }
+            if err != 0 {
+                out.stats.entryErrors += 1
+                out.incomplete = true
+                return
+            }
         }
         var namePtr: UnsafeRawPointer?
         if common & attrgroup_t(ATTR_CMN_NAME) != 0 {
@@ -534,3 +579,45 @@ struct DirReader {
         out.files += 1
     }
 }
+
+#if DEBUG
+/// Test-only faults for `DirReader.read`, keyed by the directory's path as the reader gets it. Compiled out of release
+/// builds, so the release hot path has no trace of them.
+struct DirFaults: Sendable {
+    /// errno for successive `getattrlistbulk` calls of a directory instead of calling it; 0 makes the real call.
+    var bulk: [String: [Int32]] = [:]
+    /// Directories whose first listed entry is reported with `ATTR_CMN_ERROR` = `EIO`.
+    var entryError: Set<String> = []
+
+    /// From `FIL_TEST_FAULTS` (debug builds only, for tests of the `fil` binary): one fault per line,
+    /// `bulk <errno>[,<errno>...] <path>` or `entry <path>`.
+    static let environment: DirFaults = {
+        var f = DirFaults()
+        guard let spec = ProcessInfo.processInfo.environment["FIL_TEST_FAULTS"] else { return f }
+        for line in spec.split(separator: "\n") {
+            let parts = line.split(separator: " ", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            switch parts[0] {
+            case "bulk":
+                let rest = parts[1].split(separator: " ", maxSplits: 1)
+                guard rest.count == 2 else { continue }
+                f.bulk[String(rest[1])] = rest[0].split(separator: ",").compactMap { Int32($0) }
+            case "entry": f.entryError.insert(String(parts[1]))
+            default: continue
+            }
+        }
+        return f
+    }()
+}
+
+extension DirReader {
+    /// Turns the first record in `buf` into an error record (`ATTR_CMN_ERROR` = `EIO`, nothing else returned), as the
+    /// kernel reports an entry it cannot return. The record keeps its length; the rest of it is never read.
+    static func injectEntryError(_ buf: UnsafeMutableRawPointer) {
+        var returned = attribute_set_t()
+        returned.commonattr = attrgroup_t(ATTR_CMN_RETURNED_ATTRS) | attrgroup_t(ATTR_CMN_ERROR)
+        (buf + 4).storeBytes(of: returned, as: attribute_set_t.self)
+        (buf + 4 + MemoryLayout<attribute_set_t>.size).storeBytes(of: UInt32(EIO), as: UInt32.self)
+    }
+}
+#endif

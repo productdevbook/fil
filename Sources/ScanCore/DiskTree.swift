@@ -11,6 +11,9 @@ public struct DirNode: Sendable {
     /// The directory exists but could not be listed (permissions); it then has no own sizes and no children,
     /// like in a full scan. Stored right after `parent`, in its padding.
     public var unreadable = false
+    /// Listed only in part (a `getattrlistbulk` failure mid-directory or an entry error): its own sizes are a lower
+    /// bound and a child directory may be missing. In the padding after `unreadable`.
+    public var incomplete = false
     public var name: String
     /// Files directly inside this directory only.
     public var ownAlloc: Int64 = 0
@@ -31,6 +34,10 @@ public struct DirNode: Sendable {
 
 public struct ScanOptions: Sendable {
     public var threads: Int
+#if DEBUG
+    /// Test-only faults injected into every directory read; compiled out of release builds.
+    var faults = DirFaults.environment
+#endif
     /// For APFS clones, count only blocks private to this file (ATTR_CMNEXT_PRIVATESIZE).
     public var privateSize: Bool
     public var crossDevices: Bool

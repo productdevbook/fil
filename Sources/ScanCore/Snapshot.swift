@@ -5,7 +5,7 @@ import Foundation
 /// and only replays FSEvents instead of walking the disk again.
 public enum Snapshot {
     private static let magic: UInt32 = 0x4D54_5A31 // "MTZ1"
-    /// 3: one flags byte per directory (bit 0: unreadable) after the parent id.
+    /// 3: one flags byte per directory (bit 0: unreadable; bit 1, from 6: incomplete) after the parent id.
     /// 4: `uncertainBytes` (i64) in the header after `scanStart`.
     /// 5: firmlink aliases after `rootPath`; `ownCloneAware` (i64) per directory after `ownFiles`; `cloneAware` (i64)
     /// per hard-link entry; the clone-family table at the end.
@@ -140,7 +140,7 @@ public enum Snapshot {
         w.put(UInt32(tree.nodes.count))
         for n in tree.nodes {
             w.put(n.parent)
-            w.put(UInt8(n.unreadable ? 1 : 0))
+            w.put(UInt8(n.unreadable ? 1 : 0) | UInt8(n.incomplete ? 2 : 0))
             w.put(n.ownAlloc)
             w.put(n.ownLogical)
             w.put(n.ownFiles)
@@ -433,7 +433,9 @@ private struct Reader {
         guard ok, offset + 41 <= raw.count else { ok = false; return nil }
         let p = raw.baseAddress! + offset
         var n = DirNode(parent: Int32(littleEndian: p.loadUnaligned(as: Int32.self)), name: "")
-        n.unreadable = p.load(fromByteOffset: 4, as: UInt8.self) & 1 != 0
+        let flags = p.load(fromByteOffset: 4, as: UInt8.self)
+        n.unreadable = flags & 1 != 0
+        n.incomplete = flags & 2 != 0
         n.ownAlloc = Int64(littleEndian: p.loadUnaligned(fromByteOffset: 5, as: Int64.self))
         n.ownLogical = Int64(littleEndian: p.loadUnaligned(fromByteOffset: 13, as: Int64.self))
         n.ownFiles = Int64(littleEndian: p.loadUnaligned(fromByteOffset: 21, as: Int64.self))

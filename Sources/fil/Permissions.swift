@@ -11,6 +11,8 @@ enum UnreadableKind: Equatable {
     case otherUser
     /// Our own folder with permissions that exclude us (for example mode 000).
     case noPermission
+    /// Listed only in part (a read error); its size is a lower bound.
+    case incomplete
 }
 
 enum Permissions {
@@ -29,16 +31,28 @@ enum Permissions {
         return .noPermission
     }
 
-    /// The unreadable folders of a scan with their kind, privacy-protected first, then shallow before deep.
+    /// The unreadable and incomplete folders of a scan with their kind, privacy-protected first, incomplete last, then
+    /// shallow before deep.
     static func unreadable(in tree: DiskTree, home: String = NSHomeDirectory()) -> [(path: String, kind: UnreadableKind)] {
         var out: [(path: String, kind: UnreadableKind)] = []
-        for i in tree.nodes.indices where tree.nodes[i].unreadable && !tree.nodes[i].isDead {
+        for i in tree.nodes.indices where (tree.nodes[i].unreadable || tree.nodes[i].incomplete) && !tree.nodes[i].isDead {
             let path = tree.path(of: i)
+            if !tree.nodes[i].unreadable {
+                out.append((path, .incomplete))
+                continue
+            }
             var st = stat()
             let owner: uid_t? = stat(path, &st) == 0 ? st.st_uid : nil
             out.append((path, classify(path, ownerUID: owner, home: home)))
         }
-        func rank(_ k: UnreadableKind) -> Int { k == .privacyProtected ? 0 : k == .otherUser ? 1 : 2 }
+        func rank(_ k: UnreadableKind) -> Int {
+            switch k {
+            case .privacyProtected: 0
+            case .otherUser: 1
+            case .noPermission: 2
+            case .incomplete: 3
+            }
+        }
         return out.sorted {
             let (a, b) = (rank($0.kind), rank($1.kind))
             if a != b { return a < b }
@@ -52,13 +66,16 @@ enum Permissions {
                              shown: Int = 5) -> [String] {
         guard !items.isEmpty else { return [] }
         let n = items.count
-        var lines = ["\(n) folder\(n == 1 ? "" : "s") could not be read (permission denied); sizes below \(n == 1 ? "it are" : "them are") missing."]
+        var lines = items.contains(where: { $0.kind == .incomplete })
+            ? ["\(n) folder\(n == 1 ? "" : "s") could not be read fully; sizes below \(n == 1 ? "it are" : "them are") too low."]
+            : ["\(n) folder\(n == 1 ? "" : "s") could not be read (permission denied); sizes below \(n == 1 ? "it are" : "them are") missing."]
         for item in items.prefix(shown) {
             let note: String
             switch item.kind {
             case .privacyProtected: note = ""
             case .otherUser: note = "  (owned by another user)"
             case .noPermission: note = "  (no permission)"
+            case .incomplete: note = "  (could not be read completely)"
             }
             lines.append("  " + UI.tilde(item.path) + note)
         }

@@ -159,9 +159,10 @@ func runScan(_ arguments: [String]) throws {
                  snapshot saved in \(ms(saveTime))
         """))
         // `denied` is current in both modes: unreadable folders that still exist (one deleted during the scan is not
-        // denied). The other counters are the last full scan's; after an update they are labelled as such (chapter 03
-        // §9), and a snapshot without them shows none.
+        // denied; one read only in part is not denied either). The other counters are the last full scan's; after an
+        // update they are labelled as such (chapter 03 §9), and a snapshot without them shows none.
         let denied = unreadable.filter { item in
+            guard item.kind != .incomplete else { return false }
             var st = stat()
             return lstat(item.path, &st) == 0
         }.count

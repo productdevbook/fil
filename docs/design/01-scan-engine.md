@@ -554,6 +554,14 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
   Updates match children by display name; `HardlinkRegistry.vet` and mount-point names still use display paths
   (a raw name there is only missed, never miscounted). Tests: a real listing from a patched FAT image, and a folder
   whose display name differs from its bytes (re-read, rescan and snapshot by bytes).
+- #7 (2026-10-18): built as §3.3. `ATTR_CMN_ERROR` is in a record only when that entry failed (its bit is set in
+  `RETURNED_ATTRS` then; otherwise the field is absent), as the parser already assumed. Readings: an update re-read
+  sets `incomplete` from its outcome and clears it when the folder turns unreadable; the warning header becomes
+  `<n> folder(s) could not be read fully; sizes below it are / them are too low.` when any listed folder is
+  incomplete (otherwise unchanged), incomplete folders come last with `  (could not be read completely)` and no
+  `stat`. Fault hook: `DirFaults` in `ScanOptions`/`DirReader.Config`, compiled only under `DEBUG` (no release cost):
+  per path, errno values for successive `getattrlistbulk` calls (0 = real call) and an error record replacing the
+  first entry; the debug `fil` binary reads them from `FIL_TEST_FAULTS` for CLI tests.
 
 ## Glossary additions
 

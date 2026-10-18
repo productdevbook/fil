@@ -33,6 +33,15 @@ import Testing
         #expect(Permissions.warningLines([], terminalName: nil).isEmpty)
     }
 
+    @Test func incompleteFoldersChangeTheHeaderAndGetANote() {
+        let lines = Permissions.warningLines([("/Users/me/Library/Mail", .privacyProtected), ("/data/x", .incomplete)],
+                                             terminalName: "Ghostty")
+        #expect(lines[0] == "2 folders could not be read fully; sizes below them are too low.")
+        #expect(lines[1] == "  /Users/me/Library/Mail")
+        #expect(lines[2] == "  /data/x  (could not be read completely)")
+        #expect(lines.last == "Give Ghostty Full Disk Access: run `fil doctor`")
+    }
+
     @Test func findsOutermostAppBundle() {
         #expect(ResponsibleApp.outermostBundle(in: "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal")
             == "/System/Applications/Utilities/Terminal.app")

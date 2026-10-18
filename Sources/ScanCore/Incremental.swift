@@ -227,6 +227,7 @@ public enum Incremental {
                     tree.nodes[Int(id)].ownFiles = 0
                     tree.nodes[Int(id)].ownCloneAware = 0
                     tree.nodes[Int(id)].unreadable = true
+                    tree.nodes[Int(id)].incomplete = false
                     tree.stats.openErrors += 1
                     changed.append(id)
                     unreadable.append(id)
@@ -238,6 +239,7 @@ public enum Incremental {
             tree.nodes[Int(id)].ownFiles = out.files
             tree.nodes[Int(id)].ownCloneAware = out.cloneAware
             tree.nodes[Int(id)].unreadable = false
+            tree.nodes[Int(id)].incomplete = out.incomplete
             changed.append(id)
             var knownNames = Set<String>()
             let onDisk = Set(out.childDirs)
@@ -260,6 +262,7 @@ public enum Incremental {
                     tree.nodes[Int(c)].ownFiles = 0
                     tree.nodes[Int(c)].ownCloneAware = 0
                     tree.nodes[Int(c)].unreadable = true
+                    tree.nodes[Int(c)].incomplete = false
                     changed.append(c)
                     unreadable.append(c)
                 } else if !denied && n.unreadable {

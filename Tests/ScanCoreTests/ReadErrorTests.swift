@@ -104,3 +104,94 @@ struct RawNameTests {
         }
     }
 }
+
+/// Scan options with test faults (debug builds only).
+private func faulty(_ change: (inout DirFaults) -> Void) -> ScanOptions {
+    var o = ScanOptions()
+    change(&o.faults)
+    return o
+}
+
+@Suite("Partial directory reads (#7)")
+struct IncompleteTests {
+    @Test("a getattrlistbulk failure marks the directory incomplete, not unreadable")
+    func bulkFailure() throws {
+        try Fixture.with { f in
+            try f.mk("x/a", bytes: 100_000)
+            try f.mk("y/b", bytes: 5000)
+            let tree = try Scanner.scan(f.root, options: faulty { $0.bulk[f.path("x")] = [EIO] })
+            let x = try #require(tree.node(at: f.path("x")))
+            #expect(tree.nodes[x].incomplete && !tree.nodes[x].unreadable)
+            #expect(tree.nodes[x].ownFiles == 0)
+            #expect(tree.stats.entryErrors == 1 && tree.stats.openErrors == 0)
+            #expect(tree.nodes.indices.filter { tree.nodes[$0].incomplete } == [x])
+        }
+    }
+
+    @Test("a failure after the first batch keeps what was read")
+    func midDirectory() throws {
+        try Fixture.with { f in
+            try f.mk("x/a", bytes: 100_000)
+            let tree = try Scanner.scan(f.root, options: faulty { $0.bulk[f.path("x")] = [0, EIO] })
+            let x = try #require(tree.node(at: f.path("x")))
+            #expect(tree.nodes[x].incomplete)
+            #expect(tree.nodes[x].ownFiles == 1)
+            #expect(tree.root.totalAlloc == f.duBytes())
+        }
+    }
+
+    @Test("EINTR is retried up to three times in a row")
+    func interrupted() throws {
+        try Fixture.with { f in
+            try f.mk("x/a", bytes: 100_000)
+            let retried = try Scanner.scan(f.root, options: faulty { $0.bulk[f.path("x")] = [EINTR, EINTR, EINTR] })
+            #expect(!retried.nodes.contains { $0.incomplete })
+            #expect(retried.stats.entryErrors == 0)
+            #expect(retried.root.totalAlloc == f.duBytes())
+            let givenUp = try Scanner.scan(f.root, options: faulty { $0.bulk[f.path("x")] = [EINTR, EINTR, EINTR, EINTR] })
+            let x = try #require(givenUp.node(at: f.path("x")))
+            #expect(givenUp.nodes[x].incomplete && givenUp.stats.entryErrors == 1)
+        }
+    }
+
+    @Test("an entry error drops the entry and marks the directory; a dropped folder is not walked")
+    func entryError() throws {
+        try Fixture.with { f in
+            try f.mk("x/only/deep", bytes: 100_000)
+            let tree = try Scanner.scan(f.root, options: faulty { $0.entryError.insert(f.path("x")) })
+            let x = try #require(tree.node(at: f.path("x")))
+            #expect(tree.nodes[x].incomplete)
+            #expect(tree.node(at: f.path("x/only")) == nil)
+            #expect(tree.stats.entryErrors == 1)
+            #expect(tree.root.totalFiles == 0)
+        }
+    }
+
+    @Test("the flag survives the snapshot and an update re-read sets or clears it")
+    func snapshotAndUpdate() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("x/a", bytes: 100_000)
+                try f.mk("y/b", bytes: 5000)
+                try Snapshot.save(try Scanner.scan(f.root, options: faulty { $0.bulk[f.path("x")] = [EIO] }), in: dir)
+                let tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
+                let x = try #require(tree.node(at: f.path("x")))
+                #expect(tree.nodes[x].incomplete && !tree.nodes[x].unreadable)
+                #expect(!tree.nodes[0].incomplete)
+
+                var report = UpdateReport()
+                // A re-read that fails again keeps it; a complete one clears it.
+                #expect(Incremental.applyTracked([EventHistory.Event(path: f.path("y"), mustScanSubDirs: false)],
+                                                 to: tree, options: faulty { $0.bulk[f.path("y")] = [EIO] },
+                                                 report: &report) == nil)
+                let y = try #require(tree.node(at: f.path("y")))
+                #expect(tree.nodes[y].incomplete)
+                #expect(Incremental.applyTracked([EventHistory.Event(path: f.path("x"), mustScanSubDirs: false),
+                                                  EventHistory.Event(path: f.path("y"), mustScanSubDirs: true)],
+                                                 to: tree, options: ScanOptions(), report: &report) == nil)
+                #expect(!tree.nodes.contains { !$0.isDead && $0.incomplete })
+                #expect(Totals(tree) == Totals(try Scanner.scan(f.root)))
+            }
+        }
+    }
+}

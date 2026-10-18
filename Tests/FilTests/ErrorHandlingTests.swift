@@ -29,7 +29,7 @@ private final class BundleMarker {}
         return String(cString: resolved)
     }
 
-    func run(_ args: [String], snapshotDir: String, cwd: String? = nil) throws -> Run {
+    func run(_ args: [String], snapshotDir: String, cwd: String? = nil, env extra: [String: String] = [:]) throws -> Run {
         let p = Process()
         if let cwd { p.currentDirectoryURL = URL(fileURLWithPath: cwd) }
         p.executableURL = Self.binary
@@ -37,6 +37,7 @@ private final class BundleMarker {}
         var env = ProcessInfo.processInfo.environment
         env["FIL_SNAPSHOT_DIR"] = snapshotDir
         env["NO_COLOR"] = "1"
+        env.merge(extra) { _, new in new }
         p.environment = env
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
