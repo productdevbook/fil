@@ -25,8 +25,16 @@ built on FileManager and its sizes must match `du` exactly.
 
 ## Agents
 
-- `macos-engineer` (Sonnet): every change to `Sources/` and `Package.swift`.
-- `scan-tester` (Haiku): runs `scripts/verify.sh`, benchmarks, compares against `du`; never edits `Sources/`.
+- `designer` (Opus): `docs/design/` (chapters, roadmap, backlog) and the GitHub issues; writes no code.
+- `macos-engineer` (Sonnet): every change to `Sources/`, `Tests/` and `Package.swift`.
+- `release-engineer` (Sonnet): `.github/`, `scripts/release.sh`, `packaging/`.
+- `scan-tester` (Haiku): runs `scripts/verify*.sh` and `scripts/bench.sh`, compares against `du`; never edits `Sources/`.
+
+## Planning
+
+`docs/design/` is the source of every issue (playbook: design → roadmap → backlog → issues → agents build →
+orchestrator reviews, verifies and closes). Backlog items are `F-NNN`; F-N is GitHub issue #N. Milestones M1–M7 in
+`docs/design/08-roadmap.md`. Commits say `Refs #<n>`; agents commit, the orchestrator pushes.
 
 ## Orchestration and cost
 
