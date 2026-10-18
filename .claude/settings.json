@@ -1,18 +1,13 @@
 {
   "permissions": {
-    "deny": [
-      "mcp__claude_ai_ElevenLabs",
-      "mcp__claude_ai_yuva",
-      "mcp__plugin_engineering_atlassian",
-      "mcp__plugin_engineering_datadog",
-      "mcp__plugin_engineering_linear",
-      "mcp__plugin_engineering_notion",
-      "mcp__plugin_engineering_slack",
-      "mcp__plugin_cloudflare_cloudflare-api",
-      "mcp__plugin_cloudflare_cloudflare-bindings",
-      "mcp__plugin_cloudflare_cloudflare-builds",
-      "mcp__plugin_cloudflare_cloudflare-observability",
-      "mcp__plugin_revenuecat_RevenueCat"
+    "allow": [
+      "Bash(swift build:*)",
+      "Bash(swift test:*)",
+      "Bash(scripts/verify.sh)",
+      "Bash(scripts/verify-clean.sh)",
+      "Bash(scripts/check-completions.sh)",
+      "Bash(.build/release/fil:*)",
+      "Bash(du -skx:*)"
     ]
   }
 }
