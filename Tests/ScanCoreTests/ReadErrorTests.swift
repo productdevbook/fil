@@ -195,3 +195,43 @@ struct IncompleteTests {
         }
     }
 }
+
+@Suite("A folder that disappears during a scan (#34)")
+struct GoneDuringScanTests {
+    @Test("a full scan drops it: not unreadable, still counted in openErrors")
+    func fullScan() throws {
+        try Fixture.with { f in
+            try f.mk("x/gone/inner/file", bytes: 100_000)
+            try f.mk("x/kept", bytes: 5000)
+            try f.mk("y/file", bytes: 7000)
+            let tree = try Scanner.scan(f.root, options: faulty { $0.removeBeforeOpen.insert(f.path("x/gone")) })
+            #expect(!f.exists("x/gone"))
+            #expect(tree.node(at: f.path("x/gone")) == nil)
+            #expect(!tree.nodes.contains { $0.unreadable || $0.isDead })
+            #expect(tree.stats.openErrors == 1)
+            #expect(tree.root.totalDirs + 1 == 3)
+            #expect(tree.root.totalAlloc == f.duBytes())
+            #expect(Totals(tree) == Totals(try Scanner.scan(f.root)))
+        }
+    }
+
+    @Test("an update's rescan drops it too, and the tree matches a full scan")
+    func updateRescan() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("x/a", bytes: 1000)
+                try Snapshot.save(try Scanner.scan(f.root), in: dir)
+                try f.mk("x/new/gone/file", bytes: 100_000)
+                try f.mk("x/new/kept", bytes: 3000)
+                let tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
+                var report = UpdateReport()
+                #expect(Incremental.applyTracked([EventHistory.Event(path: f.path("x"), mustScanSubDirs: false)],
+                                                 to: tree, options: faulty { $0.removeBeforeOpen.insert(f.path("x/new/gone")) },
+                                                 report: &report) == nil)
+                #expect(tree.node(at: f.path("x/new/gone")) == nil)
+                #expect(!tree.nodes.contains { !$0.isDead && $0.unreadable })
+                #expect(Totals(tree) == Totals(try Scanner.scan(f.root)))
+            }
+        }
+    }
+}

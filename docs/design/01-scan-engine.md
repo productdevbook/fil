@@ -427,27 +427,26 @@ re-read or rescan root) is never checked. After `hdiutil attach -mountpoint ~/mn
 
 ### 9.1 Outcomes
 
-**[Change] (F-034)** During a full scan, a directory whose `open` fails with `ENOENT`, `ENOTDIR` or `ELOOP`
+**[Exists] (#34)** During a full scan, a directory whose `open` fails with `ENOENT`, `ENOTDIR` or `ELOOP`
 (`isGone`) vanished after it was listed: it is dropped, not kept as unreadable, and is counted neither in
 `unreadable=` nor in the permission warning. Reason: it is not a permission problem and `fil doctor` cannot fix it.
-The table below describes today.
+The table below describes the code after #6, #7 and #34.
 
 | Situation | Node | Counters | CLI |
 |---|---|---|---|
 | `open` fails, `EACCES`/`EPERM` (TCC, POSIX mode, other user) | kept, `unreadable = true`, empty | `openErrors += 1` | counted in `unreadable=`; listed in the warning, classified by `Permissions.classify` as `privacyProtected`, `otherUser` or `noPermission` |
-| `open` fails, `ENOENT`/`ENOTDIR`/`ELOOP` (`isGone`) | full scan: kept as `unreadable`; root of an update read: removed | `openErrors += 1` | full scan: counted in `unreadable=` |
+| `open` fails, `ENOENT`/`ENOTDIR`/`ELOOP` (`isGone`) | dead (`parent = DirNode.dead`), also below an update's rescan root; a full scan compacts it away; root of an update read or rescan: removed | `openErrors += 1` | not counted, not listed (`denied` in `-v` still counts it) |
 | root `lstat` fails | — | — | `fil scan` exits with the POSIX error |
 | root is a symlink or not a directory | root kept, `unreadable` (`ELOOP`/`ENOTDIR`), empty | `openErrors = 1` | `alloc=0 ... unreadable=1`, exit 0; [Change] (#11): resolve with `realpath`, fail when not a directory (CLI chapter) |
 | root `open` fails (full scan) | root kept, `unreadable`, empty | `openErrors = 1` | `unreadable=1` |
-| `getattrlistbulk` returns -1 | kept with what was read | `entryErrors += 1` | `--verbose` only; [Change] (#7): `incomplete` |
-| per-entry `ATTR_CMN_ERROR` | entry dropped | `entryErrors += 1` | `--verbose` only; [Change] (#7): `incomplete` |
-| invalid UTF-8 directory name | child fails with `ENOENT` | `openErrors += 1` | [Change] (#6) |
+| `getattrlistbulk` returns -1 (`EINTR`: up to 3 retries) | kept with what was read, `incomplete = true` | `entryErrors += 1` | counted in `unreadable=`; listed, `(could not be read completely)` |
+| per-entry `ATTR_CMN_ERROR` | entry dropped, `incomplete = true` | `entryErrors += 1` | as above |
+| invalid UTF-8 directory name | display name with U+FFFD, bytes in `rawNames`, opened by bytes | — | — |
 | child dir not listable, seen by an update (`deniedChildDirs`) | emptied, `unreadable = true` | — | counted in `unreadable=` |
 
-**[Change] (no issue yet; to be filed)** In a full scan a directory that disappears between its parent's listing
-and its own `open` (`isGone`) is kept and flagged `unreadable`, so it shows up in the permission warning
-(classified `noPermission`, since `stat` fails). New rule: in a full scan, a non-root `isGone` directory is
-marked dead (`parent = DirNode.dead`) instead of `unreadable`; `openErrors` still counts it.
+**[Exists] (#34)** A non-root `isGone` directory is marked dead (`parent = DirNode.dead`) instead of `unreadable`;
+`openErrors` still counts it. Before, it was kept `unreadable` and shown in the permission warning as
+`noPermission` (its `stat` fails).
 
 "Denied" in `--verbose` output is `stats.openErrors`; `unreadable=` is the number of live nodes with
 `unreadable == true` (computed by `Permissions.unreadable(in:)`, one `stat` per such node for the owner).
@@ -562,6 +561,10 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
   `stat`. Fault hook: `DirFaults` in `ScanOptions`/`DirReader.Config`, compiled only under `DEBUG` (no release cost):
   per path, errno values for successive `getattrlistbulk` calls (0 = real call) and an error record replacing the
   first entry; the debug `fil` binary reads them from `FIL_TEST_FAULTS` for CLI tests.
+- #34 (2026-10-18): built as §9.1. Reading: the rule also covers directories below the root of an update's rescan
+  (`rescanSubtrees` is shared); the root of a rescan or re-read keeps its old handling (removed by the caller).
+  `Scanner.scan` compacts the tree after the walk, so a fresh tree holds no dead node. Fault: `removeBeforeOpen`
+  (`remove <path>` in `FIL_TEST_FAULTS`) deletes the folder right before its `open`.
 
 ## Glossary additions
 

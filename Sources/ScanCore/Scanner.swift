@@ -37,6 +37,8 @@ public enum Scanner {
                             volumeUUID: volumeUUID(st.st_dev), scanStart: scanStart, hardlinks: HardlinkRegistry(),
                             clones: CloneRegistry(), aliases: options.firmlinks.aliases(for: path))
         _ = rescanSubtrees([0], in: tree, options: options, progress: progress)
+        // Folders that vanished during the walk are dead nodes; nothing else may see them.
+        tree.compact()
         _ = applyPreferredOriginals(tree)
         tree.computeTotals()
         return tree
@@ -58,7 +60,8 @@ public enum Scanner {
     /// Scans the subtrees under existing nodes `ids` in one parallel pass. Their old descendants must
     /// already be dead; new descendants are appended to the tree. Returns the ids whose directory is gone
     /// (`DirOutcome.isGone`) with the errno of the failed `open`; an unreadable root stays, empty, like in a full scan.
-    /// Mount points skipped below `ids` are appended to `tree.mountPoints`.
+    /// Mount points skipped below `ids` are appended to `tree.mountPoints`. A directory below `ids` that vanished between
+    /// its parent's listing and its own `open` (`isGone`) is appended dead: it is not unreadable, just no longer there.
     /// `checkRootDevice` (updates): each of `ids` is opened by path and may have become another volume's mount point
     /// since the snapshot; it is then gone with `EXDEV`. A full scan leaves it off: there the root defines the device.
     static func rescanSubtrees(_ ids: [Int32], in tree: DiskTree, options: ScanOptions, checkRootDevice: Bool = false,
@@ -82,6 +85,7 @@ public enum Scanner {
         // One bulk append: grows geometrically, unlike an exact reserveCapacity on every update.
         tree.nodes.append(contentsOf: job.nodes.dropFirst(ids.count).lazy.map { n in
             var n = n
+            if n.isDead { return n }
             n.parent = n.parent < rootCount ? ids[Int(n.parent)] : base + n.parent - rootCount
             return n
         })
@@ -218,7 +222,12 @@ private final class ParallelScan: @unchecked Sendable {
             nodes[Int(item.id)].ownLogical = out.logical
             nodes[Int(item.id)].ownFiles = out.files
             nodes[Int(item.id)].ownCloneAware = out.cloneAware
-            nodes[Int(item.id)].unreadable = !out.opened
+            if out.isGone && item.id >= rootIds.count {
+                // Removed (or replaced by a file or symlink) after its parent listed it. `openErrors` still counts it.
+                nodes[Int(item.id)].parent = DirNode.dead
+            } else {
+                nodes[Int(item.id)].unreadable = !out.opened
+            }
             nodes[Int(item.id)].incomplete = out.incomplete
             stats.merge(out.stats)
             for name in out.mountPoints { mountPoints.append(MountPoint(parent: gid, name: name)) }
@@ -334,6 +343,9 @@ struct DirReader {
     func read(_ path: String, cPath: [CChar]? = nil, checkOwnDevice: Bool? = nil,
               claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?) -> DirOutcome {
         var out = DirOutcome()
+#if DEBUG
+        if config.faults.removeBeforeOpen.contains(path) { try? FileManager.default.removeItem(atPath: path) }
+#endif
         let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
         let fd = cPath.map { open($0, flags) } ?? open(path, flags)
         guard fd >= 0 else {
@@ -588,9 +600,11 @@ struct DirFaults: Sendable {
     var bulk: [String: [Int32]] = [:]
     /// Directories whose first listed entry is reported with `ATTR_CMN_ERROR` = `EIO`.
     var entryError: Set<String> = []
+    /// Directories removed, with their contents, right before they are opened (gone between listing and opening).
+    var removeBeforeOpen: Set<String> = []
 
     /// From `FIL_TEST_FAULTS` (debug builds only, for tests of the `fil` binary): one fault per line,
-    /// `bulk <errno>[,<errno>...] <path>` or `entry <path>`.
+    /// `bulk <errno>[,<errno>...] <path>`, `entry <path>` or `remove <path>`.
     static let environment: DirFaults = {
         var f = DirFaults()
         guard let spec = ProcessInfo.processInfo.environment["FIL_TEST_FAULTS"] else { return f }
@@ -603,6 +617,7 @@ struct DirFaults: Sendable {
                 guard rest.count == 2 else { continue }
                 f.bulk[String(rest[1])] = rest[0].split(separator: ",").compactMap { Int32($0) }
             case "entry": f.entryError.insert(String(parts[1]))
+            case "remove": f.removeBeforeOpen.insert(String(parts[1]))
             default: continue
             }
         }

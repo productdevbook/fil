@@ -28,4 +28,24 @@ extension ErrorHandlingTests {
         let clean = try run(["scan", dir + "/root", "--full", "--porcelain"], snapshotDir: dir + "/snap")
         #expect(clean.stdout.hasSuffix(" unreadable=0\n"), "\(clean.stdout)")
     }
+
+    @Test func folderGoneDuringScanIsNotReported() throws {
+        let dir = try Self.tempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        for sub in ["gone", "kept"] {
+            try FileManager.default.createDirectory(atPath: dir + "/root/\(sub)", withIntermediateDirectories: true)
+            try Data(count: 20_000).write(to: URL(fileURLWithPath: dir + "/root/\(sub)/f"))
+        }
+        let env = ["FIL_TEST_FAULTS": "remove \(dir)/root/gone"]
+        let p = try run(["scan", dir + "/root", "--full", "--porcelain"], snapshotDir: dir + "/snap", env: env)
+        #expect(p.status == 0)
+        #expect(p.stdout.contains(" files=1 dirs=2 "), "\(p.stdout)")
+        #expect(p.stdout.hasSuffix(" unreadable=0\n"), "\(p.stdout)")
+
+        try FileManager.default.createDirectory(atPath: dir + "/root/gone", withIntermediateDirectories: true)
+        let h = try run(["scan", dir + "/root", "--full", "--top", "0", "-v"], snapshotDir: dir + "/snap", env: env)
+        #expect(h.status == 0)
+        #expect(!h.stdout.contains("could not be read"), "\(h.stdout)")
+        #expect(h.stdout.contains("denied 0 "), "\(h.stdout)")
+    }
 }
