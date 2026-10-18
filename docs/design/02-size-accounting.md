@@ -339,7 +339,16 @@ single-thread scan, family counted once); `shared` and `cloneaware` with a datal
   - APFS, HFS+: nothing changes; folders report 0 (HFS+ does not return the directory attributes at all).
   `statfs.f_bsize` is the cluster size, not `st_blksize` or `statvfs.f_bsize` (both 1 MB, the I/O size). The record
   decides (`RETURNED_ATTRS` has no `ALLOCSIZE`), a bit test of the field already parsed; only the unit is a syscall,
-  once per scan or update. A volume mounted inside the root with `--cross-devices` uses the root's unit.
+  once per scan or update.
+  Review fixes (#48): (1) the unit is rounded to only where `f_fstypename` is `msdos`; every other file system without
+  `ALLOCSIZE` (a macFUSE or FSKit NTFS or ext4 volume) counts its data length unrounded. **Known limit:** such a volume
+  with sparse or compressed files is not exact against `du` (`st_blocks`), and nothing marks the result as approximate
+  (`uncertainBytes` is for hard links only). (2) With `--cross-devices`, a mount point is listed with the covered
+  folder's attributes: its read takes one `fstat` and one `fstatfs`, so the volume has its own unit and its root's own
+  space, and the unit passes down to its subtree. An update's re-read takes the same `fstat` also with
+  `--cross-devices` (it had none, so a re-read folder lost its own space). Without `--cross-devices`, `du -x` still counts
+  a FAT mount point's own cluster, which `fil` does not (known gap, 512 bytes per FAT mount). (3) Test `du` calls set
+  `BLOCKSIZE=512`.
   `du -k` rounds a total up to 1 KB, so on 512-byte clusters `du -skx` x 1024 can exceed the exact sum by 512; compare
   with `du -sx` x 512. FAT and exFAT have no FSEvents volume UUID, so an update is refused (`volumeChanged`) and `fil`
   scans in full: the result equals `du` (the `selfAlloc` of an update's re-read is only exercised through

@@ -528,7 +528,7 @@ public enum Incremental {
     /// Invariant: nothing mutates the hard-link table while this runs. Workers only call `vet`, which reads the
     /// table under its lock; every claim is deferred (the closure returns nil) and made after `forget`, on one thread.
     /// `cPaths[k]`, when set, is what is opened for `paths[k]` (`DiskTree.cPath(of:)`).
-    private static func readDirectories(
+    static func readDirectories(
         _ paths: [String], cPaths: [[CChar]?], tree: DiskTree,
         options: ScanOptions
     ) -> [DirOutcome] {
@@ -551,7 +551,7 @@ public enum Incremental {
                     guard k < paths.count else { break }
                     let dirPath = paths[k]
                     var t0 = Timings.enabled ? Timings.Lap("apply") : nil
-                    out[k] = reader.read(dirPath, cPath: cPaths[k]) { inode, alloc, _, _, name in
+                    out[k] = reader.read(dirPath, cPath: cPaths[k], statSelf: true) { inode, alloc, _, _, name in
                         hardlinks.vet(inode, alloc: alloc, dirPath: dirPath, name: name)
                         return nil
                     }

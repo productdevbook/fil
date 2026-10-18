@@ -19,6 +19,12 @@ private let volumeKinds = [
     VolumeKind(fs: "ExFAT", megabytes: 20),
 ]
 
+/// The volume's cluster size, `statfs.f_bsize`, whatever the file system.
+private func clusterSize(_ path: String) -> Int64 {
+    var fs = statfs()
+    return statfs(path, &fs) == 0 ? Int64(fs.f_bsize) : 0
+}
+
 private func duBytes(_ path: String) -> Int64 { Fixture.duBlockBytes(path) }
 
 /// Makes `kind` (an empty image outside the scanned folder), mounts it on `box/mnt` and runs `body` with the mount
@@ -56,7 +62,7 @@ struct FATVolumeTests {
     @Test("a full scan equals du, for the volume and for every folder", arguments: volumeKinds)
     func fullScanEqualsDu(_ kind: VolumeKind) throws {
         try withVolume(kind) { box, mnt in
-            let unit = Int(Scanner.allocationUnit(of: mnt))
+            let unit = Int(clusterSize(mnt))
             try #require(unit > 0)
             try populate(box, unit: unit)
             let tree = try Scanner.scan(mnt)
@@ -88,7 +94,7 @@ struct FATVolumeTests {
     @Test("the allocation unit rounds up each file, and a folder counts its own clusters", arguments: volumeKinds)
     func rounding(_ kind: VolumeKind) throws {
         try withVolume(kind) { box, mnt in
-            let unit = Int64(Scanner.allocationUnit(of: mnt))
+            let unit = Int64(clusterSize(mnt))
             try box.mk("mnt/d/zero", bytes: 0)
             try box.mk("mnt/d/exact", bytes: Int(unit))
             try box.mk("mnt/d/over", bytes: Int(unit) + 1)
@@ -104,7 +110,7 @@ struct FATVolumeTests {
     func incremental(_ kind: VolumeKind) throws {
         try withSnapshotDir { dir in
             try withVolume(kind) { box, mnt in
-                let unit = Int(Scanner.allocationUnit(of: mnt))
+                let unit = Int(clusterSize(mnt))
                 try populate(box, unit: unit)
                 try Snapshot.save(try Scanner.scan(mnt), in: dir)
 
@@ -144,8 +150,10 @@ struct FATVolumeTests {
             try box.mk("mnt/file", bytes: 10)
             var st = stat()
             #expect(lstat(mnt, &st) == 0)
-            let unit = Scanner.allocationUnit(of: mnt)
-            let reader = DirReader(DirReader.Config(rootDev: st.st_dev, options: ScanOptions(), allocUnit: unit))
+            let unit = clusterSize(mnt)
+            let reader = DirReader(
+                DirReader.Config(
+                    rootDev: st.st_dev, options: ScanOptions(), allocUnit: Scanner.allocationUnit(of: mnt)))
             defer { reader.deallocate() }
             let out = reader.read(mnt, statSelf: true) { _, _, _, _, _ in true }
             #expect(out.childDirs == ["sub"])
@@ -154,6 +162,61 @@ struct FATVolumeTests {
                 out.childAllocs.first?.alloc == duBytes(mnt + "/sub") - unit, "own space of sub = du minus its file")
             #expect(out.selfAlloc == Int64(st.st_blocks) * 512)
             #expect(out.alloc == unit)
+        }
+    }
+
+    @Test("only FAT is rounded to its cluster size")
+    func roundingOnlyOnFAT() throws {
+        try withVolume(VolumeKind(fs: "MS-DOS", megabytes: 20)) { _, mnt in
+            #expect(Scanner.allocationUnit(of: mnt) == clusterSize(mnt))
+        }
+        try withVolume(VolumeKind(fs: "ExFAT", megabytes: 20)) { _, mnt in
+            #expect(Scanner.allocationUnit(of: mnt) == 0)
+        }
+        #expect(Scanner.allocationUnit(of: NSTemporaryDirectory()) == 0)
+    }
+
+    @Test("--cross-devices: a FAT32 volume inside an APFS folder gets its own cluster size and root space")
+    func crossDevices() throws {
+        let kind = VolumeKind(fs: "MS-DOS FAT32", megabytes: 64)
+        guard DiskImage.isAvailable else { try Test.cancel("no hdiutil") }
+        try Fixture.with("cross") { box in
+            guard let image = DiskImage(emptyMegabytes: kind.megabytes, fs: kind.fs, at: box.path("vol.dmg")) else {
+                try Test.cancel("hdiutil cannot make \(kind.fs)")
+            }
+            defer { image.detach() }
+            try box.mk("root/apfs/file", bytes: 5000)
+            try box.mkdir("root/mnt")
+            guard image.attach(at: box.path("root/mnt")) else { try Test.cancel("hdiutil cannot attach") }
+            try box.mk("root/mnt/tiny", bytes: 3)
+            try box.mk("root/mnt/dir/inner/tiny2", bytes: 3)
+            let root = box.path("root")
+            let tree = try Scanner.scan(root, options: ScanOptions(crossDevices: true))
+            #expect(tree.root.totalAlloc == Fixture.duBlockBytes(root, acrossVolumes: true))
+            let mnt = try #require(tree.node(at: root + "/mnt"))
+            #expect(tree.nodes[mnt].totalAlloc == Fixture.duBlockBytes(root + "/mnt"))
+            #expect(
+                tree.nodes[mnt].ownAlloc > 512, "the volume root's own space is counted: \(tree.nodes[mnt].ownAlloc)")
+            // Without the option the volume is left out (du -x still counts the mount point's own 512 bytes).
+            let plain = try Scanner.scan(root)
+            #expect(plain.root.totalAlloc == tree.root.totalAlloc - tree.nodes[mnt].totalAlloc)
+        }
+    }
+
+    @Test("an update's re-read counts a folder's own space also with --cross-devices")
+    func rereadCrossDevices() throws {
+        let kind = VolumeKind(fs: "MS-DOS", megabytes: 20)
+        try withVolume(kind) { box, mnt in
+            try box.mk("mnt/sub/f", bytes: 10)
+            let options = ScanOptions(crossDevices: true)
+            let tree = try Scanner.scan(mnt, options: options)
+            let paths = [mnt, mnt + "/sub"]
+            let outcomes = Incremental.readDirectories(paths, cPaths: [nil, nil], tree: tree, options: options)
+            for (path, out) in zip(paths, outcomes) {
+                var st = stat()
+                #expect(lstat(path, &st) == 0)
+                #expect(out.selfAlloc == Int64(st.st_blocks) * 512 && out.selfAlloc > 0, "\(path)")
+            }
         }
     }
 

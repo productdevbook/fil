@@ -108,8 +108,11 @@ public final class Fixture: @unchecked Sendable {
 extension Fixture {
     /// `du -sx` of an absolute `path` in bytes, counted in 512-byte blocks. `du -k` rounds up to 1 KB, which is not the
     /// exact sum on a volume whose clusters are 512 bytes (FAT32).
-    public static func duBlockBytes(_ path: String) -> Int64 {
-        let out = Process.output("/usr/bin/du", ["-sx", path])
+    /// `acrossVolumes` leaves out `-x`, so a volume mounted inside `path` counts too. `BLOCKSIZE` is set, as `du`
+    /// reads it when `-k` is not given.
+    public static func duBlockBytes(_ path: String, acrossVolumes: Bool = false) -> Int64 {
+        let out = Process.output(
+            "/usr/bin/du", [acrossVolumes ? "-s" : "-sx", path], environment: ["BLOCKSIZE": "512"])
         guard let first = out.split(whereSeparator: { $0 == " " || $0 == "\t" }).first, let blocks = Int64(first)
         else { return -1 }
         return blocks * 512
@@ -129,10 +132,11 @@ extension Process {
         return p.terminationStatus
     }
 
-    static func output(_ tool: String, _ args: [String]) -> String {
+    static func output(_ tool: String, _ args: [String], environment: [String: String] = [:]) -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: tool)
         p.arguments = args
+        if !environment.isEmpty { p.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 } }
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
