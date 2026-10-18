@@ -303,6 +303,39 @@ struct IncompleteTests {
         }
     }
 
+    @Test("an incomplete folder is read again by the next update without any event, and the flag clears")
+    func retriedWithoutEvent() throws {
+        try Fixture.with { f in
+            try f.mk("x/a", bytes: 100_000)
+            try f.mk("x/sub/b", bytes: 50_000)
+            let tree = try Scanner.scan(f.root, options: faulty { $0.bulk[f.path("x")] = [EIO] })
+            let x = try #require(tree.node(at: f.path("x")))
+            #expect(tree.nodes[x].incomplete)
+            var report = UpdateReport()
+            #expect(Incremental.applyTracked([], to: tree, options: ScanOptions(), report: &report) == nil)
+            #expect(!tree.nodes.contains { !$0.isDead && $0.incomplete })
+            #expect(Totals(tree) == Totals(try Scanner.scan(f.root)))
+            #expect(tree.root.totalAlloc == f.duBytes())
+        }
+    }
+
+    @Test("a parent flagged because it was renamed mid-scan is settled by the next update without any event")
+    func parentLostRetried() throws {
+        try Fixture.with { f in
+            try f.mk("x/p/c/file", bytes: 100_000)
+            let tree = try Scanner.scan(f.root, options: faulty {
+                $0.renameBeforeOpen[f.path("x/p/c")] = [f.path("x/p"), f.path("x/q")]
+            })
+            #expect(tree.nodes[try #require(tree.node(at: f.path("x/p")))].incomplete)
+            var report = UpdateReport()
+            #expect(Incremental.applyTracked([], to: tree, options: ScanOptions(), report: &report) == nil)
+            #expect(tree.node(at: f.path("x/p")) == nil)
+            #expect(tree.node(at: f.path("x/q/c")) != nil)
+            #expect(!tree.nodes.contains { !$0.isDead && $0.incomplete })
+            #expect(Totals(tree) == Totals(try Scanner.scan(f.root)))
+        }
+    }
+
     @Test("the flag survives the snapshot and an update re-read sets or clears it")
     func snapshotAndUpdate() throws {
         try withSnapshotDir { dir in

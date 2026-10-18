@@ -159,7 +159,16 @@ public enum Incremental {
         // mount table.
         let mounts = options.crossDevices ? MountChanges()
             : mountChanges(tree, prefixes: prefixes, aliases: aliases, firmlinks: options.firmlinks)
-        guard !events.isEmpty || !mounts.mounted.isEmpty || !mounts.uncovered.isEmpty else { return nil }
+        // A folder read only in part is read again on every update until a read is complete: the error may be gone
+        // without any event. One pass over the flags; empty for almost every tree.
+        let retry: [Int32] = tree.nodes.withUnsafeBufferPointer { nodes in
+            var ids: [Int32] = []
+            for i in nodes.indices where nodes[i].incomplete && !nodes[i].isDead { ids.append(Int32(i)) }
+            return ids
+        }
+        guard !events.isEmpty || !mounts.mounted.isEmpty || !mounts.uncovered.isEmpty || !retry.isEmpty else {
+            return nil
+        }
         report.mountChanges = mounts.mounted.count + mounts.uncovered.count
         func unattributed() -> UpdateFailure { .unattributedHardLink(paths: tree.hardlinks.unattributedPaths) }
         var t = Timings.Lap("apply")
@@ -183,6 +192,12 @@ public enum Incremental {
         full.formUnion(mounts.mounted)
         // The folder under an unmounted volume is visible again: its parent's re-read finds it as a new directory.
         shallow.formUnion(mounts.uncovered)
+        // A flagged folder whose own path is gone (renamed or removed) is dropped by its re-read; its parent is read
+        // too, so that the folder under its new name is found.
+        for id in retry {
+            shallow.insert(id)
+            if id != 0 && !stillDirectory(id, in: tree) { shallow.insert(tree.nodes[Int(id)].parent) }
+        }
         func underFull(_ id: Int32, includingSelf: Bool) -> Bool {
             var i = includingSelf ? id : tree.nodes[Int(id)].parent
             while i >= 0 {
@@ -212,11 +227,6 @@ public enum Incremental {
         var pendingLinks: [(dir: Int32, inode: UInt64, alloc: Int64, logical: Int64, cloneAware: Int64)] = []
         var pendingClones: [(dir: Int32, members: [CloneMember])] = []
         var newMounts: [MountPoint] = []
-        func stillDirectory(_ c: Int32) -> Bool {
-            var st = stat()
-            let found = tree.cPath(of: Int(c)).map { lstat($0, &st) } ?? lstat(tree.path(of: Int(c)), &st)
-            return found == 0 && st.st_mode & S_IFMT == S_IFDIR && st.st_dev == tree.rootDev
-        }
         for (id, out) in zip(reread, outcomes) {
             guard out.opened else {
                 if id == 0 { return .rootUnreadable(errno: out.openError) }
@@ -262,7 +272,7 @@ public enum Incremental {
                     // if it is still there as a directory of this volume. A rename shows up only as an event on the
                     // parent, so a child that is gone must go now, or it would be counted next to its new name.
                     // One `lstat` per unlisted child, only on this error path.
-                    if !out.incomplete || !stillDirectory(c) { killRoots.append(c) }
+                    if !out.incomplete || !stillDirectory(c, in: tree) { killRoots.append(c) }
                     return
                 }
                 // A permission change shows up only as an event on the parent. A child we can no longer list is
@@ -477,6 +487,13 @@ public enum Incremental {
             if parents.insert(m.parent).inserted { out.uncovered.append(m.parent) }
         }
         return out
+    }
+
+    /// `c` is still a directory on the tree's volume at its path (one `lstat`, by bytes when it has a raw name).
+    private static func stillDirectory(_ c: Int32, in tree: DiskTree) -> Bool {
+        var st = stat()
+        let found = tree.cPath(of: Int(c)).map { lstat($0, &st) } ?? lstat(tree.path(of: Int(c)), &st)
+        return found == 0 && st.st_mode & S_IFMT == S_IFDIR && st.st_dev == tree.rootDev
     }
 
     /// Reads each directory once with up to `options.threads` workers; results are in input order.
