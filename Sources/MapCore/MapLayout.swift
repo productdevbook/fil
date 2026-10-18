@@ -2,7 +2,7 @@ import CleanCore
 import CoreGraphics
 import Foundation
 
-/// What the Disk Map needs to know about a scanned tree. The app's `DiskSnapshot` conforms; tests use a fake.
+/// What the Disk Map needs to know about a scanned tree. A client's tree type conforms; tests use a fake.
 public protocol MapSource {
     /// Children of a folder, largest first.
     func children(of id: Int32) -> ArraySlice<Int32>

@@ -13,7 +13,7 @@ public enum Removal: Sendable, Equatable {
     case none
 }
 
-/// Why a candidate needs a closer look. The CLI prints `description` (English); the app localizes the cases.
+/// Why a candidate needs a closer look. The CLI prints `description` (English); a client localizes the cases.
 public enum CandidateNote: Sendable, Equatable, CustomStringConvertible {
     case appRunning
     case macOSComponent
@@ -76,7 +76,7 @@ public struct Candidate: Sendable {
         self.fileID = fileID
     }
 
-    /// False for info-only items (e.g. the Trash): there is nothing the app can move or run for them.
+    /// False for info-only items (e.g. the Trash): there is nothing a client can move or run for them.
     public var isActionable: Bool {
         if case .none = removal { return false }
         return true

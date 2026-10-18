@@ -88,7 +88,7 @@ public enum Cleanup {
         case failed(Failure)
     }
 
-    /// Why one item failed. Our own reasons are typed so the app can localize them; system errors keep the
+    /// Why one item failed. Our own reasons are typed so a client can localize them; system errors keep the
     /// system's (already localized) description.
     public enum Failure: Sendable, Equatable, CustomStringConvertible {
         /// The path is no longer a plain directory inside home on the home volume.

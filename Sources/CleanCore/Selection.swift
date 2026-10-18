@@ -3,7 +3,7 @@ import Foundation
 /// What the group checkbox of a rule shows.
 public enum GroupSelectionState: Sendable, Equatable {
     case on, off, mixed
-    /// The group has nothing the app can act on (info-only items).
+    /// The group has nothing a client can act on (info-only items).
     case unavailable
 }
 
