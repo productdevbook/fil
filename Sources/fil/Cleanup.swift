@@ -116,34 +116,62 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     let chosen = resolution.chosen
     let leftOut = resolution.leftOut
     if !yes {
-        print(UI.bold("Would move to the Trash") + "  " + UI.tilde(scan.home))
+        print(UI.bold("Would clean") + "  " + UI.tilde(scan.home))
         for c in chosen {
-            let target = c.removal.isInfoOnly ? "info only" : removalText(c.removal)
+            let target: String
+            switch c.removal {
+            case .trash: target = "Trash"
+            case .command(let argv): target = "would run: " + argv.joined(separator: " ")
+            case .none: target = "info only"
+            }
             print("  " + UI.lpad(human(c.bytes), 9) + "  " + UI.safety(c.safety) + "  " + c.id + UI.dim("  -> \(target)"))
         }
         for c in leftOut where !chosen.contains(where: { $0.id == c.id }) {
             print("  " + UI.lpad(human(c.bytes), 9) + "  " + UI.safety(c.safety) + "  " + c.id
                 + UI.dim("  not selected, name its id to remove"))
         }
-        print("\n" + UI.bold("Would free \(human(chosen.reduce(Int64(0)) { $0 + $1.bytes }))") + " once the Trash is emptied.")
-        print(UI.yellow("Dry run, nothing moved; add --yes to do it."))
+        var trashBytes: Int64 = 0, commandBytes: Int64 = 0
+        var trashCount = 0, commandCount = 0
+        for c in chosen {
+            switch c.removal {
+            case .trash: trashBytes += c.bytes; trashCount += 1
+            case .command: commandBytes += c.bytes; commandCount += 1
+            case .none: break
+            }
+        }
+        print("")
+        if trashCount > 0 {
+            print(UI.bold("Would move \(human(trashBytes)) to the Trash") + "; space is freed once the Trash is emptied.")
+        }
+        if commandCount > 0 {
+            print(UI.yellow("Would remove \(human(commandBytes)) permanently with the tools' own commands; this cannot be undone from the Trash."))
+        }
+        if trashCount == 0 && commandCount == 0 { print("Nothing to clean among the selected items.") }
+        print(UI.yellow("Dry run, nothing changed; add --yes to do it."))
         return
     }
     var moved: Int64 = 0
+    var removed: Int64 = 0
+    var movedCount = 0, removedCount = 0
     var handled = 0
     var failures = 0
     for (c, outcome) in await Cleanup.execute(chosen, home: scan.home) {
         switch outcome {
         case .trashed(let url):
             moved += c.bytes
+            movedCount += 1
             handled += 1
             print("  " + UI.green("✓") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)" + UI.dim("  -> \(url.path)"))
         case .commandRan:
-            moved += c.bytes
+            removed += c.bytes
+            removedCount += 1
             handled += 1
-            print("  " + UI.green("✓") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)" + UI.dim("  ran command"))
+            let argv: String
+            if case .command(let a) = c.removal { argv = a.joined(separator: " ") } else { argv = "command" }
+            print("  " + UI.green("✓") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)" + UI.dim("  ran: \(argv) (permanent)"))
         case .commandShared:
-            moved += c.bytes
+            removed += c.bytes
+            removedCount += 1
             handled += 1
             print("  " + UI.green("✓") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)" + UI.dim("  done by the same command"))
         case .nothingToDo:
@@ -158,7 +186,13 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         print(chosen.isEmpty ? "Nothing was cleaned: no safe or review items matched."
                              : "Nothing was cleaned.")
     } else {
-        print("\n" + UI.bold("Handled \(human(moved))") + " in \(handled) item\(handled == 1 ? "" : "s"). Space is freed when you empty the Trash.")
+        print("")
+        if movedCount > 0 {
+            print(UI.bold("Moved \(human(moved)) to the Trash") + " (\(movedCount) item\(movedCount == 1 ? "" : "s")). Space is freed when you empty the Trash.")
+        }
+        if removedCount > 0 {
+            print(UI.bold("Removed \(human(removed)) permanently") + " with the tools' own commands (\(removedCount) item\(removedCount == 1 ? "" : "s")).")
+        }
     }
     if !skippedCareful.isEmpty {
         print("Left out \(skippedCareful.count) careful item(s); name a candidate id to remove it:")

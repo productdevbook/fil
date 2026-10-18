@@ -74,7 +74,7 @@ Without Full Disk Access, macOS hides folders such as `~/Library/Mail`, `~/Libra
 
 ## Safety model
 
-- Cleaning only moves items to the Trash. Fil never deletes files.
+- Fil never deletes files itself: it moves them to the Trash. The exception is a few rules (simulators, Go caches, Docker) that run the tool's own removal command; that removal is permanent, cannot be restored from the Trash, and is marked as such (`would run: <command>`) in the dry run.
 - Every cleaning rule has a safety level: `safe`, `review`, or `careful`.
 - `fil clean` is a dry run unless you pass `--yes`: it prints what would move to the Trash and touches nothing.
 
