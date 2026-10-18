@@ -54,4 +54,4 @@ for i in {1..40}; do
 done
 
 tar -C $DIST/$NAME -czf $DIST/$NAME.tar.gz fil
-shasum -a 256 $DIST/$NAME.tar.gz | tee $DIST/$NAME.tar.gz.sha256
+(cd "$DIST" && shasum -a 256 "$NAME.tar.gz") | tee "$DIST/$NAME.tar.gz.sha256"
