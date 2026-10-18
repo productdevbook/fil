@@ -734,6 +734,11 @@ Gaps today, all fixed by the change:
 
 ## As built
 
+- #11: DIR and `--home` (and the default home) go through `resolveDirectory` (`realpath`, then `stat`, must be a
+  directory) after option parsing, so usage errors still come first. Error messages quote the argument as typed
+  (`fil: <arg>: not a directory`); the header, the snapshot key and `home` in `--json` use the resolved path.
+  `--naive` resolves the same way. Several DIRs: still the last one wins until #10.
+
 ## Glossary additions
 
 - **Porcelain line**: the single `key=value` line of `fil scan --porcelain`; fields are only appended.
