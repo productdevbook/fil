@@ -183,7 +183,7 @@ let doctorHelp = """
       --no-open    only print; do not open System Settings
       --no-color   plain output
 
-    Exit status 0 when Full Disk Access is granted, 1 otherwise.
+    Exit status: 0 granted, 1 missing or unknown, 2 usage error.
     """
 
 func runDoctor(_ arguments: [String]) async -> Never {

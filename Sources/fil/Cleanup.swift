@@ -25,6 +25,7 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         case .operand(let a): selectors.append(a)
         }
     }
+    if !isList && selectors.isEmpty { usageError("clean needs at least one candidate id or rule id") }
 
     UI.setup(noColor: noColor)
     let home = try resolveDirectory(givenHome)
@@ -134,7 +135,6 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     }
 
     // clean
-    guard !selectors.isEmpty else { fail("clean needs at least one candidate id or rule id") }
     let resolution: Cleanup.Resolution
     do { resolution = try Cleanup.resolve(selectors, in: scan.candidates) } catch { fail("\(error)") }
     let chosen = resolution.chosen
@@ -259,7 +259,10 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         print(UI.yellow("Interrupted; the remaining items were not touched."))
         exit(130)
     }
-    if failures != 0 { exit(2) }
+    if failures != 0 {
+        print(UI.red("\(failures) item\(failures == 1 ? "" : "s") failed."))
+        exit(3)
+    }
 }
 
 extension Removal {

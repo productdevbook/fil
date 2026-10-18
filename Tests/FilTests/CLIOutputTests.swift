@@ -232,4 +232,54 @@ import Testing
         #expect(list.status == 2)
         #expect(list.stderr.hasPrefix("fil: unexpected argument '--json' for 'fil list'\n"))
     }
+
+    @Test func eachExitStatusIsDistinct() throws {
+        let root = try ErrorHandlingTests.tempDir()
+        defer {
+            chmod(root + "/home/Library/Logs", 0o755)
+            try? FileManager.default.removeItem(atPath: root)
+        }
+        try makeHome(root)
+        let snap = root + "/snap"
+        let home = ["--home", root + "/home"]
+        // 0 success, 1 error (depends on the disk), 2 usage error (depends only on the command line).
+        #expect(try cli.run(["clean", "logs"] + home, snapshotDir: snap).status == 0)
+        let none = try cli.run(["clean", "no-such-rule"] + home, snapshotDir: snap)
+        #expect(none.status == 1)
+        #expect(none.stderr == "fil: nothing matches 'no-such-rule'\n")
+        let bare = try cli.run(["clean"] + home, snapshotDir: snap)
+        #expect(bare.status == 2)
+        #expect(
+            bare.stderr == "fil: clean needs at least one candidate id or rule id\nRun 'fil help clean' for usage.\n")
+        // 3: a --yes run where an item fails. A read-only parent makes the move fail, so nothing reaches the Trash.
+        guard getuid() != 0 else { return }  // root ignores the permission bits
+        #expect(chmod(root + "/home/Library/Logs", 0o555) == 0)
+        let failed = try cli.run(["clean", "logs", "trash", "--yes"] + home, snapshotDir: snap)
+        #expect(failed.status == 3, "\(failed.stdout)\(failed.stderr)")
+        #expect(failed.stdout.contains("failed: "), "\(failed.stdout)")
+        #expect(failed.stdout.hasSuffix("\n1 item failed.\n"), "\(failed.stdout)")
+        #expect(FileManager.default.fileExists(atPath: root + "/home/Library/Logs/foo/f"))
+    }
+
+    @Test func everyHelpEndsWithItsExitStatus() throws {
+        let root = try ErrorHandlingTests.tempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let expected = [
+            "scan": "Exit status: 0 success, 1 error (DIR missing or not a directory), 2 usage error.",
+            "doctor": "Exit status: 0 granted, 1 missing or unknown, 2 usage error.",
+            "list": "Exit status: 0 success, 1 error, 2 usage error.",
+            "clean": "Exit status: 0 success, 1 error (nothing matches), 2 usage error, 3 one or more items failed.",
+        ]
+        for (command, line) in expected {
+            let r = try cli.run([command, "--help"], snapshotDir: root)
+            #expect(r.status == 0)
+            #expect(r.stdout.hasSuffix("\n\n" + line + "\n"), "\(command): \(r.stdout)")
+        }
+        let main = try cli.run(["--help"], snapshotDir: root)
+        #expect(
+            main.stdout.contains(
+                "Exit status:\n  0  success\n  1  error (doctor: Full Disk Access missing or unknown)\n"
+                    + "  2  usage error\n  3  clean --yes: one or more items failed\n"))
+        #expect(main.stdout.contains("--version, -V"))
+    }
 }

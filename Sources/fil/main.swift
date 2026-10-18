@@ -7,15 +7,21 @@ let mainHelp = """
     Usage: fil <command> [options]
 
     Commands:
-      scan [DIR]    Scan a directory and print its size (default: home folder)
-      doctor        Check Full Disk Access for the terminal app
-      list          List cleanup candidates in the home folder
-      clean <id>... Move cleanup candidates to the Trash (dry run unless --yes)
-      help [cmd]    Show help for a command
+      scan [DIR]          Scan a directory and print its size (default: home folder)
+      doctor              Check Full Disk Access for the terminal app
+      list                List cleanup candidates in the home folder
+      clean <id|rule>...  Clean candidates (dry run unless --yes)
+      help [command]      Show help for a command
 
     Options:
-      --help, -h    Show this help
-      --version     Print the version
+      --help, -h          Show this help
+      --version, -V       Print the version
+
+    Exit status:
+      0  success
+      1  error (doctor: Full Disk Access missing or unknown)
+      2  usage error
+      3  clean --yes: one or more items failed
 
     Run 'fil help <command>' for details.
     """
@@ -42,6 +48,8 @@ let scanHelp = """
     bytes du counts again for clones (not with --private); unreadable= is the number of folders that
     could not be read (permission denied). If some were privacy-protected, scan points to `fil doctor` (Full Disk
     Access for the terminal app).
+
+    Exit status: 0 success, 1 error (DIR missing or not a directory), 2 usage error.
     """
 
 let listHelp = """
@@ -51,6 +59,8 @@ let listHelp = """
       --json       machine-readable output
       --timings    phase and rule timings on stderr
       --no-color   plain output (also when NO_COLOR is set or stdout is not a terminal)
+
+    Exit status: 0 success, 1 error, 2 usage error.
     """
 
 let cleanHelp = """
@@ -60,6 +70,11 @@ let cleanHelp = """
       --yes        clean for real (default: dry run)
       --timings    phase and rule timings on stderr
       --no-color   plain output (also when NO_COLOR is set or stdout is not a terminal)
+
+    A rule id selects its safe and review items; name a careful item by its candidate id. Most items move to
+    the Trash; some rules run the tool's own removal command, which is permanent (shown as "would run:").
+
+    Exit status: 0 success, 1 error (nothing matches), 2 usage error, 3 one or more items failed.
     """
 
 func helpText(for command: String) -> String? {
