@@ -58,21 +58,21 @@ struct CachePathTests {
     func discovery() async throws {
         try await Fixture.withAsync("tools") { f in
             let mb = 2_000_000
-            try f.mk("custom/brew/f", bytes: mb)                 // brew --cache
+            try f.mk("custom/homebrew/f", bytes: mb)                 // brew --cache
             try f.mk("Library/Caches/Homebrew/f", bytes: mb)      // default, not reported: must not appear
             try f.mk("npmcache/_cacache/f", bytes: mb)            // npm: <reported>/_cacache
             try f.mk("npmcache/_logs/f", bytes: mb)               // npm logs are not the cache
-            try f.mk("gomod/f", bytes: mb)
-            try f.mk("gobuild/f", bytes: mb)
+            try f.mk("dev/gomod/f", bytes: mb)
+            try f.mk("dev/go-build/f", bytes: mb)
             try f.mk("Library/Caches/pip/f", bytes: mb)           // pip fails -> default
             try f.mk("Library/Caches/Yarn/f", bytes: mb)          // yarn times out -> default
             try f.mk(".cache/uv/f", bytes: mb)                    // uv prints garbage -> default
             try f.mk("Library/pnpm/store/f", bytes: mb)           // pnpm missing -> default, silently
             let b = "/fake/bin/"
             let (env, _) = fakeEnvironment(f, tools: ["brew", "npm", "go", "pip3", "yarn", "uv"], answers: [
-                b + "brew --cache": .success(f.path("custom/brew") + "\n"),
+                b + "brew --cache": .success(f.path("custom/homebrew") + "\n"),
                 b + "npm config get cache": .success(f.path("npmcache") + "\n"),
-                b + "go env GOMODCACHE GOCACHE": .success(f.path("gomod") + "\n" + f.path("gobuild") + "\n"),
+                b + "go env GOMODCACHE GOCACHE": .success(f.path("dev/gomod") + "\n" + f.path("dev/go-build") + "\n"),
                 b + "pip3 cache dir": .failed("exit 1: boom"),
                 b + "yarn cache dir": .timedOut,
                 b + "uv cache dir": .success("error: no cache\n"),
@@ -80,7 +80,8 @@ struct CachePathTests {
             let scan = try await scanWithTools(f, env)
             let ids = Set(scan.candidates.map(\.id))
             #expect(ids == [
-                "homebrew-cache:custom/brew", "pkg-caches:npmcache/_cacache", "pkg-caches:gomod", "pkg-caches:gobuild",
+                "homebrew-cache:custom/homebrew", "pkg-caches:npmcache/_cacache", "pkg-caches:dev/gomod",
+                "pkg-caches:dev/go-build",
                 "pkg-caches:Library/Caches/pip", "pkg-caches:Library/Caches/Yarn", "pkg-caches:.cache/uv",
                 "pkg-caches:Library/pnpm/store",
                 // The unreported default Homebrew folder is just another app cache now.
@@ -88,11 +89,20 @@ struct CachePathTests {
             ])
             for c in scan.candidates {
                 let want: Removal = switch c.id {
-                case "pkg-caches:gomod": .command(argv: ["/fake/bin/go", "clean", "-modcache"])
-                case "pkg-caches:gobuild": .command(argv: ["/fake/bin/go", "clean", "-cache"])
+                case "pkg-caches:dev/gomod": .command(argv: ["/fake/bin/go", "clean", "-modcache"])
+                case "pkg-caches:dev/go-build": .command(argv: ["/fake/bin/go", "clean", "-cache"])
                 default: .trash
                 }
                 #expect(c.removal == want, "\(c.id)")
+            }
+            // Reported and not the default: careful with a note; defaults stay as they were.
+            for c in scan.candidates {
+                let custom = ["homebrew-cache:custom/homebrew", "pkg-caches:npmcache/_cacache", "pkg-caches:dev/gomod",
+                              "pkg-caches:dev/go-build"].contains(c.id)
+                #expect(c.safety == (custom ? .careful : c.ruleId == "pkg-caches" ? .review : .safe), "\(c.id)")
+                if custom, let note = c.note, case .customCacheLocation = note {} else if custom {
+                    Issue.record("\(c.id): note \(String(describing: c.note))")
+                }
             }
             for c in scan.candidates { #expect(c.bytes == f.duBytes(String(c.path.dropFirst(f.root.count + 1)))) }
             let notes = scan.skippedCommands.joined(separator: "\n")
@@ -147,16 +157,92 @@ struct CachePathTests {
         }
     }
 
+    @Test("a reported path must be two levels below home and look like a cache; otherwise it is ignored with a note")
+    func depthAndMarker() async throws {
+        try await Fixture.withAsync("tools") { f in
+            let mb = 2_000_000
+            try f.mk("Projects/f", bytes: mb)                     // PIP_CACHE_DIR=~/Projects
+            try f.mk("Developer/f", bytes: mb)                    // HOMEBREW_CACHE=~/Developer
+            try f.mk("Documents/Taxes/f", bytes: mb)              // deep enough, but no marker
+            try f.mk("work/cache/f", bytes: mb)                   // generic marker
+            try f.mk("x/pip-cache/_cacache/f", bytes: mb)
+            try f.mk("tools/uv/f", bytes: mb)                     // exact marker
+            let b = "/fake/bin/"
+            let (env, _) = fakeEnvironment(f, tools: ["brew", "pip3", "yarn", "pnpm", "uv", "npm"], answers: [
+                b + "pip3 cache dir": .success(f.path("Projects") + "\n"),
+                b + "brew --cache": .success(f.path("Developer") + "\n"),
+                b + "yarn cache dir": .success(f.path("Documents/Taxes") + "\n"),
+                b + "pnpm store path": .success(f.path("work/cache") + "\n"),
+                b + "uv cache dir": .success(f.path("tools/uv") + "\n"),
+                b + "npm config get cache": .success(f.path("x/pip-cache") + "\n"),
+            ])
+            let scan = try await scanWithTools(f, env)
+            let pkg = Set(scan.candidates.filter { $0.ruleId == "pkg-caches" || $0.ruleId == "homebrew-cache" }.map(\.id))
+            #expect(pkg == ["pkg-caches:work/cache", "pkg-caches:tools/uv", "pkg-caches:x/pip-cache/_cacache"])
+            for c in scan.candidates where pkg.contains(c.id) {
+                #expect(c.safety == .careful, "\(c.id)")
+                guard case .customCacheLocation? = c.note else { Issue.record("\(c.id): \(String(describing: c.note))"); continue }
+            }
+            #expect(scan.candidates.first { $0.id == "pkg-caches:work/cache" }?.note?.description
+                == "pnpm keeps its cache in a non-default folder")
+            #expect(Set(scan.skippedCommands) == [
+                "pip3: reported cache ~/Projects does not look like a cache folder; ignored",
+                "brew: reported cache ~/Developer does not look like a cache folder; ignored",
+                "yarn: reported cache ~/Documents/Taxes does not look like a cache folder; ignored",
+            ])
+            // The folders themselves are never candidates of the cache rules.
+            #expect(!scan.candidates.contains { $0.path.hasSuffix("/Projects") || $0.path.hasSuffix("/Developer") })
+        }
+    }
+
+    @Test("a custom location is careful: a rule id leaves it out, its own id selects it; versioned defaults stay default")
+    func customIsCareful() async throws {
+        try await Fixture.withAsync("tools") { f in
+            try f.mk("x/pip-cache/f", bytes: 2_000_000)
+            try f.mk("Library/Caches/Yarn/v6/f", bytes: 2_000_000)
+            let b = "/fake/bin/"
+            let (env, _) = fakeEnvironment(f, tools: ["pip3", "yarn"], answers: [
+                b + "pip3 cache dir": .success(f.path("x/pip-cache") + "\n"),
+                b + "yarn cache dir": .success(f.path("Library/Caches/Yarn/v6") + "\n"),
+            ])
+            let scan = try await scanWithTools(f, env)
+            let r = try Cleanup.resolve(["pkg-caches"], in: scan.candidates)
+            #expect(r.chosen.map(\.id) == ["pkg-caches:Library/Caches/Yarn/v6"])
+            #expect(r.leftOut.map(\.id) == ["pkg-caches:x/pip-cache"])
+            #expect(try Cleanup.resolve(["pkg-caches:x/pip-cache"], in: scan.candidates).chosen.count == 1)
+        }
+    }
+
+    @Test("Go: if either path is refused, neither is reported; a custom pair is careful commands")
+    func goAllOrNothing() async throws {
+        try await Fixture.withAsync("tools") { f in
+            try f.mk("dev/gomod/f", bytes: 2_000_000)
+            try f.mk("Projects/f", bytes: 2_000_000)
+            try f.mk("dev/go-build/f", bytes: 2_000_000)
+            let q = "/fake/bin/go env GOMODCACHE GOCACHE"
+            let (bad, _) = fakeEnvironment(f, tools: ["go"], answers: [
+                q: .success(f.path("Projects") + "\n" + f.path("dev/go-build") + "\n")])
+            let scan = try await scanWithTools(f, bad)
+            #expect(!scan.candidates.contains { $0.ruleId == "pkg-caches" })
+            #expect(scan.skippedCommands == ["go: reported cache ~/Projects does not look like a cache folder; ignored"])
+            let (good, _) = fakeEnvironment(f, tools: ["go"], answers: [
+                q: .success(f.path("dev/gomod") + "\n" + f.path("dev/go-build") + "\n")])
+            let ok = try await scanWithTools(f, good)
+            #expect(ok.candidates.count == 2)
+            for c in ok.candidates { #expect(c.ruleId == "pkg-caches" && c.safety == .careful) }
+        }
+    }
+
     @Test("answers are cached by binary and key; a cached answer skips the command")
     func pathCache() async throws {
         try await Fixture.withAsync("tools") { f in
-            try f.mk("custom/brew/f", bytes: 2_000_000)
+            try f.mk("custom/homebrew/f", bytes: 2_000_000)
             let cache = ToolPathCache(file: URL(fileURLWithPath: f.path("state/tool-paths.json")))
-            let answers: [String: CommandResult] = ["/fake/bin/brew --cache": .success(f.path("custom/brew") + "\n")]
+            let answers: [String: CommandResult] = ["/fake/bin/brew --cache": .success(f.path("custom/homebrew") + "\n")]
             let (env1, runner1) = fakeEnvironment(f, tools: ["brew"], answers: answers, cache: cache)
             let first = await CacheTools.discover(env1)
             #expect(runner1.calls == ["/fake/bin/brew --cache"])
-            #expect(cache.load()["brew"]?.paths == [f.path("custom/brew")])
+            #expect(cache.load()["brew"]?.paths == [f.path("custom/homebrew")])
             let (env2, runner2) = fakeEnvironment(f, tools: ["brew"], answers: [:], cache: cache)
             let second = await CacheTools.discover(env2)
             #expect(runner2.calls.isEmpty)

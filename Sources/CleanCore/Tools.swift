@@ -128,30 +128,38 @@ struct CacheTool: Sendable {
     var configFiles: [String] = []
     /// Environment variables that move the cache; part of the cache key.
     var envKeys: [String] = []
+    /// A reported cache path must have a component containing `cache` or one of these (lowercase, substring),
+    /// or a component equal to one of `exactMarkers`; see chapter 04 §6.7.2.
+    var markers: [String] = []
+    var exactMarkers: [String] = []
 
     var argv: [String] { [name] + args }
 }
 
 enum CacheTools {
     static let brew = CacheTool(name: "brew", args: ["--cache"], defaults: ["Library/Caches/Homebrew"],
-                                configFiles: [".homebrew/brew.env"], envKeys: ["HOMEBREW_CACHE", "XDG_CACHE_HOME"])
+                                configFiles: [".homebrew/brew.env"], envKeys: ["HOMEBREW_CACHE", "XDG_CACHE_HOME"],
+                                markers: ["homebrew"])
     static let packageManagers: [CacheTool] = [
         CacheTool(name: "npm", args: ["config", "get", "cache"], defaults: [".npm"], subpath: "_cacache",
-                  configFiles: [".npmrc"], envKeys: ["npm_config_cache", "NPM_CONFIG_CACHE"]),
+                  configFiles: [".npmrc"], envKeys: ["npm_config_cache", "NPM_CONFIG_CACHE"], markers: ["npm"],
+                  exactMarkers: ["_cacache"]),
         CacheTool(name: "pnpm", args: ["store", "path"], defaults: ["Library/pnpm/store"],
                   configFiles: ["Library/Preferences/pnpm/rc", ".npmrc"],
-                  envKeys: ["PNPM_HOME", "npm_config_store_dir", "XDG_DATA_HOME"]),
+                  envKeys: ["PNPM_HOME", "npm_config_store_dir", "XDG_DATA_HOME"], markers: ["pnpm"],
+                  exactMarkers: ["store"]),
         CacheTool(name: "yarn", args: ["cache", "dir"], defaults: ["Library/Caches/Yarn"],
-                  configFiles: [".yarnrc", ".yarnrc.yml"], envKeys: ["YARN_CACHE_FOLDER", "XDG_CACHE_HOME"]),
+                  configFiles: [".yarnrc", ".yarnrc.yml"], envKeys: ["YARN_CACHE_FOLDER", "XDG_CACHE_HOME"], markers: ["yarn"]),
         CacheTool(name: "go", args: ["env", "GOMODCACHE", "GOCACHE"],
                   defaults: ["go/pkg/mod", "Library/Caches/go-build"],
                   configFiles: ["Library/Application Support/go/env"],
-                  envKeys: ["GOPATH", "GOMODCACHE", "GOCACHE", "GOENV"]),
+                  envKeys: ["GOPATH", "GOMODCACHE", "GOCACHE", "GOENV"], markers: ["go-build", "gomod"],
+                  exactMarkers: ["mod", "go"]),
         CacheTool(name: "pip3", args: ["cache", "dir"], defaults: ["Library/Caches/pip"],
                   configFiles: [".config/pip/pip.conf", "Library/Application Support/pip/pip.conf", ".pip/pip.conf"],
-                  envKeys: ["PIP_CACHE_DIR", "PIP_CONFIG_FILE", "XDG_CACHE_HOME"]),
+                  envKeys: ["PIP_CACHE_DIR", "PIP_CONFIG_FILE", "XDG_CACHE_HOME"], markers: ["pip"]),
         CacheTool(name: "uv", args: ["cache", "dir"], defaults: [".cache/uv"],
-                  configFiles: [".config/uv/uv.toml"], envKeys: ["UV_CACHE_DIR", "XDG_CACHE_HOME"]),
+                  configFiles: [".config/uv/uv.toml"], envKeys: ["UV_CACHE_DIR", "XDG_CACHE_HOME"], exactMarkers: ["uv"]),
     ]
     static var all: [CacheTool] { [brew] + packageManagers }
 

@@ -34,7 +34,9 @@ public enum Rules {
         Rule(id: "homebrew-cache", title: "Homebrew downloads",
              explanation: "Installer files Homebrew downloaded earlier; they download again if needed.") { ctx in
             await cacheLocations(ctx, [CacheTools.brew]).compactMap { loc in
-                ctx.node(absolute: loc.path).flatMap { ctx.make(rule: "homebrew-cache", node: $0, safety: .safe) }
+                ctx.node(absolute: loc.path).flatMap {
+                    ctx.make(rule: "homebrew-cache", node: $0, safety: loc.custom ? .careful : .safe, note: loc.note)
+                }
             }
         },
         Rule(id: "pkg-caches", title: "Developer package caches",
@@ -44,7 +46,8 @@ public enum Rules {
             }
             return (await cacheLocations(ctx, CacheTools.packageManagers) + fixed).compactMap { loc in
                 ctx.node(absolute: loc.path).flatMap {
-                    ctx.make(rule: "pkg-caches", node: $0, safety: .review, removal: loc.removal)
+                    ctx.make(rule: "pkg-caches", node: $0, safety: loc.custom ? .careful : .review, note: loc.note,
+                             removal: loc.removal)
                 }
             }
         },
@@ -116,6 +119,9 @@ public enum Rules {
     struct CacheLocation {
         let path: String
         let removal: Removal
+        /// The tool keeps its cache somewhere else than its default (chapter 04 §6.7.3).
+        var custom = false
+        var note: CandidateNote? = nil
     }
 
     /// Folders that hold more than one tool's data: a tool reporting one of these (or home) as its cache is
@@ -126,6 +132,17 @@ public enum Rules {
         "Library/Logs", "Documents", "Desktop", "Downloads", "Movies", "Music", "Pictures", "Public", "Applications",
         ".cache", ".config", ".local", ".local/share", ".local/state", ".Trash", "go", "go/pkg",
     ]
+
+    /// What the location checks say about one tool-reported path.
+    private enum LocationVerdict {
+        /// Already reported by an earlier tool in this rule.
+        case duplicate
+        /// Home, a shared folder, or not below home: ignored without a message.
+        case shared
+        /// Too shallow or no cache marker: ignored with a `skippedCommands` line.
+        case notCache(relative: String)
+        case accepted(custom: Bool)
+    }
 
     /// Absolute candidate paths reported by `tools`, or their defaults, with their removal. The Go caches are
     /// read-only on disk, so they are removed by `go clean` and only reported when `go` itself named them.
@@ -142,11 +159,50 @@ public enum Rules {
             } else {
                 removals = Array(repeating: .trash, count: paths.count)
             }
-            for (p, removal) in zip(paths, removals) where seen.insert(p).inserted && !isSharedLocation(p, ctx) {
-                out.append(CacheLocation(path: p, removal: removal))
+            let defaults = CacheTools.defaults(tool, home: resolvedPath(ctx.home))
+            var verdicts: [LocationVerdict] = []
+            for (i, p) in paths.enumerated() {
+                verdicts.append(seen.insert(p).inserted ? verdict(p, tool: tool, defaultPath: defaults[i], ctx)
+                                                        : .duplicate)
+            }
+            // `go clean` removes the whole directory Go names: if either Go path is refused, report neither.
+            if tool.name == "go", verdicts.contains(where: {
+                switch $0 { case .shared, .notCache: true; case .duplicate, .accepted: false }
+            }) {
+                for case .notCache(let r) in verdicts { ctx.noteSkippedCommand(notCacheLine(tool, r)) }
+                continue
+            }
+            for (i, v) in verdicts.enumerated() {
+                switch v {
+                case .duplicate, .shared: break
+                case .notCache(let r): ctx.noteSkippedCommand(notCacheLine(tool, r))
+                case .accepted(let custom):
+                    out.append(CacheLocation(path: paths[i], removal: removals[i], custom: custom,
+                                             note: custom ? .customCacheLocation(tool: tool.name) : nil))
+                }
             }
         }
         return out
+    }
+
+    private static func notCacheLine(_ tool: CacheTool, _ relative: String) -> String {
+        "\(tool.name): reported cache ~/\(relative) does not look like a cache folder; ignored"
+    }
+
+    /// Chapter 04 §6.7.2 and §6.7.3 for one reported path, on the `realpath` of path, home and default.
+    private static func verdict(_ path: String, tool: CacheTool, defaultPath: String, _ ctx: RuleContext)
+        -> LocationVerdict {
+        if isSharedLocation(path, ctx) { return .shared }
+        let home = resolvedPath(ctx.home), real = resolvedPath(path)
+        guard real.hasPrefix(home + "/") else { return .shared }
+        let relative = String(real.dropFirst(home.count + 1))
+        let components = relative.split(separator: "/").map { $0.lowercased() }
+        let marked = components.contains { c in
+            c.contains("cache") || tool.markers.contains { c.contains($0) } || tool.exactMarkers.contains(c)
+        }
+        guard components.count >= 2, marked else { return .notCache(relative: relative) }
+        let def = resolvedPath(defaultPath)
+        return .accepted(custom: !(real == def || real.hasPrefix(def + "/")))
     }
 
     static func isSharedLocation(_ path: String, _ ctx: RuleContext) -> Bool {

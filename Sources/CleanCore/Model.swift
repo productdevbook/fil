@@ -25,6 +25,8 @@ public enum CandidateNote: Sendable, Equatable, CustomStringConvertible {
     case simulatorRuntime(name: String)
     /// The size is Docker's own figure for data inside its virtual disk.
     case dockerEstimate
+    /// A tool reported a cache folder other than its default (an environment variable or a config file moved it).
+    case customCacheLocation(tool: String)
 
     public var description: String {
         switch self {
@@ -34,6 +36,7 @@ public enum CandidateNote: Sendable, Equatable, CustomStringConvertible {
         case .projectArtifact(let kind, let days): "\(kind), manifest untouched \(days) days"
         case .simulatorRuntime(let name): "\(name), no simulator uses it"
         case .dockerEstimate: "size reported by Docker; its disk image shrinks later"
+        case .customCacheLocation(let tool): "\(tool) keeps its cache in a non-default folder"
         }
     }
 }
