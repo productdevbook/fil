@@ -15,7 +15,7 @@ The design is the source of every issue: to change a rule, change the chapter fi
 | [06 · Map layout](06-map-layout.md) | MapCore: squarified treemap and two-level layout |
 | [07 · Build and release](07-build-and-release.md) | Package, CI, verify scripts, signing, notarization, GitHub release, Homebrew cask, repository files |
 | [08 · Roadmap](08-roadmap.md) | Milestones in build order |
-| [Backlog](backlog.md) | Every work item, `F-001`…`F-048` |
+| [Backlog](backlog.md) | Every work item, `F-001`…`F-049` |
 
 ## Status tags
 
@@ -106,7 +106,7 @@ One name per thing, used in every chapter, issue, option and field. Add new IDs 
 
 `DiskTree`, node, dead node, `DirReader`, `ScanOptions`, `ScanStats`, `HardlinkRegistry`, `CloneRegistry`, clone
 family, original, full / partial clone, firmlink, alias, data root, `FirmlinkTable`, `rawNames` (F-006),
-`checkOwnDevice` (F-004), allocation unit (F-048).
+`checkOwnDevice` (F-004), allocation unit (F-048), `DirNode.fileID` / folder identity (F-049).
 
 ### Incremental updates and snapshots
 

@@ -409,6 +409,27 @@ settings and secrets only a person with admin rights can change).
   - At most one `HardlinkRegistry` lock per directory (chapter 01 per-directory budget).
   - Bench on a fixture with 200,000 hard links: full scan time not worse, lock count per directory ≤ 1.
 
+### F-049 · Folders keep their identity across updates
+
+- **Area** scan · **Owner** macos-engineer · **Priority** P3 · **Depends on** F-043 · **Chapters** 03 §5.2, §6.5; 01 §5.1,
+  §12, As built (#7)
+- **Why M5:** the case needs an incomplete re-read of the parent (an I/O error mid-directory) and a same-named
+  folder recreated in the same window, and the parent is already flagged incomplete, so the number is not shown as
+  exact. The fix costs 8 bytes per folder (`DirNode` stride 96 → 104), which M5 measures with F-043, and touches
+  the update child diff that F-016 and F-017 also change. The snapshot section is optional, so it needs no format
+  change in v0.2.0.
+- **Acceptance**
+  - `DirNode.fileID` holds the directory's `ATTR_CMN_FILEID` (root: `st_ino`); `MemoryLayout<DirNode>.stride == 104`
+    and chapter 01 §12 says so.
+  - In an update, a known child whose stored non-zero `fileID` differs from its listing, or from the `lstat` of an
+    unlisted child after an incomplete re-read, is killed and walked as new (chapter 03 §5.2).
+  - Test (`Incremental.applyTracked` with one event on `P`, re-read of `P` made incomplete by the `DirFaults` hook,
+    `bulk` `EIO`): after `P/C` is deleted and recreated with other contents, `C`'s total equals `du -skx P/C` × 1024
+    and `P` stays incomplete. The same test fails before the change.
+  - Snapshot section tag 7 (not must-understand): round trip keeps every `fileID`; a format-6 file without it loads
+    with `fileID = 0` and updates as before; a count other than the node count is `corrupt`.
+  - `scripts/bench.sh`: full scan and update within the chapter 01 §12 budget.
+
 ---
 
 ## M6 · Map

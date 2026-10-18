@@ -37,7 +37,11 @@ Items: F-009, F-010, F-041, F-012, F-042, F-026.
 
 **Goal:** incremental updates cost what changed, not what exists, measured against a fixed budget.
 
-Items: F-043, F-044, F-016, F-017, F-018.
+Items: F-043, F-044, F-016, F-017, F-018, F-049.
+
+F-049 (folder identity) is a correctness fix placed here, not in M1: the case is rare and already flagged
+incomplete, it raises the memory budget (8 bytes per folder) that F-043 measures, and it changes the same update
+child diff as F-016 and F-017. Its snapshot section is optional, so v0.2.0's format 6 does not wait for it.
 
 ## M6 · Map
 
@@ -94,7 +98,7 @@ Every agent file gets `disallowedTools: Agent` and only that: no list of unrelat
 | M2 · Safe cleaning | 7 | F-002, F-003, F-008, F-013, F-014, F-021, F-038 | 0 | 6 | 1 | 0 | 0 | 0 |
 | M3 · Releases you can trust | 9 (+1 withdrawn) | F-022–F-025, F-028–F-031, F-039, F-040 | 0 | 0 | 0 | 0 | 8 | 1 |
 | M4 · Scriptable CLI | 6 | F-009, F-010, F-012, F-026, F-041, F-042 | 0 | 0 | 6 | 0 | 0 | 0 |
-| M5 · Scales | 5 | F-016–F-018, F-043, F-044 | 5 | 0 | 0 | 0 | 0 | 0 |
+| M5 · Scales | 6 | F-016–F-018, F-043, F-044, F-049 | 6 | 0 | 0 | 0 | 0 | 0 |
 | M6 · Map | 1 | F-019 | 0 | 0 | 0 | 1 | 0 | 0 |
 | M7 · Finishing touches | 2 | F-027, F-045 | 0 | 0 | 1 | 0 | 1 | 0 |
-| **Total** | **46 (+1 withdrawn, 1 not used)** | F-001–F-048 | 18 | 6 | 10 | 1 | 9 | 2 |
+| **Total** | **47 (+1 withdrawn, 1 not used)** | F-001–F-049 | 19 | 6 | 10 | 1 | 9 | 2 |

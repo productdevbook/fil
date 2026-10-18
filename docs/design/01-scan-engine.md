@@ -255,6 +255,10 @@ directory. `MemoryLayout<DirNode>.stride == 96` bytes; names of up to 15 UTF-8 b
 
 **[Change] (#7)** Add `incomplete: Bool` at offset 5 (padding; stride unchanged).
 
+**[Change] (#49)** Add `fileID: UInt64` at offset 96 (`ATTR_CMN_FILEID` of the directory; 0 = unknown), so an
+update can tell a recreated folder from the old one (chapter 03 §5.2). Stride 96 → 104 bytes (+8 MB per million
+folders); no padding is left for it.
+
 ### 5.2 `DiskTree` fields
 
 **[Exists]** (`DiskTree.swift:283`), a `final class`.
@@ -523,7 +527,7 @@ Budget **[New]**, checked by `scan-tester` before any engine change is merged:
 | Throughput floor | >= 190k files/s on a warm cache tree of >= 1 M files |
 | Per-file cost | no syscall, lock or heap allocation per file, except per multiply-linked file (one registry claim, batched per directory after #18) and `vet` during updates |
 | Per-directory cost | one `open`, one `close`, `getattrlistbulk` calls, one `cond` round-trip, <= 1 `CloneRegistry` lock, <= 1 `HardlinkRegistry` lock (after #18); plus one `fstat` for incremental reads (#4) |
-| Memory | 96 bytes per directory + names > 15 bytes + registries; 256 KB buffer per worker |
+| Memory | 96 bytes per directory (104 after #49) + names > 15 bytes + registries; 256 KB buffer per worker |
 | `--private` | allowed to exceed the budget (opt-in) |
 
 ## 13. Tests
@@ -582,9 +586,9 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
 - Second review (2026-10-18): (1) on an incomplete re-read each unlisted known child gets one `lstat` (by bytes for a
   raw name) and is kept only while it is a directory on the tree's volume; a rename seen only as the parent's event
   is no longer counted twice. Reading: `DirNode` stores no inode, so a folder deleted and recreated under the same
-  name in between is kept with its old sizes until its next read. (2) Every update re-reads each live `incomplete`
-  folder, also with no events (one pass over the node flags per update); a flagged folder whose own path is gone
-  has its parent read too. (3) Names identify children by UTF-8 bytes: `ChildKey` compares bytes, and
+  name in between is kept with its old sizes until its next read (#49 adds the identity: §5.1, chapter 03
+  §5.2). (2) Every update re-reads each live `incomplete` folder, also with no events (one pass over the node
+  flags per update); a flagged folder whose own path is gone has its parent read too. (3) Names identify children by UTF-8 bytes: `ChildKey` compares bytes, and
   `DiskTree.child(of:named:)` prefers a byte-equal name and falls back to a canonically equal one, so events and
   typed paths in another normalization still find their folder.
 
@@ -603,7 +607,7 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
   (porcelain `uncertain=`); strict / tolerant hard links.
 - Denied (`openErrors`); entry error (`entryErrors`); gone (`isGone`).
 - Incomplete directory (**[New]**, #7).
-- Allocation unit (**[New]**, #48, chapter 02).
+- `DirNode.fileID`, folder identity (**[New]**, #49); allocation unit (**[New]**, #48, chapter 02).
 - `rawNames` (**[New]**, #6); `DirReader.Config.checkOwnDevice` (**[New]**, #4, shared with chapter 03).
 - Naive mode (`--naive`); `FIL_TIMINGS`; `FIL_SNAPSHOT_DIR`.
 - Full scan (`--full`).

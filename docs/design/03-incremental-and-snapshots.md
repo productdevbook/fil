@@ -226,6 +226,22 @@ Child diff, by name (`Set<String>`):
 | known, now listable, was `unreadable` | walked in full (`readable`) |
 | on disk, unknown | appended as `DirNode(parent: id, name:)`, walked in full (`newDirs`) |
 
+**[Change] (#49)** Children are matched by name only, so a folder deleted and recreated under the same name is
+taken for the old one. Usually the old folder's own events re-read it; but when the parent's re-read is
+incomplete, an unlisted known child is kept after one `lstat` (chapter 01, As built #7), and a recreated folder
+keeps the old folder's sizes until its next read. The parent is flagged incomplete, which promises a lower bound;
+the kept sizes can be larger than the truth, so the flag does not cover them. Rule:
+
+- `DirNode` stores `fileID` (`ATTR_CMN_FILEID` of the directory, already in every listing record; the root's
+  `st_ino` from the `lstat` the scan already makes). `0` means unknown: no check.
+- In the child diff, a known child whose stored `fileID` is not 0 and differs from the listed one is a different
+  folder: the old node is killed and the name is handled as "on disk, unknown" (appended, walked in full).
+- An unlisted known child of an incomplete re-read is compared the same way with the `st_ino` of its existing
+  `lstat`; a mismatch kills it and walks the folder as new. No extra syscall.
+- Rescans, new folders and mount-point recoveries set `fileID` from the listing that found them.
+- Limit: FAT derives file ids from directory-entry positions, so a recreated folder there can get the old id and
+  is not detected (as today). APFS never reuses an id within a volume.
+
 ### 5.3 Full (recursive) rescan
 
 - **[Exists]** `full` ids are not re-read shallowly: all their children are killed and the id itself becomes a
@@ -457,6 +473,11 @@ add it to the `snapshot load` line. `nil`-returning behaviour is otherwise uncha
   optional section (tag 5, 72 bytes) instead of moving `volumeUUID` (the header text above for #15 is superseded); a
   file without it simply has no last-known stats. #33 changes only the file name. A change that older format-6
   readers must not ignore uses a tag with bit 31 set.
+- **[Change] (#49)** Section tag `7`, **not** must-understand: folder identities. Payload: count u32 (must equal
+  the node count, else `corrupt`), then `fileID` u64 per node in id order. Written when any node has a non-zero
+  `fileID`; `compact` runs first, so the order matches the nodes section. A reader that ignores it, or a file
+  without it, has `fileID = 0` everywhere and behaves exactly as before #49 (no check until the next read), so no
+  number becomes wrong and older format-6 readers may skip it.
 - `load(rootPath:options:)` compares the whole mode byte with `privateSize | crossDevices << 1`; the
   `load(rootPath:privateSize:crossDevices:)` form defaults `crossDevices` to false (`list`/`clean` unchanged).
 - `advance` also refuses a tree that an update changed (`DiskTree.changedSinceSave`, set when `apply` does any work,
@@ -678,6 +699,7 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
 - **strict / tolerant hard links** — `ScanOptions.strictHardlinks`.
 - **uncertain bytes** — `DiskTree.uncertainBytes`, porcelain `uncertain=`.
 - **root prefixes / data-volume twin** — `Incremental.rootPrefixes`.
+- **folder identity** — `DirNode.fileID` (**[New]**, #49), snapshot section tag 7.
 - **advance** — `Snapshot.advance`, header-only update of event id and scan start.
 - **mode byte** — header byte 8 (bit 0 `privateSize`, bit 1 `crossDevices` after #5).
 - **last-known result** — sizes shown with a `Results from HH:mm` label, section 9.
