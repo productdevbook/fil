@@ -914,6 +914,12 @@ the CLA check on Your first pull request".
 
 ## As built
 
+- #23 (2026-10-18): actions pinned to the latest v4.x, not the newest majors (checkout v4.4.0, upload-artifact
+  v4.6.2, download-artifact v4.3.0), to avoid untested major jumps; Dependabot proposes the majors.
+- #24: `tap` taps `productdevbook/tap` with the deploy key, renders `packaging/homebrew/fil.rb.in` into it, audits
+  and installs from the local tap, smoke-tests `fil --version` and `fil scan --porcelain`, then pushes. The
+  template has no completion/man stanzas until #27/#45.
+
 ## Glossary additions
 
 - **Developer ID**: Apple's certificate for signing software distributed outside the App Store; `fil` is signed
