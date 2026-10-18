@@ -81,6 +81,18 @@ public struct FirmlinkTable: Sendable, Equatable {
         .sorted { $0.dataPath < $1.dataPath }
     }
 
+    /// The data-volume spelling of a path given through a firmlink (`/private/tmp/x` →
+    /// `/System/Volumes/Data/private/tmp/x`), or nil when `path` is under no firmlink. The longest source wins.
+    public func dataVolumePath(_ path: String) -> String? {
+        guard !dataRoot.isEmpty else { return nil }
+        var best: Link?
+        for l in links where Self.isInside(path, l.source, orEqual: true) && l.source.count > (best?.source.count ?? 0) {
+            best = l
+        }
+        guard let l = best else { return nil }
+        return dataRoot + "/" + l.target + path.dropFirst(l.source.count)
+    }
+
     static func isInside(_ path: String, _ root: String, orEqual: Bool) -> Bool {
         if path == root { return orEqual }
         return root == "/" || path.hasPrefix(root + "/")

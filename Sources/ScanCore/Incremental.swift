@@ -4,6 +4,7 @@ import Foundation
 import Synchronization
 
 public struct UpdateReport: Sendable {
+    /// Events inside the tree delivered before the barrier (directory-level, so several changes may share one).
     public var events = 0
     public var dirsRead = 0          // directories re-read on their own (contents changed)
     public var subtreesScanned = 0   // new or flagged directories walked in full
@@ -13,6 +14,14 @@ public struct UpdateReport: Sendable {
     /// Tolerant mode: bytes this update added to `DiskTree.uncertainBytes`, and the first such files.
     public var uncertainBytes: Int64 = 0
     public var uncertainPaths: [String] = []
+    /// Volumes found mounted on a folder of the tree, plus recorded mount points found unmounted (neither leaves an
+    /// event in the history).
+    public var mountChanges = 0
+
+    /// The update read, walked or removed a directory: the tree may differ from the snapshot it was loaded from, so
+    /// it must be saved (not `Snapshot.advance`d) and is not "up to date". False when every event fell outside the
+    /// tree (the barrier's own folder, ...).
+    public var treeChanged: Bool { dirsRead > 0 || subtreesScanned > 0 || dirsRemoved > 0 }
 }
 
 /// Why an incremental update was not possible; the caller then does a full scan.
@@ -79,13 +88,24 @@ public enum Incremental {
         case .failure(let why): return .failure(why)
         case .success(let h): history = h
         }
-        report.events = history.events.count
+        if Timings.enabled {
+            for e in history.events {
+                FileHandle.standardError.write(Data("[timing] update.event \(e.mustScanSubDirs ? "(subdirs) " : "")\(e.path)\n".utf8))
+            }
+        }
+        // Only changes inside the tree count. The stream also watches the barrier directory, and the creation and
+        // removal of the previous barrier directories are reported on their parent, the temporary folder: one event
+        // on almost every run that is not a change of the tree (unless the tree holds that folder).
+        let prefixes = rootPrefixes(tree.rootPath)
+        let events = history.events.filter { relativeComponents($0.path, prefixes: prefixes, aliases: tree.aliases) != nil }
+        report.events = events.count
         report.historyTime = ContinuousClock.now - start
-        t.lap("history(\(history.events.count) events)")
+        t.lap("history(\(history.events.count) events, \(events.count) inside the tree)")
 
         let applyStart = ContinuousClock.now
-        if let why = applyTracked(history.events, to: tree, options: options, report: &report) { return .failure(why) }
+        if let why = applyTracked(events, to: tree, options: options, report: &report) { return .failure(why) }
         t.lap("apply")
+        if report.treeChanged { tree.changedSinceSave = true }
         tree.eventId = history.barrierId
         tree.scanStart = startWallClock
         if tree.hardlinks.unattributed {
@@ -120,9 +140,10 @@ public enum Incremental {
         // FSEvents keeps no Mount or Unmount event in its history (they are delivered live only), so a volume mounted
         // on a directory of the tree since the snapshot, or unmounted from a recorded mount point, is found in the
         // mount table.
-        let mounts = options.crossDevices ? MountChanges() : mountChanges(tree, prefixes: prefixes, aliases: aliases)
+        let mounts = options.crossDevices ? MountChanges()
+            : mountChanges(tree, prefixes: prefixes, aliases: aliases, firmlinks: options.firmlinks)
         guard !events.isEmpty || !mounts.mounted.isEmpty || !mounts.uncovered.isEmpty else { return nil }
-        tree.changedSinceSave = true
+        report.mountChanges = mounts.mounted.count + mounts.uncovered.count
         func unattributed() -> UpdateFailure { .unattributedHardLink(paths: tree.hardlinks.unattributedPaths) }
         var t = Timings.Lap("apply")
         let firstNew = tree.nodes.count
@@ -355,8 +376,15 @@ public enum Incremental {
     /// the tree lookup first (no `lstat` of an unrelated, perhaps slow, network volume). A volume on our own device
     /// (the data volume of the boot volume group) is part of the tree. If the table cannot be read, every recorded
     /// mount point's parent is re-read: a few directory listings, never a stale folder.
-    static func mountChanges(_ tree: DiskTree, prefixes: [String], aliases: [FirmlinkTable.Alias]) -> MountChanges {
+    /// The mount table names a mount point by its firmlink path (`/private/tmp/t/mnt`); for a root given by its
+    /// data-volume path (`/System/Volumes/Data/private/tmp/t`, or the data volume itself) such a name is rewritten to
+    /// the data-volume form before it is matched. A recorded mount point not found in the table is checked with one
+    /// `lstat` before it is called gone: the table keeps the old name after a parent is renamed.
+    static func mountChanges(_ tree: DiskTree, prefixes: [String], aliases: [FirmlinkTable.Alias],
+                             firmlinks: FirmlinkTable) -> MountChanges {
         var out = MountChanges()
+        let onDataVolume = !firmlinks.dataRoot.isEmpty
+            && FirmlinkTable.isInside(tree.rootPath, firmlinks.dataRoot, orEqual: true)
         let recordedParents = { Array(Set(tree.mountPoints.map(\.parent))) }
         let count = getfsstat(nil, 0, MNT_NOWAIT)
         guard count > 0 else {
@@ -378,9 +406,11 @@ public enum Incremental {
             let path = withUnsafeBytes(of: mounts[i].f_mntonname) { raw in
                 String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
             }
-            guard let comps = relativeComponents(path, prefixes: prefixes, aliases: aliases), let last = comps.last else {
-                continue
+            var comps = relativeComponents(path, prefixes: prefixes, aliases: aliases)
+            if comps == nil && onDataVolume, let dataPath = firmlinks.dataVolumePath(path) {
+                comps = relativeComponents(dataPath, prefixes: prefixes, aliases: aliases)
             }
+            guard let comps, let last = comps.last else { continue }
             if !synced {
                 tree.syncLinks()
                 synced = true
@@ -404,6 +434,10 @@ public enum Incremental {
         }
         var parents = Set<Int32>()
         for m in tree.mountPoints where !current.contains(m) && !tree.nodes[Int(m.parent)].isDead {
+            // Still another volume's root under the tree's name for it: not gone.
+            let base = tree.path(of: Int(m.parent))
+            var st = stat()
+            if lstat((base == "/" ? "" : base) + "/" + m.name, &st) == 0 && st.st_dev != tree.rootDev { continue }
             if parents.insert(m.parent).inserted { out.uncovered.append(m.parent) }
         }
         return out

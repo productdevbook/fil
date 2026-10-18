@@ -48,7 +48,7 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         switch Incremental.update(cached, options: options) {
         case .success(let report):
             tree = cached
-            unchanged = report.events == 0
+            unchanged = !report.treeChanged
             phase("incremental update", t, "  (\(report.events) events"
                 + (report.uncertainBytes > 0 ? ", \(report.uncertainBytes) uncertain bytes" : "") + ")")
         case .failure(let why):

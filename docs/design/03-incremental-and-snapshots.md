@@ -600,8 +600,17 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   `getfsstat` fails, every record's parent is re-read. A tree with records but no event still runs `apply`.
   Checked: `fil scan /private/var/run` records 6 cryptex/system mounts and the next runs re-read nothing; `fil scan /`
   (17 mounts skipped) re-reads no more directories than its events ask for.
-  Not done: the `scan` summary still says `up to date from snapshot` for an update whose only change was a mount or
-  unmount (sizes are right; the text counts events).
+- #5 review fixes (2026-10-18): (1) the mount table names a mount point by its firmlink path; for a root given by its
+  data-volume path (or the data volume itself) `mountChanges` rewrites such names with
+  `FirmlinkTable.dataVolumePath` before matching (chosen over adding prefixes: it also covers a root at
+  `/System/Volumes/Data`, where no single prefix maps). (2) A record not found in the table is called gone only if
+  `lstat(parent path + name)` no longer shows another device (one syscall per unmatched record). (3)
+  `UpdateReport.treeChanged` (a directory was read, walked or removed) decides `up to date from snapshot`,
+  `advance` (`changedSinceSave` is set only then) and the `list`/`clean` advance; the change count is
+  `events + mountChanges`, and `-v` shows `N mount changes` when non-zero. (4) Idle runs reported 1 event: the
+  creation/removal of our barrier directories is reported on the temporary folder, their parent, and replayed by
+  the next run. `UpdateReport.events` now counts only events inside the tree (§2's "raw event count" and §3's
+  "including ones outside the root" are superseded); `FIL_TIMINGS=1` prints every replayed event path.
 
 ## Glossary additions
 

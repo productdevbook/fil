@@ -81,10 +81,14 @@ func runScan(_ arguments: [String]) throws {
             case .success(let report):
                 tree = cached
                 usedIncremental = true
-                unchanged = report.events == 0
-                summary = report.events == 0 ? "up to date from snapshot"
-                    : "updated from snapshot, \(count(Int64(report.events))) change\(report.events == 1 ? "" : "s")"
+                // Labelled by what the update did to the tree: events outside it change nothing, while a mount or
+                // unmount (no event) does.
+                unchanged = !report.treeChanged
+                let changes = report.events + report.mountChanges
+                summary = unchanged ? "up to date from snapshot"
+                    : "updated from snapshot, \(count(Int64(changes))) change\(changes == 1 ? "" : "s")"
                 mode = "incremental: load \(ms(loadTime)), \(report.events) events in \(ms(report.historyTime)), "
+                    + (report.mountChanges > 0 ? "\(report.mountChanges) mount changes, " : "")
                     + "apply \(ms(report.applyTime)) (\(report.dirsRead) dirs re-read, "
                     + "\(report.subtreesScanned) subtrees walked, \(report.dirsRemoved) removed)"
             case .failure(let why):

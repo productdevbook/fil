@@ -210,8 +210,8 @@ struct IncrementalFSEventsTests {
                     return
                 }
                 // `report.events` may count the fixture's own creation, which fseventsd numbers late (sometimes over
-                // several updates). Such an update changed the tree: `advance` refuses it and the caller saves.
-                for _ in 0..<10 where report.events > 0 {
+                // several updates). If that made the update re-read the tree, `advance` refuses it and the caller saves.
+                for _ in 0..<10 where report.treeChanged {
                     #expect(!Snapshot.advance(loaded, in: dir))
                     try Snapshot.save(loaded, in: dir)
                     loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
@@ -221,7 +221,7 @@ struct IncrementalFSEventsTests {
                     }
                     report = next
                 }
-                try #require(report.events == 0, "fseventsd kept reporting the fixture's creation")
+                try #require(!report.treeChanged, "fseventsd kept reporting the fixture's creation")
                 #expect(loaded.eventId >= baseline.eventId)
                 #expect(Snapshot.advance(loaded, in: dir))
                 let again = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
@@ -387,6 +387,78 @@ struct IncrementalFSEventsTests {
                 #expect(full.root.totalAlloc == f.duBytes())
                 #expect(tree.node(at: f.path("mnt")) == nil)
                 #expect(report.dirsRemoved == 2, "\(report)")
+            } }
+        }
+    }
+
+    @Test("a root given by its data-volume path finds mounts the mount table names by the firmlink path",
+          .enabled(if: DiskImage.isAvailable, "hdiutil is not available"),
+          .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))
+    func mountUnderDataVolumePath() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with("mount") { f in try withImage { image in
+                try f.mk("data/a", bytes: 300_000)
+                try f.mk("mnt/under", bytes: 100_000)
+                let root = FirmlinkTable.system.dataRoot + f.root
+                try #require(FirmlinkTable.system.dataVolumePath(f.root) == root)
+                try Snapshot.save(try Scanner.scan(root), in: dir)
+
+                guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
+                let mounted = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir))
+                guard case .success(let report) = Incremental.update(mounted) else {
+                    Issue.record("update after mount failed")
+                    return
+                }
+                let full = try Scanner.scan(root)
+                #expect(report.mountChanges == 1)
+                #expect(Totals(mounted) == Totals(full), "mounted: incremental \(Totals(mounted)) full \(Totals(full))")
+                #expect(full.root.totalAlloc == f.duBytes())
+                #expect(mounted.mountPoints == [MountPoint(parent: 0, name: "mnt")])
+                try Snapshot.save(mounted, in: dir)
+
+                // Still mounted: the record matches, nothing is re-read.
+                let again = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir))
+                guard case .success(let idle) = Incremental.update(again) else {
+                    Issue.record("second update failed")
+                    return
+                }
+                #expect(idle.mountChanges == 0, "\(idle)")
+
+                image.detach()
+                guard case .success(let after) = Incremental.update(again) else {
+                    Issue.record("update after unmount failed")
+                    return
+                }
+                #expect(after.mountChanges == 1)
+                #expect(Totals(again) == Totals(try Scanner.scan(root)))
+            } }
+        }
+    }
+
+    @Test("a recorded mount point the mount table names otherwise is not taken for unmounted",
+          .enabled(if: DiskImage.isAvailable, "hdiutil is not available"),
+          .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))
+    func mountNamedOtherwise() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with("mount") { f in try withImage { image in
+                try f.mk("mnt/under", bytes: 100_000)
+                try f.mk("keep", bytes: 20_000)
+                guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
+                // Without the firmlink table the data-volume root cannot match the table's firmlink name: the
+                // recorded mount point is checked on disk instead (as after a rename the table has not followed).
+                let options = ScanOptions(firmlinks: .empty)
+                let root = FirmlinkTable.system.dataRoot + f.root
+                let full = try Scanner.scan(root, options: options)
+                #expect(full.mountPoints == [MountPoint(parent: 0, name: "mnt")])
+                try Snapshot.save(full, in: dir)
+                let tree = try #require(Snapshot.load(rootPath: root, options: options, in: dir))
+                guard case .success(let report) = Incremental.update(tree, options: options) else {
+                    Issue.record("update failed")
+                    return
+                }
+                #expect(report.mountChanges == 0, "\(report)")
+                #expect(tree.mountPoints == [MountPoint(parent: 0, name: "mnt")])
+                #expect(Totals(tree) == Totals(full))
             } }
         }
     }
