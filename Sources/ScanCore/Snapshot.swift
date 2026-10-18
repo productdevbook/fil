@@ -53,7 +53,8 @@ public enum Snapshot {
         url(for: tree.rootPath, privateSize: tree.privateSize, crossDevices: tree.crossDevices, in: directory)
     }
 
-    /// Name used up to #33: the root path alone, shared by every mode. `save` removes such a file.
+    /// Name used up to #33: the root path alone, shared by every mode. `load` removes such a file when it finds no
+    /// snapshot under the new name (once per root, as the full scan that follows writes the new one).
     static func legacyURL(for rootPath: String, in directory: URL?) -> URL {
         (directory ?? Self.directory).appendingPathComponent(String(fnv1a(rootPath.utf8), radix: 16) + ".bin")
     }
@@ -191,16 +192,16 @@ public enum Snapshot {
         let url = url(for: tree, in: directory)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
-        // A snapshot under the name of before #33 is never read again; drop it rather than leave it in the cache.
-        unlink(legacyURL(for: tree.rootPath, in: directory).path)
         tree.changedSinceSave = false
         t.lap("write")
     }
 
     /// Why `load` found no usable snapshot (chapter 03 §6.4). The caller then does a full scan.
     public enum LoadFailure: Error, Equatable, Sendable, CustomStringConvertible {
-        /// No file for this root and mode, or it cannot be read.
+        /// No file for this root and mode (`ENOENT`).
         case missing
+        /// The file exists but cannot be opened or mapped (`EACCES`, `EIO`, ...).
+        case unreadable(errno: Int32)
         /// The file does not start with the snapshot magic.
         case notSnapshot
         /// Another format version (older ones are never read: a full scan rebuilds what they lack).
@@ -215,6 +216,7 @@ public enum Snapshot {
         public var description: String {
             switch self {
             case .missing: "missing"
+            case .unreadable(let e): "unreadable (\(String(cString: strerror(e))))"
             case .notSnapshot: "not a snapshot"
             case .otherVersion(let v): "other version \(v)"
             case .otherMode: "other mode"
@@ -222,6 +224,22 @@ public enum Snapshot {
             case .corrupt: "corrupt"
             }
         }
+    }
+
+    /// The file mapped read-only. `missing` only when it does not exist; any other error keeps its errno. A file too
+    /// short to hold the magic is `corrupt` (a write that stopped early), not another kind of file.
+    private static func map(_ path: String) -> Result<Data, LoadFailure> {
+        let fd = open(path, O_RDONLY)
+        guard fd >= 0 else { return .failure(errno == ENOENT ? .missing : .unreadable(errno: errno)) }
+        defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0 else { return .failure(.unreadable(errno: errno)) }
+        let size = Int(st.st_size)
+        guard size >= MemoryLayout.size(ofValue: magic) else { return .failure(.corrupt) }
+        guard let p = mmap(nil, size, PROT_READ, MAP_PRIVATE, fd, 0), p != MAP_FAILED else {
+            return .failure(.unreadable(errno: errno))
+        }
+        return .success(Data(bytesNoCopy: p, count: size, deallocator: .custom { p, n in munmap(p, n) }))
     }
 
     /// The snapshot of `rootPath` in the mode of `options`, never a partial tree.
@@ -235,7 +253,14 @@ public enum Snapshot {
                             in directory: URL? = nil) -> Result<DiskTree, LoadFailure> {
         var t = Timings.Lap("load")
         let url = url(for: rootPath, privateSize: privateSize, crossDevices: crossDevices, in: directory)
-        guard let data = try? Data(contentsOf: url, options: .alwaysMapped) else { return .failure(.missing) }
+        let data: Data
+        switch map(url.path) {
+        case .failure(let why):
+            // The snapshot under the name of before #33 is never read again: drop it rather than leave it in the cache.
+            if why == .missing { unlink(legacyURL(for: rootPath, in: directory).path) }
+            return .failure(why)
+        case .success(let d): data = d
+        }
         return data.withUnsafeBytes { raw -> Result<DiskTree, LoadFailure> in
             var r = Reader(raw)
             guard r.get(UInt32.self) == magic else { return .failure(.notSnapshot) }

@@ -170,8 +170,10 @@ struct FullScanTests {
 
                 let legacy = dir.appendingPathComponent(legacyName(f.root))
                 try Data("old".utf8).write(to: legacy)
-                for o in modes { try Snapshot.save(try Scanner.scan(f.root, options: o), in: dir) }
+                // Removed by the first load that finds no snapshot under the new name, not by every save.
+                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree == nil)
                 #expect(!FileManager.default.fileExists(atPath: legacy.path))
+                for o in modes { try Snapshot.save(try Scanner.scan(f.root, options: o), in: dir) }
                 for o in modes {
                     let t = try #require(Snapshot.load(rootPath: f.root, options: o, in: dir).tree)
                     #expect(t.privateSize == o.privateSize && t.crossDevices == o.crossDevices)
@@ -298,6 +300,18 @@ struct FullScanTests {
                 #expect(load() == .corrupt)
                 try good.prefix(6).write(to: url)
                 #expect(load() == .corrupt)
+                // Shorter than the magic: a write that stopped early, not another kind of file.
+                try good.prefix(3).write(to: url)
+                #expect(load() == .corrupt)
+                try Data().write(to: url)
+                #expect(load() == .corrupt)
+
+                // A file that exists but cannot be read is not "missing": it keeps its errno.
+                try good.write(to: url)
+                #expect(chmod(url.path, 0o000) == 0)
+                defer { chmod(url.path, 0o644) }
+                #expect(load() == .unreadable(errno: EACCES))
+                #expect(Snapshot.LoadFailure.unreadable(errno: EACCES).description == "unreadable (Permission denied)")
             }
         }
     }

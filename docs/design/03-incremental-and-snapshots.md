@@ -652,6 +652,12 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   it in the timing bracket like an update failure: `[full scan (snapshot not used: missing)]` (not with `--full`,
   which never loads); `list`/`clean --timings` print the `snapshot load` line also on failure:
   `snapshot load  0 ms  (not used: <case>; full scan)`.
+- #35 review fix: a seventh case. `missing` is only `ENOENT`; a file that exists but cannot be opened, examined or
+  mapped is `unreadable(errno:)`, shown as `unreadable (Permission denied)`. The file is mapped with `open` + `mmap`
+  instead of `Data(contentsOf:)`, which lost the errno. A file shorter than the 4-byte magic (empty included) is
+  `corrupt`, not `notSnapshot`. The pre-#33 file of a root is now unlinked by a `load` that ends in `missing`
+  (the first run after the rename, followed by the full scan that writes the new file), not by every `save`; a root
+  only ever scanned with `--full` keeps its old file.
 
 ## Glossary additions
 

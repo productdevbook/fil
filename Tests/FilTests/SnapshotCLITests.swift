@@ -37,6 +37,11 @@ struct SnapshotCLITests {
         try Data("garbage".utf8).write(to: URL(fileURLWithPath: snap + "/" + files[0]))
         let second = try cli.run(args, snapshotDir: snap)
         #expect(second.stdout.contains("[full scan (snapshot not used: not a snapshot)]"), "\(second.stdout)")
+        // A snapshot that exists but cannot be read says so, with the reason.
+        #expect(chmod(snap + "/" + files[0], 0o000) == 0)
+        let denied = try cli.run(args, snapshotDir: snap)
+        #expect(denied.stdout.contains("[full scan (snapshot not used: unreadable (Permission denied))]"),
+                "\(denied.stdout)")
         // --full does not look at the snapshot.
         let full = try cli.run(args + ["--full"], snapshotDir: snap)
         #expect(full.stdout.contains("[full scan]"), "\(full.stdout)")
