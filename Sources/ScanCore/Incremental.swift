@@ -96,7 +96,12 @@ public enum Incremental {
         // Before the barrier event is made, like in a full scan: later changes are replayed by the next update.
         let startWallClock = Scanner.nowNanoseconds()
         let history: EventHistory
-        switch EventHistory.fetch(root: tree.rootPath, since: tree.eventId) {
+#if DEBUG
+        let fetched = EventHistory.fetch(root: tree.rootPath, since: tree.eventId, faults: options.faults.history)
+#else
+        let fetched = EventHistory.fetch(root: tree.rootPath, since: tree.eventId)
+#endif
+        switch fetched {
         case .failure(let why): return .failure(why)
         case .success(let h): history = h
         }
@@ -658,6 +663,20 @@ final class EventHistory: @unchecked Sendable {
     /// queues that event after every earlier change, and the stream delivers in id order, so once it arrives
     /// every earlier change under `root` has been delivered.
     static func fetch(root: String, since: FSEventStreamEventId) -> Result<EventHistory, UpdateFailure> {
+        fetch(root: root, since: since, into: EventHistory())
+    }
+
+#if DEBUG
+    static func fetch(root: String, since: FSEventStreamEventId, faults: HistoryFaults) -> Result<EventHistory, UpdateFailure> {
+        let history = EventHistory()
+        history.faults = faults
+        return fetch(root: root, since: since, into: history)
+    }
+
+    var faults = HistoryFaults()
+#endif
+
+    private static func fetch(root: String, since: FSEventStreamEventId, into history: EventHistory) -> Result<EventHistory, UpdateFailure> {
         guard let barrierDir = makeBarrierDir() else {
             return .failure(.streamFailed("barrier directory: \(String(cString: strerror(errno)))"))
         }
@@ -666,7 +685,6 @@ final class EventHistory: @unchecked Sendable {
             unlink(marker)
             rmdir(barrierDir)
         }
-        let history = EventHistory()
         history.barrierPaths = Set(Incremental.rootPrefixes(barrierDir))
         var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(history).toOpaque(),
                                            retain: nil, release: nil, copyDescription: nil)
@@ -675,9 +693,16 @@ final class EventHistory: @unchecked Sendable {
             guard h.phase != .finished else { return }
             let paths = unsafeBitCast(paths, to: NSArray.self)
             for i in 0..<count {
+#if DEBUG
+                let f = flags[i] | h.faults.extraFlags
+#else
                 let f = flags[i]
+#endif
                 let path = paths[i] as! String
                 if f & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 {
+#if DEBUG
+                    if h.faults.dropHistoryDone { continue }
+#endif
                     if h.phase == .history {
                         h.phase = .live
                         h.historyDone.signal()
@@ -689,7 +714,12 @@ final class EventHistory: @unchecked Sendable {
                     | kFSEventStreamEventFlagRootChanged)
                 // Untrusted history means a full scan anyway, so there is no barrier to wait for.
                 let untrusted = f & lost != 0
-                if untrusted || (h.phase == .live && h.isBarrier(path)) {
+#if DEBUG
+                let isBarrier = h.phase == .live && h.isBarrier(path) && !h.faults.dropBarrier
+#else
+                let isBarrier = h.phase == .live && h.isBarrier(path)
+#endif
+                if untrusted || isBarrier {
                     if untrusted { h.untrusted = (EventHistory.lostFlagNames(f), path) } else { h.barrierId = ids[i] }
                     if h.phase == .history { h.historyDone.signal() }
                     h.phase = .finished
@@ -714,7 +744,11 @@ final class EventHistory: @unchecked Sendable {
             return .failure(.streamFailed("FSEventStreamStart"))
         }
         // 30 s for the history replay; the barrier event, made after it, gets its own short timeout.
+#if DEBUG
+        let historyLimit = history.faults.historyLimit ?? 30, barrierLimit = history.faults.barrierLimit ?? 2
+#else
         let historyLimit = 30, barrierLimit = 2
+#endif
         var failure: UpdateFailure?
         if history.historyDone.wait(timeout: .now() + .seconds(historyLimit)) != .success {
             failure = .historyTimeout(seconds: historyLimit)

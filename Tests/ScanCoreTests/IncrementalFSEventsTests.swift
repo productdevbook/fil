@@ -52,6 +52,19 @@ let scenarios: [Scenario] = [
     Scenario("rename dir", setup: { f in
         try f.mk("old/a", bytes: 5000); try f.mk("old/sub/b", bytes: 3000)
     }, change: { f in try f.move("old", to: "renamed") }),
+    // Names that differ only in case or in Unicode form: the volume keeps the new spelling, the tree must too.
+    Scenario("rename dir: case only", setup: { f in
+        try f.mk("Photos/a", bytes: 5000); try f.mk("Photos/Sub/b", bytes: 3000); try f.mk("other/c", bytes: 10)
+    }, change: { f in try f.rename("Photos", to: "photos") }),
+    Scenario("rename file: case only", setup: { f in
+        try f.mk("d/Report.TXT", bytes: 5000); try f.mk("d/keep", bytes: 10)
+    }, change: { f in try f.rename("d/Report.TXT", to: "d/report.txt") }),
+    Scenario("rename dir: non-ASCII", setup: { f in
+        try f.mk("caf\u{E9}/a", bytes: 5000); try f.mk("caf\u{E9}/\u{65E5}\u{672C}/b", bytes: 3000)
+    }, change: { f in try f.rename("caf\u{E9}", to: "\u{43A}\u{430}\u{444}\u{435}-\u{1F4C1}") }),
+    Scenario("rename dir: NFC to NFD", setup: { f in
+        try f.mk("\u{E9}t\u{E9}/a", bytes: 5000); try f.mk("z/c", bytes: 10)
+    }, change: { f in try f.rename("\u{E9}t\u{E9}", to: "e\u{301}te\u{301}") }),
     Scenario("move file between dirs", setup: { f in
         try f.mk("src/m", bytes: 20000); try f.mk("dst/x", bytes: 10)
     }, change: { f in try f.move("src/m", to: "dst/m") }),

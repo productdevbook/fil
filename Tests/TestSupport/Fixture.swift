@@ -55,6 +55,12 @@ public final class Fixture: @unchecked Sendable {
         try FileManager.default.moveItem(atPath: path(from), toPath: path(to))
     }
 
+    /// `rename(2)` itself: also for a name that differs only in case, which `FileManager.moveItem` refuses on a
+    /// case-insensitive volume.
+    public func rename(_ from: String, to: String) throws {
+        guard Darwin.rename(path(from), path(to)) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    }
+
     public func link(_ from: String, to: String) throws {
         try mkdir((to as NSString).deletingLastPathComponent)
         guard Darwin.link(path(from), path(to)) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }

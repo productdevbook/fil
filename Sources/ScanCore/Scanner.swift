@@ -506,6 +506,13 @@ struct DirReader {
             flags = f.loadUnaligned(as: UInt32.self)
             f += 4
         }
+#if DEBUG
+        // chflags(2) cannot set SF_DATALESS (the kernel ignores it), so tests name the entries to report as placeholders.
+        if !config.faults.dataless.isEmpty, let namePtr,
+           config.faults.dataless.contains(String(cString: namePtr.assumingMemoryBound(to: CChar.self))) {
+            flags |= UInt32(SF_DATALESS)
+        }
+#endif
         var access = UInt32(R_OK | X_OK)
         if common & attrgroup_t(ATTR_CMN_USERACCESS) != 0 {
             access = f.loadUnaligned(as: UInt32.self)
@@ -629,6 +636,10 @@ struct DirFaults: Sendable {
     var removeBeforeOpen: Set<String> = []
     /// Right before the key path is opened, the first path of the value is renamed to the second.
     var renameBeforeOpen: [String: [String]] = [:]
+    /// Names of entries (in any directory) reported with `SF_DATALESS` set, as a cloud placeholder is.
+    var dataless: Set<String> = []
+    /// Faults for `EventHistory.fetch`; see `HistoryFaults`.
+    var history = HistoryFaults()
 
     /// From `FIL_TEST_FAULTS` (debug builds only, for tests of the `fil` binary): one fault per line,
     /// `bulk <errno>[,<errno>...] <path>`, `entry <path>` or `remove <path>`.
@@ -650,6 +661,19 @@ struct DirFaults: Sendable {
         }
         return f
     }()
+}
+
+/// Test-only faults for the FSEvents replay of an incremental update. Compiled out of release builds.
+struct HistoryFaults: Sendable {
+    /// Seconds to wait for HistoryDone and for the barrier event instead of the real limits (30 and 2).
+    var historyLimit: Int?
+    var barrierLimit: Int?
+    /// HistoryDone is never seen, so the replay times out.
+    var dropHistoryDone = false
+    /// The barrier event is never recognised, so the wait for it times out.
+    var dropBarrier = false
+    /// OR-ed into the flags of every event of the replay (a `kFSEventStreamEventFlag...` lost-history flag).
+    var extraFlags: FSEventStreamEventFlags = 0
 }
 
 extension DirReader {
