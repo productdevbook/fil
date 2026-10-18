@@ -38,16 +38,28 @@ public enum Cleanup {
         return String(cString: r)
     }
 
-    /// Starts the `simctl` query so it runs while the tree is being loaded or updated.
-    public static func startSimulatorQuery(home: String) -> Task<[String], Never> {
-        Task { isRealHome(home) ? await Rules.listUnavailableUDIDs() : [] }
+    /// Starts every external query (simctl, docker, cache locations) concurrently, so they run while the tree
+    /// is being loaded or updated. Nothing runs when `home` is not the real home. `environment` replaces the
+    /// real tools (tests).
+    public static func startToolQueries(home: String, environment: ToolEnvironment? = nil) -> ToolQueries {
+        if let environment { return .start(environment) }
+        return .start(isRealHome(home) ? .system(home: home) : nil)
+    }
+
+    /// Former name of `startToolQueries(home:)`; starts all tool queries, not only simctl.
+    public static func startSimulatorQuery(home: String) -> ToolQueries { startToolQueries(home: home) }
+
+    /// Former label of `scan(home:tree:tools:)`.
+    public static func scan(home: String, tree: DiskTree, simulators: ToolQueries) async -> Scan {
+        await scan(home: home, tree: tree, tools: simulators)
     }
 
     /// Runs every rule in order against the tree of `home`.
-    public static func scan(home: String, tree: DiskTree, simulators: Task<[String], Never>) async -> Scan {
+    public static func scan(home: String, tree: DiskTree, tools: ToolQueries) async -> Scan {
         let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
         let ctx = RuleContext(home: tree.rootPath, tree: tree, runningBundleIds: running, isRealHome: isRealHome(home),
-                              simulatorUDIDs: simulators)
+                              tools: tools)
+        if let why = tools.skippedReason { ctx.noteSkippedCommand(why) }
         var all: [Candidate] = []
         var times: [(String, Double)] = []
         let clock = ContinuousClock()
@@ -57,6 +69,8 @@ public enum Cleanup {
             let (s, a) = (clock.now - t).components
             times.append((rule.id, Double(s) + Double(a) / 1e18))
         }
+        ctx.noteSkippedCommands(await tools.cachePaths.value.notes + tools.simulators.value.notes
+            + tools.docker.value.notes)
         return Scan(home: ctx.home, candidates: all.sorted { $0.bytes > $1.bytes },
                     skippedCommands: ctx.skippedCommands, ruleTimes: times)
     }
@@ -131,7 +145,7 @@ public enum Cleanup {
                     continue
                 }
                 let outcome: Outcome
-                do { _ = try await Commands.output(argv); outcome = .commandRan } catch {
+                do { _ = try await Commands.output(argv, workingDirectory: home); outcome = .commandRan } catch {
                     outcome = .failed(.system("\(error)"))
                 }
                 ran[argv] = outcome

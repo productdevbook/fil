@@ -55,7 +55,7 @@ func makeHome(_ f: Fixture, outside: Fixture) throws {
 
 func scanCandidates(_ f: Fixture) async throws -> Cleanup.Scan {
     let tree = try Scanner.scan(f.root, options: ScanOptions(strictHardlinks: false))
-    return await Cleanup.scan(home: f.root, tree: tree, simulators: Task { [] })
+    return await Cleanup.scan(home: f.root, tree: tree, tools: Cleanup.startToolQueries(home: f.root))
 }
 
 let expected: [String: (rule: String, safety: Safety)] = [
