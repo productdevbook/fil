@@ -6,7 +6,7 @@ import ScanCore
 // scan); --tolerant-hardlinks counts it and reports `uncertain=` bytes (see docs/design/02-size-accounting.md).
 func runScan(_ arguments: [String]) throws {
     var args = CommandLineWords(arguments)
-    var given = NSHomeDirectory()
+    var givenDir: String?
     var options = ScanOptions()
     var top = 15
     var naive = false
@@ -18,9 +18,17 @@ func runScan(_ arguments: [String]) throws {
 
     while let word = args.next() {
         switch word {
-        case .option("-j"): options.threads = Int(args.value(for: "-j")) ?? options.threads
+        case .option("-j"):
+            let v = args.value(for: "-j")
+            guard let n = wholeNumber(v), (1...64).contains(n) else {
+                usageError("-j needs a whole number from 1 to 64, got '\(v)'")
+            }
+            options.threads = n
         case .option("--private"): options.privateSize = true
-        case .option("--top"): top = Int(args.value(for: "--top")) ?? top
+        case .option("--top"):
+            let v = args.value(for: "--top")
+            guard let n = wholeNumber(v) else { usageError("--top needs a whole number of 0 or more, got '\(v)'") }
+            top = n
         case .option("--naive"): naive = true
         case .option("--full"): forceFull = true
         case .option("--porcelain"): porcelain = true
@@ -29,13 +37,15 @@ func runScan(_ arguments: [String]) throws {
         case .option("--no-color"): noColor = true
         case .option("--tolerant-hardlinks"): options.strictHardlinks = false
         case .option(let a): unknownOption(a, "scan")
-        case .operand(let a): given = a
+        case .operand(let a):
+            if givenDir != nil { usageError("more than one directory given") }
+            givenDir = a
         }
     }
     if naive && porcelain { usageError("--naive cannot be combined with --porcelain") }
 
     UI.setup(noColor: noColor)
-    let path = try resolveDirectory(given)
+    let path = try resolveDirectory(givenDir ?? NSHomeDirectory())
 
     if naive {
         // What most cleaner apps do: FileManager enumerator + per-file resource values.
@@ -255,6 +265,12 @@ private func printTree(_ ids: [Int], nodes: [DirNode], total: Int64, size: (DirN
     }
     let tops = children[0] ?? []
     for t in tops { walk(t, prefix: "", last: true, depth: 0) }
+}
+
+/// A value made only of ASCII digits, as an Int; nil for anything else (sign, space, empty, overflow).
+func wholeNumber(_ s: String) -> Int? {
+    guard !s.isEmpty, s.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) else { return nil }
+    return Int(s)
 }
 
 /// Resolves a directory argument with `realpath(3)` (symlinks, `.`, `..`, relative paths) and checks that it is

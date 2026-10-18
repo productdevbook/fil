@@ -171,4 +171,39 @@ import Testing
             #expect(help.stdout.contains("--timings    phase and rule timings on stderr"), "\(command)")
         }
     }
+
+    @Test func numbersAndDirectoryCountAreValidated() throws {
+        let root = try ErrorHandlingTests.tempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let snap = root + "/snap"
+        let hint = "\nRun 'fil help scan' for usage.\n"
+        let jMessage = { (v: String) in "fil: -j needs a whole number from 1 to 64, got '\(v)'" + hint }
+        let topMessage = { (v: String) in "fil: --top needs a whole number of 0 or more, got '\(v)'" + hint }
+        let cases: [([String], String)] = [
+            (["-j", "abc", "--top", "x"], jMessage("abc")),
+            (["-j", "0"], jMessage("0")),
+            (["-j", "65"], jMessage("65")),
+            (["-j", "-1"], jMessage("-1")),
+            (["-j", "+4"], jMessage("+4")),
+            (["-j", ""], jMessage("")),
+            (["-j", "99999999999999999999"], jMessage("99999999999999999999")),
+            (["--top", "x"], topMessage("x")),
+            (["--top", "-1"], topMessage("-1")),
+            (["--top", "1.5"], topMessage("1.5")),
+            ([root, root], "fil: more than one directory given" + hint),
+        ]
+        for (args, message) in cases {
+            let r = try cli.run(["scan"] + args + ["--porcelain"], snapshotDir: snap)
+            #expect(r.status == 2, "\(args): \(r.status)")
+            #expect(r.stdout.isEmpty, "\(args)")
+            #expect(r.stderr == message, "\(args): \(r.stderr)")
+        }
+        // A rejected -j 0 never reaches the scan, so no snapshot is written.
+        #expect(!FileManager.default.fileExists(atPath: snap), "-j 0 wrote a snapshot")
+        try FileManager.default.createDirectory(atPath: root + "/d", withIntermediateDirectories: true)
+        for args in [["-j", "1", "--top", "0"], ["-j", "64", "--top", "015"]] {
+            let r = try cli.run(["scan", root + "/d"] + args, snapshotDir: snap)
+            #expect(r.status == 0, "\(args): \(r.stderr)")
+        }
+    }
 }
