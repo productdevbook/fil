@@ -91,8 +91,8 @@ private final class ChildPid: @unchecked Sendable {
     var stopping: Bool { lock.withLock { stop } }
 }
 
-/// Runs one command to completion. Returns nil when it was stopped (timeout or cancellation); a command that
-/// ran to its end returns its real result even when the stop arrived at the same moment.
+/// Runs one command to completion. Returns nil when it was stopped (timeout or cancellation), whatever status the
+/// command exits with after the stop began; a command that finished before any stop returns its real result.
 private func collect(_ argv: [String], environment: [Environment.Key: String?], workingDirectory: String?,
                      gracePeriod: Duration) async -> CommandResult? {
     var options = PlatformOptions()
