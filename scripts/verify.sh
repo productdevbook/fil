@@ -13,6 +13,7 @@ SNAP_PREFIX=/private/tmp/fil-verify-snap.
 
 CUR_DIR=""
 SNAP_DIR=""
+SNAP_BAK=""
 FAILS=0
 TOTAL=0
 DIFFS=""
@@ -24,6 +25,9 @@ cleanup() {
   esac
   case "$SNAP_DIR" in
     "$SNAP_PREFIX"*) [[ -d "$SNAP_DIR" ]] && rm -rf -- "$SNAP_DIR" ;;
+  esac
+  case "$SNAP_BAK" in
+    "$SNAP_PREFIX"*) [[ -d "$SNAP_BAK" ]] && rm -rf -- "$SNAP_BAK" ;;
   esac
 }
 trap cleanup EXIT
@@ -58,6 +62,29 @@ parse_porcelain() {
 }
 
 add_diff() { DIFFS="${DIFFS:+$DIFFS; }$*"; }
+
+# snap_backup: copies the snapshots as they are before an incremental run, so fallback_reason can repeat that run.
+# The copy lives in SNAP_BAK, outside every fixture: a file written inside a fixture would be an FSEvents change.
+snap_backup() {
+  rm -f -- "$SNAP_BAK"/*.bin
+  cp -p "$FIL_SNAPSHOT_DIR"/*.bin "$SNAP_BAK"/ 2>/dev/null
+  return 0
+}
+
+# fallback_reason DIR: why the incremental run after snap_backup fell back. The full scan that fell back has already
+# replaced the snapshots, so the backup is put back and a -v run (its timing line names the mode and reason) repeats
+# the update. Porcelain output has no reason, hence the separate run.
+fallback_reason() {
+  local out
+  rm -f -- "$FIL_SNAPSHOT_DIR"/*.bin
+  cp -p "$SNAP_BAK"/*.bin "$FIL_SNAPSHOT_DIR/" 2>/dev/null
+  out=$("$FIL" scan "$1" -v --no-color 2>/dev/null | sed -n 's/^ *timing .*\[\(.*\)\]$/\1/p' | head -n 1)
+  case $out in
+    "") echo "reason not printed by -v" ;;
+    incremental*) echo "not reproduced: -v run was incremental" ;;
+    *) echo "$out" ;;
+  esac
+}
 
 # end_scenario NAME: removes the fixture, prints PASS/FAIL, counts failures.
 end_scenario() {
@@ -117,6 +144,7 @@ run_scenario() {
   "$change" "$d"
   sleep "$wait"
 
+  snap_backup
   run_scan "$d"
   if ! run_ok || ! parse_porcelain "$R_OUT"; then
     DIFFS="incremental run invalid (rc=$R_RC): $(one_line "$R_OUT")"
@@ -124,6 +152,9 @@ run_scenario() {
   fi
   inc_mode=$P_mode; inc_alloc=$P_alloc; inc_logical=$P_logical
   inc_files=$P_files; inc_dirs=$P_dirs; inc_ca=$P_cloneaware; inc_shared=$P_shared
+  if [[ $expect == incremental && $inc_mode != incremental ]]; then
+    add_diff "mode=$inc_mode (want incremental): $(fallback_reason "$d")"
+  fi
 
   run_scan "$d" --full
   if ! run_ok || ! parse_porcelain "$R_OUT" || [[ $P_mode != full ]]; then
@@ -135,9 +166,6 @@ run_scenario() {
 
   du_b=$(( $(du -skx "$d" | awk '{print $1}') * 1024 ))
 
-  if [[ $expect == incremental && $inc_mode != incremental ]]; then
-    add_diff "mode=$inc_mode (want incremental)"
-  fi
   [[ $inc_alloc == "$full_alloc" ]]     || add_diff "alloc inc=$inc_alloc full=$full_alloc"
   [[ $inc_logical == "$full_logical" ]] || add_diff "logical inc=$inc_logical full=$full_logical"
   [[ $inc_files == "$full_files" ]]     || add_diff "files inc=$inc_files full=$full_files"
@@ -263,13 +291,14 @@ mount_exit() { mount_cleanup; cleanup; }
 # mount_compare LABEL FIXTURE: incremental scan vs --full vs du -skx.
 mount_compare() {
   local label=$1 d=$2 inc full du_b rc
+  snap_backup
   run_scan "$d"; inc=$R_OUT; rc=$R_RC
   run_scan "$d" --full; full=$R_OUT
   if (( rc != 0 )) || ! parse_porcelain "$inc"; then add_diff "$label: incremental scan failed: $(one_line "$inc")"; return; fi
   local im=$P_mode ia=$P_alloc if_=$P_files id=$P_dirs
   if ! parse_porcelain "$full"; then add_diff "$label: full scan failed: $(one_line "$full")"; return; fi
   du_b=$(( $(du -skx "$d" | cut -f1) * 1024 ))
-  [[ $im == incremental ]] || add_diff "$label: mode=$im (want incremental)"
+  [[ $im == incremental ]] || add_diff "$label: mode=$im (want incremental): $(fallback_reason "$d")"
   [[ $if_ == "$P_files" ]] || add_diff "$label: files inc=$if_ full=$P_files"
   [[ $id == "$P_dirs" ]]   || add_diff "$label: dirs inc=$id full=$P_dirs"
   [[ $ia == "$P_alloc" ]]  || add_diff "$label: alloc inc=$ia full=$P_alloc"
@@ -320,6 +349,7 @@ run_mount_scenario() {
 
 # Snapshots go to a private temp dir, never to ~/Library/Caches/Fil.
 SNAP_DIR=$(mktemp -d "${SNAP_PREFIX}XXXXXX") || exit 1
+SNAP_BAK=$(mktemp -d "${SNAP_PREFIX}bak.XXXXXX") || exit 1
 export FIL_SNAPSHOT_DIR="$SNAP_DIR"
 
 echo "Building: swift build -c release"
