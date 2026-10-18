@@ -95,11 +95,14 @@ public enum Rules {
         var inside = [Bool](repeating: false, count: nodes.count)
         var out: [Candidate] = []
         let now = Date().timeIntervalSince1970
+        let trashPrefix = ctx.home + "/.Trash/"
         for i in nodes.indices.dropFirst() where !nodes[i].isDead {
             let p = Int(nodes[i].parent)
             if inside[p] { inside[i] = true; continue }
             guard let manifest = manifests[nodes[i].name] else { continue }
             let dir = tree.path(of: i)
+            // Projects already in the Trash are reported once, by the info-only `trash` candidate (chapter 04 §6.8).
+            if dir.hasPrefix(trashPrefix) { continue }
             let mpath = manifest.hasPrefix("../")
                 ? (dir as NSString).deletingLastPathComponent + "/" + manifest.dropFirst(3)
                 : dir + "/" + manifest
