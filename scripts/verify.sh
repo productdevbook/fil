@@ -155,6 +155,7 @@ run_scenario() {
   if [[ $inc_mode == incremental ]]; then PASS_TEXT="(incremental)"; else PASS_TEXT="(full fallback)"; fi
   PASS_TEXT="$PASS_TEXT alloc=$full_alloc logical=$full_logical files=$full_files dirs=$full_dirs"
   [[ $full_shared == 0 ]] || PASS_TEXT="$PASS_TEXT cloneaware=$full_ca shared=$full_shared"
+  [[ -n "$DIFFS" ]] && echo "     numbers:$PASS_TEXT"
   end_scenario "$name"
 }
 
@@ -244,6 +245,77 @@ shared_clone_del_orig() { alloc_of "$1/dst/b"; }
 change_clone_grow() { head -c 1048576 /dev/zero >> "$1/dst/b"; }
 shared_clone_grow() { alloc_of "$1/dst/c"; }
 
+# ---- mount scenario (#4): another volume mounted inside the root must never be counted.
+MNT_IMG_DIR=""
+MNT_POINT=""
+mount_cleanup() {
+  if [[ -n "$MNT_POINT" ]] && mount | grep -q " on $MNT_POINT "; then
+    hdiutil detach "$MNT_POINT" -force >/dev/null 2>&1
+  fi
+  case "$MNT_IMG_DIR" in
+    /private/tmp/fil-verify-img.*) [[ -d "$MNT_IMG_DIR/pop" ]] && hdiutil detach "$MNT_IMG_DIR/pop" -force >/dev/null 2>&1
+                                   rm -rf -- "$MNT_IMG_DIR" ;;
+  esac
+  MNT_IMG_DIR=""; MNT_POINT=""
+}
+mount_exit() { mount_cleanup; cleanup; }
+
+# mount_compare LABEL FIXTURE: incremental scan vs --full vs du -skx.
+mount_compare() {
+  local label=$1 d=$2 inc full du_b rc
+  run_scan "$d"; inc=$R_OUT; rc=$R_RC
+  run_scan "$d" --full; full=$R_OUT
+  if (( rc != 0 )) || ! parse_porcelain "$inc"; then add_diff "$label: incremental scan failed: $(one_line "$inc")"; return; fi
+  local im=$P_mode ia=$P_alloc if_=$P_files id=$P_dirs
+  if ! parse_porcelain "$full"; then add_diff "$label: full scan failed: $(one_line "$full")"; return; fi
+  du_b=$(( $(du -skx "$d" | cut -f1) * 1024 ))
+  [[ $im == incremental ]] || add_diff "$label: mode=$im (want incremental)"
+  [[ $if_ == "$P_files" ]] || add_diff "$label: files inc=$if_ full=$P_files"
+  [[ $id == "$P_dirs" ]]   || add_diff "$label: dirs inc=$id full=$P_dirs"
+  [[ $ia == "$P_alloc" ]]  || add_diff "$label: alloc inc=$ia full=$P_alloc"
+  [[ $ia == "$du_b" ]]     || add_diff "$label: alloc inc=$ia du=$du_b"
+  PASS_TEXT="$PASS_TEXT [$label inc: files=$if_ dirs=$id alloc=$ia | full: files=$P_files dirs=$P_dirs alloc=$P_alloc | du=$du_b]"
+}
+
+run_mount_scenario() {
+  local name="mount: attach and detach a volume inside the root"
+  TOTAL=$((TOTAL + 1)); DIFFS=""; PASS_TEXT=""
+  local d
+  d=$(mktemp -d "${FIXTURE_PREFIX}XXXXXX") || exit 1
+  CUR_DIR=$d
+  MNT_IMG_DIR=$(mktemp -d /private/tmp/fil-verify-img.XXXXXX) || exit 1
+  trap mount_exit EXIT
+  local img="$MNT_IMG_DIR/vol.dmg" prev_snap=$FIL_SNAPSHOT_DIR pop="$MNT_IMG_DIR/pop"
+  mkdir -p "$d/.snap" "$d/mnt" "$pop"
+  export FIL_SNAPSHOT_DIR="$d/.snap"
+  mk "$d/a/f1" 5000; mk "$d/a/b/f2" 70000; mk "$d/f3" 1000
+  if ! hdiutil create -size 20m -fs APFS -volname FilVerify "$img" >/dev/null 2>&1; then
+    add_diff "hdiutil create failed"
+  elif ! hdiutil attach -nobrowse -mountpoint "$pop" "$img" >/dev/null 2>&1; then
+    add_diff "populate attach failed"
+  else
+    mk "$pop/root400k" 409600; mk "$pop/sub/two" 2097152; sync
+    hdiutil detach "$pop" >/dev/null 2>&1 || hdiutil detach "$pop" -force >/dev/null 2>&1
+    run_scan "$d"
+    parse_porcelain "$R_OUT" && [[ $P_mode == full ]] || add_diff "snapshot scan: $(one_line "$R_OUT")"
+    MNT_POINT="$d/mnt"
+    if hdiutil attach -nobrowse -mountpoint "$d/mnt" "$img" >/dev/null 2>&1; then
+      sleep "$FSEVENTS_WAIT"
+      mount_compare "attached" "$d"
+      hdiutil detach "$d/mnt" >/dev/null 2>&1 || hdiutil detach "$d/mnt" -force >/dev/null 2>&1
+      sleep "$FSEVENTS_WAIT"
+      mount_compare "detached" "$d"
+    else
+      add_diff "attach failed"
+    fi
+  fi
+  mount_cleanup
+  export FIL_SNAPSHOT_DIR=$prev_snap
+  trap cleanup EXIT
+  [[ -n "$DIFFS" ]] && echo "     numbers:$PASS_TEXT"
+  end_scenario "$name"
+}
+
 # ---------------------------------------------------------------- main
 
 # Snapshots go to a private temp dir, never to ~/Library/Caches/Fil.
@@ -280,6 +352,7 @@ EXPECT_SHARED=shared_clone_new run_scenario "clone: new file, 2 clones"      inc
 EXPECT_SHARED=shared_clone_old run_scenario "clone: old file, 2 new clones"  incremental setup_clone_old change_clone_old
 EXPECT_SHARED=shared_clone_del_orig run_scenario "clone: delete original" incremental setup_clone_pair change_clone_del_orig
 EXPECT_SHARED=shared_clone_grow run_scenario "clone: grow one clone"     incremental setup_clone_pair change_clone_grow
+run_mount_scenario
 
 echo
 echo "$((TOTAL - FAILS))/$TOTAL scenarios passed"
