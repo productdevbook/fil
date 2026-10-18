@@ -38,7 +38,9 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     // Tolerant hard links, like the app: an unknown old hard link is counted and reported as uncertain.
     let options = ScanOptions(strictHardlinks: false)
     // The simctl query runs while the tree loads and updates.
-    let simulators = Cleanup.startSimulatorQuery(home: home)
+    // A dry run writes nothing: no snapshot, no tool-paths.json (chapter 05 §6.2, #13).
+    let dryRun = command == "clean" && !yes
+    let simulators = Cleanup.startToolQueries(home: home, writesPathCache: !dryRun)
     var tree: DiskTree?
     var unchanged = false
     var t = clock.now
@@ -61,7 +63,7 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     let scanned = try tree ?? withPath(home) { try Scanner.scan(home, options: options) }
     if tree == nil { phase("full scan", t) }
     t = clock.now
-    if !(unchanged && Snapshot.advance(scanned)) { saveSnapshot(scanned) }
+    if !dryRun, !(unchanged && Snapshot.advance(scanned)) { saveSnapshot(scanned) }
     phase("snapshot save", t, unchanged ? "  (advance only)" : "")
     t = clock.now
     let scan = await Cleanup.scan(home: home, tree: scanned, simulators: simulators)
