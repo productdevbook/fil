@@ -572,6 +572,14 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
   children by their bytes (`rawNames` bytes, else UTF-8 of the name), so names whose display forms collide stay
   apart and a rename between two raw names is a removal plus an addition. (3) An incomplete re-read keeps known
   children it did not list (the listing proves nothing about them); only new names are added.
+- Second review (2026-10-18): (1) on an incomplete re-read each unlisted known child gets one `lstat` (by bytes for a
+  raw name) and is kept only while it is a directory on the tree's volume; a rename seen only as the parent's event
+  is no longer counted twice. Reading: `DirNode` stores no inode, so a folder deleted and recreated under the same
+  name in between is kept with its old sizes until its next read. (2) Every update re-reads each live `incomplete`
+  folder, also with no events (one pass over the node flags per update); a flagged folder whose own path is gone
+  has its parent read too. (3) Names identify children by UTF-8 bytes: `ChildKey` compares bytes, and
+  `DiskTree.child(of:named:)` prefers a byte-equal name and falls back to a canonically equal one, so events and
+  typed paths in another normalization still find their folder.
 
 ## Glossary additions
 

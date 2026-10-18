@@ -109,6 +109,33 @@ struct RawNameTests {
         }
     }
 
+    /// APFS keeps one of two canonically equal names, so the tree is given an NFC name for a folder that is NFD on disk:
+    /// to the update diff that is another folder, as an NFC and an NFD folder side by side on SMB or NFS would be.
+    @Test("children are matched by bytes, so NFC and NFD forms of a name are different folders")
+    func normalizationForms() throws {
+        let nfd = "e\u{301}", nfc = "\u{E9}"
+        #expect(nfd == nfc && !nfd.utf8.elementsEqual(nfc.utf8))
+        try Fixture.with { f in
+            try f.mk("x/\(nfd)/file", bytes: 100_000)
+            try f.mk("x/plain/file", bytes: 1000)
+            let tree = try Scanner.scan(f.root)
+            // A path typed or reported in the other form still finds the folder.
+            let id = try #require(tree.node(at: f.path("x/\(nfc)")))
+            #expect(tree.nodes[id].name.utf8.elementsEqual(nfd.utf8))
+            tree.nodes[id].name = nfc
+            var report = UpdateReport()
+            #expect(Incremental.applyTracked([EventHistory.Event(path: f.path("x"), mustScanSubDirs: false)],
+                                             to: tree, options: ScanOptions(), report: &report) == nil)
+            let x = try #require(tree.node(at: f.path("x")))
+            var names: [String] = []
+            tree.forEachChild(of: Int32(x)) { names.append(tree.nodes[Int($0)].name) }
+            #expect(names.contains { $0.utf8.elementsEqual(nfd.utf8) })
+            #expect(!names.contains { $0.utf8.elementsEqual(nfc.utf8) })
+            #expect(report.dirsRemoved == 1)
+            #expect(Totals(tree).sameRoot(as: Totals(try Scanner.scan(f.root))))
+        }
+    }
+
     @Test("an update keeps a raw-named folder that its bytes do not open, in a re-read and in a rescan")
     func updateKeepsUnopenableRawName() throws {
         for subtree in [false, true] {

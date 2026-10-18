@@ -588,14 +588,21 @@ extension DiskTree {
     }
 
     /// The live child of `id` called `name`. Requires `syncLinks` since the last append.
+    /// Names are compared by their UTF-8 bytes first: `String` equality treats NFC and NFD forms as one name, and both
+    /// can exist side by side on some volumes. A path from outside the listing (an event, a typed path) may use another
+    /// normalization than the disk; when no name matches byte for byte, a canonically equal one is taken.
     func child(of id: Int32, named name: String) -> Int32? {
+        var equivalent: Int32?
         var c = links.first[Int(id)]
         while c >= 0 {
             let n = nodes[Int(c)]
-            if n.parent == id && n.name == name { return c }
+            if n.parent == id {
+                if n.name.utf8.elementsEqual(name.utf8) { return c }
+                if equivalent == nil && n.name == name { equivalent = c }
+            }
             c = links.next[Int(c)]
         }
-        return nil
+        return equivalent
     }
 
     /// Node id of the directory at `path` (absolute, inside `rootPath`), or nil when it is not in the tree.

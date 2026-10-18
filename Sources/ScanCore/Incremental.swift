@@ -765,13 +765,27 @@ final class EventHistory: @unchecked Sendable {
     }
 }
 
-/// A child directory as the update diff matches it: by the bytes of its name. Valid names keep their `String`
-/// (no copy); a name that is not UTF-8 is its raw bytes, so two such names never meet through a shared display form.
-private enum ChildKey: Hashable {
-    case name(String)
-    case raw([UInt8])
+/// A child directory as the update diff matches it: by the bytes of its name, never by `String` equality, which treats
+/// canonically equivalent names (NFC and NFD `é`) as one; both can exist side by side on some volumes (SMB, NFS).
+/// A valid name keeps its `String` (no copy); a name that is not UTF-8 is its raw bytes.
+private struct ChildKey: Hashable {
+    let name: String
+    let raw: [UInt8]?
 
-    init(name: String, raw: [UInt8]?) {
-        self = raw.map { bytes in String(validating: bytes, as: UTF8.self).map(ChildKey.name) ?? .raw(bytes) } ?? .name(name)
+    static func == (a: ChildKey, b: ChildKey) -> Bool {
+        switch (a.raw, b.raw) {
+        case let (x?, y?): x == y
+        case let (x?, nil): x.elementsEqual(b.name.utf8)
+        case let (nil, y?): a.name.utf8.elementsEqual(y)
+        case (nil, nil): a.name.utf8.elementsEqual(b.name.utf8)
+        }
+    }
+
+    func hash(into h: inout Hasher) {
+        if let raw {
+            raw.withUnsafeBytes { h.combine(bytes: $0) }
+        } else if name.utf8.withContiguousStorageIfAvailable({ h.combine(bytes: UnsafeRawBufferPointer($0)) }) == nil {
+            Array(name.utf8).withUnsafeBytes { h.combine(bytes: $0) }
+        }
     }
 }
