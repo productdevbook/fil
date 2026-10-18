@@ -22,6 +22,9 @@ public protocol CommandRunner: Sendable {
 public struct SystemCommandRunner: CommandRunner {
     /// Working directory of the child (the home directory, so no project-local config is picked up).
     public var workingDirectory: String?
+    /// How long the child's process group gets after SIGTERM before SIGKILL when the command is stopped.
+    /// Zero (queries): SIGKILL at once. Removals use 5 s so a tool can clean up.
+    public var gracePeriod: Duration
 
     /// Keeps queries from updating, prompting or downloading anything.
     static let quietEnvironment: [String: String] = [
@@ -30,7 +33,10 @@ public struct SystemCommandRunner: CommandRunner {
         "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0", "PIP_DISABLE_PIP_VERSION_CHECK": "1", "GOTOOLCHAIN": "local",
     ]
 
-    public init(workingDirectory: String? = nil) { self.workingDirectory = workingDirectory }
+    public init(workingDirectory: String? = nil, gracePeriod: Duration = .zero) {
+        self.workingDirectory = workingDirectory
+        self.gracePeriod = gracePeriod
+    }
 
     public func run(_ argv: [String], timeout: Duration) async -> CommandResult {
         guard let exe = argv.first else { return .failed("empty command") }
@@ -42,10 +48,11 @@ public struct SystemCommandRunner: CommandRunner {
         for (k, v) in Self.quietEnvironment { env[Environment.Key(rawValue: k)!] = v }
         env["PATH"] = [dir, realDir, inherited].joined(separator: ":")
         let workingDirectory = workingDirectory
+        let gracePeriod = gracePeriod
         let environment = env
         return await withTaskGroup(of: CommandResult?.self) { group in
             group.addTask {
-                await collect(argv, environment: environment, workingDirectory: workingDirectory)
+                await collect(argv, environment: environment, workingDirectory: workingDirectory, gracePeriod: gracePeriod)
             }
             group.addTask {
                 try? await Task.sleep(for: timeout)
@@ -60,10 +67,16 @@ public struct SystemCommandRunner: CommandRunner {
 }
 
 /// Runs one command to completion. Returns nil when cancelled (the timeout fired first).
-private func collect(_ argv: [String], environment: [Environment.Key: String?], workingDirectory: String?) async -> CommandResult? {
+private func collect(_ argv: [String], environment: [Environment.Key: String?], workingDirectory: String?,
+                     gracePeriod: Duration) async -> CommandResult? {
     var options = PlatformOptions()
     options.createSession = true
-    options.teardownSequence = [.send(signal: .kill, toProcessGroup: true, allowedDurationToNextStep: .zero)]
+    var teardown: [TeardownStep] = []
+    if gracePeriod > .zero {
+        teardown.append(.gracefulShutDown(toProcessGroup: true, allowedDurationToNextStep: gracePeriod))
+    }
+    teardown.append(.send(signal: .kill, toProcessGroup: true, allowedDurationToNextStep: .zero))
+    options.teardownSequence = teardown
     do {
         let r = try await run(.path(FilePath(argv[0])), arguments: Arguments(Array(argv.dropFirst())),
                               environment: .inherit.updating(environment), workingDirectory: workingDirectory.map { FilePath($0) },
@@ -87,23 +100,3 @@ func resolvedPath(_ p: String) -> String {
     return String(cString: r)
 }
 
-enum Commands {
-    struct Failure: Error, CustomStringConvertible { let description: String }
-
-    /// Runs a removal command (argv[0] is an absolute path) without a shell and without a timeout: deleting a
-    /// simulator runtime can take a while. Returns its standard output.
-    /// Runs in `workingDirectory` (home) with the quiet environment, so `go clean` neither picks up a project's
-    /// `go.mod` nor downloads a toolchain.
-    static func output(_ argv: [String], workingDirectory: String? = nil) async throws -> String {
-        var env: [Environment.Key: String?] = [:]
-        for (k, v) in SystemCommandRunner.quietEnvironment { env[Environment.Key(rawValue: k)!] = v }
-        let r = try await run(.path(FilePath(argv[0])), arguments: Arguments(Array(argv.dropFirst())),
-                              environment: .inherit.updating(env), workingDirectory: workingDirectory.map { FilePath($0) },
-                              output: .string(limit: 16 << 20), error: .string(limit: 1 << 20))
-        guard r.terminationStatus.isSuccess else {
-            let err = r.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw Failure(description: "\((argv[0] as NSString).lastPathComponent) failed: \(r.terminationStatus) \(err)")
-        }
-        return r.standardOutput
-    }
-}

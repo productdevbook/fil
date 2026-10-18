@@ -92,6 +92,8 @@ public enum Cleanup {
         case movedOtherItem(URL)
         /// The item moved, but the system did not say where, so the move cannot be verified.
         case movedUnverified
+        /// A removal command ran longer than allowed and was stopped (SIGTERM, then SIGKILL).
+        case timedOut(seconds: Int)
         case system(String)
 
         public var description: String {
@@ -99,6 +101,7 @@ public enum Cleanup {
             case .pathChanged: "path changed or is not a plain directory in home; skipped"
             case .movedOtherItem(let url): "a different item was moved to the Trash at \(url.path); put it back"
             case .movedUnverified: "moved to the Trash, but the system did not say where; check the Trash"
+            case .timedOut(let seconds): "timed out after \(seconds) s; the command was stopped"
             case .system(let text): text
             }
         }
@@ -135,9 +138,14 @@ public enum Cleanup {
         return Resolution(chosen: chosen, leftOut: leftOut)
     }
 
-    /// Moves or removes each candidate; one failure does not stop the others.
-    public static func execute(_ items: [Candidate], home: String,
-                               trasher: any Trasher = SystemTrasher()) async -> [(Candidate, Outcome)] {
+    /// Moves or removes each candidate; one failure does not stop the others. Removal commands run through
+    /// `runner` (default: the system runner in `home`, own session, SIGTERM then SIGKILL after 5 s) and are
+    /// stopped after `removalTimeout`. When the calling task is cancelled the running command is stopped, it is
+    /// reported as failed ("interrupted") and no further item runs.
+    public static func execute(_ items: [Candidate], home: String, trasher: any Trasher = SystemTrasher(),
+                               runner: (any CommandRunner)? = nil,
+                               removalTimeout: Duration = .seconds(600)) async -> [(Candidate, Outcome)] {
+        let runner = runner ?? SystemCommandRunner(workingDirectory: home, gracePeriod: .seconds(5))
         var results: [(Candidate, Outcome)] = []
         var ran: [[String]: Outcome] = [:]
         let homeDev: dev_t = { var st = stat(); return stat(home, &st) == 0 ? st.st_dev : 0 }()
@@ -150,12 +158,19 @@ public enum Cleanup {
                     results.append((c, prev.isFailure ? prev : .commandShared))
                     continue
                 }
+                if Task.isCancelled { return results }
                 let outcome: Outcome
-                do { _ = try await Commands.output(argv, workingDirectory: home); outcome = .commandRan } catch {
-                    outcome = .failed(.system("\(error)"))
+                switch await runner.run(argv, timeout: removalTimeout) {
+                case .success: outcome = .commandRan
+                case .failed(let why):
+                    outcome = .failed(.system("\(((argv.first ?? "") as NSString).lastPathComponent) failed: \(why)"))
+                case .timedOut:
+                    outcome = .failed(Task.isCancelled ? .system("interrupted; the command was stopped")
+                                                       : .timedOut(seconds: Int(removalTimeout.components.seconds)))
                 }
-                ran[argv] = outcome
                 results.append((c, outcome))
+                if Task.isCancelled { return results }
+                ran[argv] = outcome
             case .trash:
                 // Re-check right before moving (chapter 04 §7.2). A window remains between the last check and
                 // `trashItem`, which takes a path; the check after the move (§7.2 step 6) detects a swap there.

@@ -155,7 +155,17 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     var movedCount = 0, removedCount = 0
     var handled = 0
     var failures = 0
-    for (c, outcome) in await Cleanup.execute(chosen, home: scan.home) {
+    // Ctrl-C: the removal commands run in their own session and no longer get the terminal's SIGINT, so cancel
+    // the execute task; that stops the running command (SIGTERM, then SIGKILL).
+    let work = Task { await Cleanup.execute(chosen, home: scan.home) }
+    signal(SIGINT, SIG_IGN)
+    let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+    interrupt.setEventHandler { work.cancel() }
+    interrupt.resume()
+    let executed = await work.value
+    interrupt.cancel()
+    let interrupted = work.isCancelled
+    for (c, outcome) in executed {
         switch outcome {
         case .trashed(let url):
             moved += c.bytes
@@ -197,6 +207,10 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     if !skippedCareful.isEmpty {
         print("Left out \(skippedCareful.count) careful item(s); name a candidate id to remove it:")
         for c in skippedCareful { print("  " + UI.lpad(human(c.bytes), 9) + "  " + UI.safety(c.safety) + "  \(c.id)") }
+    }
+    if interrupted {
+        print(UI.yellow("Interrupted; the remaining items were not touched."))
+        exit(130)
     }
     if failures != 0 { exit(2) }
 }
