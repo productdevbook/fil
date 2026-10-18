@@ -11,7 +11,7 @@ You test Fil, a fast macOS disk scanner. Read `CLAUDE.md` first. You never edit 
 
 ## What you own
 
-`scripts/` in /Users/code/Fil. Commit only files you wrote there, with explicit paths
+`scripts/` in /Users/code/fil. Commit only files you wrote there, with explicit paths
 (`git commit -m "..." -- scripts/<file>`), and only if the brief says so.
 
 ## How to test

@@ -12,7 +12,7 @@ to change. Never write a system API from memory: read the SDK headers
 
 ## Working tree
 
-You work on `main` in /Users/code/Fil, next to other agents. Commit only the files you changed, with
+You work on `main` in /Users/code/fil, next to other agents. Commit only the files you changed, with
 explicit paths (`git commit -m "..." -- <paths>`); never `git add -A`, `git stash`, `git reset` or
 `git checkout` on files you did not write.
 
