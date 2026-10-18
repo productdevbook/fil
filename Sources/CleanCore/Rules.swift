@@ -220,7 +220,7 @@ public enum Rules {
             c.contains("cache") || tool.markers.contains { c.contains($0) } || tool.exactMarkers.contains(c)
         }
         guard marked else { return .notCache(relative: relative) }
-        return .accepted(custom: !isDefault)
+        return .accepted(custom: !(isDefault && def == defaultPath))
     }
 
     static func isSharedLocation(_ path: String, _ ctx: RuleContext) -> Bool {

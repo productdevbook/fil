@@ -281,6 +281,22 @@ struct CachePathTests {
         }
     }
 
+    @Test("a symlinked default whose target looks like a cache is careful, not safe")
+    func symlinkedDefaultIsCareful() async throws {
+        try await Fixture.withAsync("tools") { f in
+            try f.mk("Developer/cache-server/f", bytes: 2_000_000)
+            try f.mkdir("Library/Caches")
+            try f.symlink(f.path("Developer/cache-server"), at: "Library/Caches/Homebrew")
+            let (env, _) = fakeEnvironment(f, tools: ["brew"], answers: [
+                "/fake/bin/brew --cache": .success(f.path("Developer/cache-server") + "\n")])
+            let scan = try await scanWithTools(f, env)
+            let c = try #require(scan.candidates.first { $0.ruleId == "homebrew-cache" })
+            #expect(c.safety == .careful)
+            guard case .customCacheLocation(let tool)? = c.note else { Issue.record("\(String(describing: c.note))"); return }
+            #expect(tool == "brew")
+        }
+    }
+
     @Test("a damaged tool-paths.json (wrong count, relative paths) is ignored: defaults, no crash")
     func corruptCache() async throws {
         try await Fixture.withAsync("tools") { f in
