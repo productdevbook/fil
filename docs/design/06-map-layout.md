@@ -228,7 +228,7 @@ and anything clone-related.
 
 ## 8. Clone-aware sizes and `seconds` (#19)
 
-Reason: `docs/specs/accounting.md` defines the clone-aware size (`cloneaware=`, each APFS full-clone family
+Reason: [02 · Size accounting](02-size-accounting.md) defines the clone-aware size (`cloneaware=`, each APFS full-clone family
 counted once) as what is shown as "on disk" and used to rank the tree. `MapSource` only offers allocated sizes,
 so a folder full of clones (`cp -c`, app bundles, simulators) is drawn at its inflated `du` size, larger than the
 disk itself in extreme cases. And `MapLayout.seconds` is declared but never assigned.
@@ -247,7 +247,7 @@ public protocol MapSource {
     /// Allocated bytes of the files directly inside a folder.
     func ownAlloc(of id: Int32) -> Int64
     /// Clone-aware bytes of a folder including everything below it: like `totalAlloc`, but each APFS
-    /// full-clone family counted once, in the folder that owns it (docs/specs/accounting.md).
+    /// full-clone family counted once, in the folder that owns it (docs/design/02-size-accounting.md).
     func totalCloneAware(of id: Int32) -> Int64
     /// Clone-aware bytes of the files directly inside a folder.
     func ownCloneAware(of id: Int32) -> Int64

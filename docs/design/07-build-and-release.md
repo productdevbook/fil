@@ -289,7 +289,7 @@ change in this chapter.
 | `Sources/`, `Tests/` | code and tests (section 1) |
 | `scripts/verify.sh`, `scripts/verify-clean.sh`, `scripts/release.sh` | sections 4 and 6 |
 | `.github/workflows/ci.yml`, `.github/workflows/release.yml` | sections 3 and 7 |
-| `docs/specs/accounting.md`, `docs/specs/cleanup-rules.md` | engine and cleanup specs |
+| `docs/specs/accounting.md`, `docs/specs/cleanup-rules.md` | one-line pointers to chapters 02 and 04 (F-037) |
 | `docs/design/` | design chapters (this one) |
 | `branding/` | `fil-icon.svg`, `fil-mark.svg` and PNG renders |
 

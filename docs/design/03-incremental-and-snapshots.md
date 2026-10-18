@@ -4,7 +4,7 @@ How a `DiskTree` is saved after a scan, loaded on the next run, and brought up t
 instead of walking the disk again. Covers `Sources/ScanCore/Snapshot.swift`, `Sources/ScanCore/Incremental.swift`
 and their callers in `Sources/fil/Scan.swift` (`scan`) and `Sources/fil/Cleanup.swift` (`list`, `clean`).
 Byte accounting (`alloc`, `cloneaware`, `shared`, firmlinks, clone families) is defined in
-`docs/specs/accounting.md`; this chapter only says how an update keeps it exact.
+[02 · Size accounting](02-size-accounting.md); this chapter only says how an update keeps it exact.
 
 Status tags: **[Exists]** in the code today (file:line), **[Change]** in the code, changed by this chapter
 (reason and issue), **[New]** not in the code.

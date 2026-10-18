@@ -6,7 +6,7 @@ built on FileManager and its sizes must match `du` exactly.
 - Target: macOS 27, Apple Silicon only. No support code for older systems or Intel.
 - Code, comments and CLI output are in English. The user writes to the orchestrator in Turkish; reply in Turkish.
 - Swift Package: `Sources/ScanCore` (engine library), `Sources/MapCore` (treemap layout), `Sources/fil` (the `fil` CLI: `scan`, `doctor`, `list`, `clean`),
-  `Sources/CleanCore` (cleanup rules, spec: `docs/specs/cleanup-rules.md`).
+  `Sources/CleanCore` (cleanup rules, spec: `docs/design/04-cleanup.md`).
 - External commands (`xcrun`, `brew`) run through swift-subprocess, never a shell string.
 - Build: `swift build -c release`. Verify: `.build/release/fil scan <dir> --full --top 0` vs `du -skx <dir>`.
 - Release: `docs/design/07-build-and-release.md`; never run `scripts/release.sh` or push tags unless asked.
