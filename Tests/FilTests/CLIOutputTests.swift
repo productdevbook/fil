@@ -206,4 +206,30 @@ import Testing
             #expect(r.status == 0, "\(args): \(r.stderr)")
         }
     }
+
+    @Test func doubleDashEndsOptions() throws {
+        let root = try ErrorHandlingTests.tempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let snap = root + "/snap"
+        let weird = root + "/-weird-dir"
+        try FileManager.default.createDirectory(atPath: weird, withIntermediateDirectories: true)
+        try Data(count: 10).write(to: URL(fileURLWithPath: weird + "/f"))
+        let r = try cli.run(["scan", "--porcelain", "--", "-weird-dir"], snapshotDir: snap, cwd: root)
+        #expect(r.status == 0, "\(r.stderr)")
+        #expect(r.stdout.contains(" files=1 "), "\(r.stdout)")
+        // Without `--` the name is an option; after it, even --help is a directory name.
+        let bare = try cli.run(["scan", "-weird-dir"], snapshotDir: snap, cwd: root)
+        #expect(bare.status == 2)
+        let help = try cli.run(["scan", "--", "--help"], snapshotDir: snap, cwd: root)
+        #expect(help.status == 1, "\(help.stdout)")
+        #expect(help.stderr == "fil: --help: No such file or directory\n")
+        // Options before `--` still count; a selector after it reaches clean as an operand.
+        try makeHome(root)
+        let clean = try cli.run(["clean", "--home", root + "/home", "--", "-x"], snapshotDir: snap)
+        #expect(clean.status == 1, "\(clean.stderr)")
+        #expect(clean.stderr == "fil: nothing matches '-x'\n", "\(clean.stderr)")
+        let list = try cli.run(["list", "--", "--json"], snapshotDir: snap)
+        #expect(list.status == 2)
+        #expect(list.stderr.hasPrefix("fil: unexpected argument '--json' for 'fil list'\n"))
+    }
 }

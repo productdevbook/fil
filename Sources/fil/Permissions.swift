@@ -189,11 +189,12 @@ let doctorHelp = """
 func runDoctor(_ arguments: [String]) async -> Never {
     var open = true
     var noColor = false
-    for a in arguments {
-        switch a {
-        case "--no-open": open = false
-        case "--no-color": noColor = true
-        default: usageError("unknown option \(a) for 'fil doctor'")
+    var args = CommandLineWords(arguments)
+    while let word = args.next() {
+        switch word {
+        case .option("--no-open"): open = false
+        case .option("--no-color"): noColor = true
+        case .option(let a), .operand(let a): unknownOption(a, "doctor")
         }
     }
     UI.setup(noColor: noColor)

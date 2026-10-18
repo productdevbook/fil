@@ -147,14 +147,23 @@ enum Word: Equatable {
 /// Reads the words after the command in order.
 struct CommandLineWords {
     private var words: [String]
+    private var optionsEnded = false
 
     init(_ words: [String]) { self.words = words }
 
-    /// The next word, or nil at the end. A word starting with `-` is an option.
+    /// The next word, or nil at the end. A word starting with `-` is an option, until `--`: that word is
+    /// dropped and every later one is an operand.
     mutating func next() -> Word? {
-        guard !words.isEmpty else { return nil }
-        let w = words.removeFirst()
-        return w.hasPrefix("-") ? .option(w) : .operand(w)
+        while !words.isEmpty {
+            let w = words.removeFirst()
+            if optionsEnded { return .operand(w) }
+            if w == "--" {
+                optionsEnded = true
+                continue
+            }
+            return w.hasPrefix("-") ? .option(w) : .operand(w)
+        }
+        return nil
     }
 
     /// The word after `option`, taken as is; a missing one is a usage error.
@@ -162,6 +171,11 @@ struct CommandLineWords {
         guard !words.isEmpty else { usageError("\(option) needs a value") }
         return words.removeFirst()
     }
+}
+
+/// Whether `--help` or `-h` comes before any `--`.
+func wantsHelp(_ words: [String]) -> Bool {
+    words.prefix { $0 != "--" }.contains { $0 == "--help" || $0 == "-h" }
 }
 
 /// `unknown option <opt> for 'fil <command>'`, exit 2.
@@ -187,13 +201,13 @@ do {
             print(mainHelp)
         }
     case "scan":
-        if arguments.contains("--help") || arguments.contains("-h") { print(scanHelp); exit(0) }
+        if wantsHelp(arguments) { print(scanHelp); exit(0) }
         try runScan(arguments)
     case "doctor":
-        if arguments.contains("--help") || arguments.contains("-h") { print(doctorHelp); exit(0) }
+        if wantsHelp(arguments) { print(doctorHelp); exit(0) }
         await runDoctor(arguments)
     case "list", "clean":
-        if arguments.contains("--help") || arguments.contains("-h") { print(helpText(for: command)!); exit(0) }
+        if wantsHelp(arguments) { print(helpText(for: command)!); exit(0) }
         try await runCleanup(command, arguments)
     default:
         usageError("unknown command '\(command)'")
