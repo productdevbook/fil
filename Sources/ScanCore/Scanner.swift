@@ -58,12 +58,15 @@ public enum Scanner {
     /// Scans the subtrees under existing nodes `ids` in one parallel pass. Their old descendants must
     /// already be dead; new descendants are appended to the tree. Returns the ids whose directory is gone
     /// (`DirOutcome.isGone`) with the errno of the failed `open`; an unreadable root stays, empty, like in a full scan.
-    static func rescanSubtrees(_ ids: [Int32], in tree: DiskTree, options: ScanOptions,
+    /// `checkRootDevice` (updates): each of `ids` is opened by path and may have become another volume's mount point
+    /// since the snapshot; it is then gone with `EXDEV`. A full scan leaves it off: there the root defines the device.
+    static func rescanSubtrees(_ ids: [Int32], in tree: DiskTree, options: ScanOptions, checkRootDevice: Bool = false,
                                progress: ScanProgress? = nil) -> [Int32: Int32] {
         guard !ids.isEmpty else { return [:] }
         let job = ParallelScan(roots: ids.map { ($0, tree.path(of: Int($0))) }, rootDev: tree.rootDev,
                                options: options, exclusions: tree.exclusions, hardlinks: tree.hardlinks,
-                               clones: tree.clones, idBase: Int32(tree.nodes.count), progress: progress)
+                               clones: tree.clones, idBase: Int32(tree.nodes.count), checkRootDevice: checkRootDevice,
+                               progress: progress)
         job.run()
         let rootCount = Int32(ids.count)
         for (i, id) in ids.enumerated() {
@@ -116,6 +119,8 @@ private final class ParallelScan: @unchecked Sendable {
     let clones: CloneRegistry
     let rootIds: [Int32]
     let idBase: Int32
+    /// Root items check their own device (`DirReader.read(checkOwnDevice:)`); the others were checked by a listing.
+    let checkRootDevice: Bool
     let progress: ScanProgress?
 
     // `cond` guards: nodes, queue, active, stats, finished, failedRoots
@@ -129,8 +134,10 @@ private final class ParallelScan: @unchecked Sendable {
 
     /// Local ids 0..<roots.count are the roots; everything found below them is appended after.
     init(roots: [(id: Int32, path: String)], rootDev: dev_t, options: ScanOptions, exclusions: [String: Set<String>],
-         hardlinks: HardlinkRegistry, clones: CloneRegistry, idBase: Int32, progress: ScanProgress?) {
+         hardlinks: HardlinkRegistry, clones: CloneRegistry, idBase: Int32, checkRootDevice: Bool,
+         progress: ScanProgress?) {
         self.options = options
+        self.checkRootDevice = checkRootDevice
         self.progress = progress
         self.config = DirReader.Config(rootDev: rootDev, options: options, exclusions: exclusions)
         self.hardlinks = hardlinks
@@ -181,7 +188,8 @@ private final class ParallelScan: @unchecked Sendable {
             cond.unlock()
 
             let gid = globalId(item.id)
-            var out = reader.read(item.path) { inode, alloc, logical, cloneAware, name in
+            var out = reader.read(item.path, checkOwnDevice: checkRootDevice && item.id < rootIds.count) {
+                inode, alloc, logical, cloneAware, name in
                 self.hardlinks.vet(inode, alloc: alloc, dirPath: item.path, name: name)
                 return self.hardlinks.claim(inode, by: gid, alloc: alloc, logical: logical, cloneAware: cloneAware)
             }
@@ -237,9 +245,12 @@ struct DirOutcome {
     /// errno of the failed `open`, 0 if it opened.
     var openError: Int32 = 0
 
-    /// The directory no longer exists as a directory. Any other failure (EACCES, EPERM, ...) leaves it in the
-    /// tree, empty, as a full scan does.
-    var isGone: Bool { !opened && (openError == ENOENT || openError == ENOTDIR || openError == ELOOP) }
+    /// The directory no longer exists as a directory, or (`EXDEV`, `Config.checkOwnDevice`) it is now another volume's
+    /// mount point, which a full scan never enters. Any other failure (EACCES, EPERM, ...) leaves it in the tree,
+    /// empty, as a full scan does.
+    var isGone: Bool {
+        !opened && (openError == ENOENT || openError == ENOTDIR || openError == ELOOP || openError == EXDEV)
+    }
 }
 
 /// Reads all entries of one directory in bulk via getattrlistbulk.
@@ -253,12 +264,18 @@ struct DirReader {
         var userAccess = false
         /// Directory path -> child directories not to descend into (data-volume twins of firmlinks).
         var exclusions: [String: Set<String>] = [:]
+        /// `fstat` the directory after `open` and refuse it (`EXDEV`) when it is on another device. For directories an
+        /// update opens on their own: a listing checks its children, but nothing has checked these since the snapshot,
+        /// and one may now be a mount point. One syscall per directory, none per file.
+        var checkOwnDevice = false
 
-        init(rootDev: dev_t, options: ScanOptions, userAccess: Bool = false, exclusions: [String: Set<String>] = [:]) {
+        init(rootDev: dev_t, options: ScanOptions, userAccess: Bool = false, exclusions: [String: Set<String>] = [:],
+             checkOwnDevice: Bool = false) {
             self.rootDev = rootDev
             self.options = options
             self.userAccess = userAccess
             self.exclusions = exclusions
+            self.checkOwnDevice = checkOwnDevice
         }
     }
 
@@ -274,8 +291,9 @@ struct DirReader {
     func deallocate() { buf.deallocate() }
 
     /// `claim(inode, alloc, logical, cloneAware, name)` decides whether a multiply-linked inode is counted here;
-    /// returning nil defers it.
-    func read(_ path: String, claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?) -> DirOutcome {
+    /// returning nil defers it. `checkOwnDevice` overrides `Config.checkOwnDevice` for this directory.
+    func read(_ path: String, checkOwnDevice: Bool? = nil,
+              claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?) -> DirOutcome {
         var out = DirOutcome()
         let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else {
@@ -285,6 +303,15 @@ struct DirReader {
             return out
         }
         defer { close(fd) }
+        if checkOwnDevice ?? config.checkOwnDevice, !config.options.crossDevices {
+            var st = stat()
+            if fstat(fd, &st) == 0 && st.st_dev != config.rootDev {
+                out.openError = EXDEV
+                out.opened = false
+                out.stats.mountsSkipped = 1
+                return out
+            }
+        }
 
         var al = attrlist()
         al.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
@@ -294,6 +321,8 @@ struct DirReader {
         al.fileattr = attrgroup_t(ATTR_FILE_LINKCOUNT) | attrgroup_t(ATTR_FILE_ALLOCSIZE)
             | attrgroup_t(ATTR_FILE_DATALENGTH)
         if config.userAccess { al.commonattr |= attrgroup_t(ATTR_CMN_USERACCESS) }
+        // Directories only: a mount point is listed with the attributes of the directory underneath it.
+        al.dirattr = attrgroup_t(ATTR_DIR_MOUNTSTATUS)
         // Clone id and extended flags are inode fields: cheap, unlike PRIVATESIZE, which walks the extents.
         al.forkattr = attrgroup_t(ATTR_CMNEXT_CLONEID) | attrgroup_t(ATTR_CMNEXT_EXT_FLAGS)
         if config.options.privateSize { al.forkattr |= attrgroup_t(ATTR_CMNEXT_PRIVATESIZE) }
@@ -309,16 +338,23 @@ struct DirReader {
             var entry = UnsafeRawPointer(buf)
             for _ in 0..<count {
                 let length = Int(entry.loadUnaligned(as: UInt32.self))
-                parseEntry(entry + 4, into: &out, skip: skip, claim: claim)
+                parseEntry(entry + 4, into: &out, dirPath: path, skip: skip, claim: claim)
                 entry += length
             }
         }
         return out
     }
 
-    // Fields are packed in sys/attr.h bit order; ERROR comes right after RETURNED_ATTRS.
+    /// `st_dev` of the volume mounted on `dirPath/name`, from `lstat` (as `du -x` sees it).
+    private static func mountedDevice(_ dirPath: String, _ name: UnsafeRawPointer) -> dev_t? {
+        let path = (dirPath == "/" ? "" : dirPath) + "/" + String(cString: name.assumingMemoryBound(to: CChar.self))
+        var st = stat()
+        return lstat(path, &st) == 0 ? st.st_dev : nil
+    }
+
+    // Fields are packed in sys/attr.h bit order (common, directory, file, fork); ERROR comes right after RETURNED_ATTRS.
     @inline(__always)
-    private func parseEntry(_ start: UnsafeRawPointer, into out: inout DirOutcome, skip: Set<String>?,
+    private func parseEntry(_ start: UnsafeRawPointer, into out: inout DirOutcome, dirPath: String, skip: Set<String>?,
                             claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?) {
         var f = start
         let returned = f.loadUnaligned(as: attribute_set_t.self)
@@ -361,8 +397,18 @@ struct DirReader {
             fileID = f.loadUnaligned(as: UInt64.self)
             f += 8
         }
+        var mountStatus: UInt32 = 0
+        if returned.dirattr & attrgroup_t(ATTR_DIR_MOUNTSTATUS) != 0 {
+            mountStatus = f.loadUnaligned(as: UInt32.self)
+            f += 4
+        }
 
         if type == UInt32(VDIR.rawValue) {
+            if mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT) != 0 && !config.options.crossDevices, let namePtr {
+                // DEVID is the covered directory's; the mounted volume's root decides, as for du -x. One syscall per
+                // mount point, none per file. If lstat fails the device is unknown: not entered.
+                dev = Self.mountedDevice(dirPath, namePtr) ?? ~config.rootDev
+            }
             if dev != config.rootDev && !config.options.crossDevices { out.stats.mountsSkipped += 1; return }
             if flags & UInt32(SF_DATALESS) != 0 { out.stats.datalessDirs += 1; return }
             if let namePtr {

@@ -306,6 +306,89 @@ struct IncrementalFSEventsTests {
         }
     }
 
+    @Test("a disk image mounted inside the root after the snapshot is left out, as by a full scan and du -x",
+          .enabled(if: DiskImage.isAvailable, "hdiutil is not available"))
+    func mountAndUnmount() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with("mount") { f in try withImage { image in
+                try f.mk("data/a", bytes: 300_000)
+                try f.mkdir("mnt")
+                try Snapshot.save(try Scanner.scan(f.root), in: dir)
+
+                // FSEvents keeps no Mount event in its history: the update finds the mount in the mount table.
+                guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
+                let mounted = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                guard case .success = Incremental.update(mounted) else {
+                    Issue.record("update after mount failed")
+                    return
+                }
+                let full = try Scanner.scan(f.root)
+                #expect(Totals(mounted) == Totals(full), "mounted: incremental \(Totals(mounted)) full \(Totals(full))")
+                // A file at the root of the image must not be counted either: listings report a mount point with the
+                // attributes of the directory underneath it.
+                #expect(full.root.totalAlloc == f.duBytes(), "mounted: full scan vs du")
+                #expect(full.stats.mountsSkipped == 1)
+                #expect(mounted.node(at: f.path("mnt")) == nil)
+                try Snapshot.save(mounted, in: dir)
+
+                image.detach()
+                let unmounted = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                guard case .success = Incremental.update(unmounted) else {
+                    Issue.record("update after unmount failed")
+                    return
+                }
+                let fullAfter = try Scanner.scan(f.root)
+                let (a, b) = (Totals(unmounted), Totals(fullAfter))
+                #expect(a.alloc == b.alloc && a.files == b.files && a.cloneAware == b.cloneAware,
+                        "unmounted: incremental \(a) full \(b)")
+                #expect(fullAfter.root.totalAlloc == f.duBytes(), "unmounted: full scan vs du")
+                // Found only when something else under its parent changed (an event fseventsd numbered late, ...).
+                withKnownIssue("an unmount leaves no event and the snapshot does not record skipped mount points",
+                               isIntermittent: true) {
+                    #expect(a == b, "unmounted: the empty mount-point folder is not found again")
+                }
+            } }
+        }
+    }
+
+    @Test("a folder a volume is mounted over no longer counts what it held",
+          .enabled(if: DiskImage.isAvailable, "hdiutil is not available"))
+    func mountHidesContents() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with("mount") { f in try withImage { image in
+                try f.mk("data/a", bytes: 300_000)
+                try f.mk("mnt/under", bytes: 100_000)
+                try f.mk("mnt/deep/x", bytes: 50_000)
+                let (outcome, full) = try scanChangeUpdate(f, dir: dir, options: ScanOptions()) {
+                    guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
+                }
+                guard case .incremental(let tree, let report) = outcome else {
+                    Issue.record("update failed: \(outcome)")
+                    return
+                }
+                #expect(Totals(tree) == Totals(full), "incremental \(Totals(tree)) full \(Totals(full))")
+                #expect(full.root.totalAlloc == f.duBytes())
+                #expect(tree.node(at: f.path("mnt")) == nil)
+                #expect(report.dirsRemoved == 2, "\(report)")
+            } }
+        }
+    }
+
+    /// Runs `body` with an APFS image holding a file at its root and one in a folder. The image lives in a fixture of
+    /// its own, outside the scanned root: attaching and detaching write to the image file, and that write would give
+    /// the root an event of its own. Detached afterwards, also when `body` throws.
+    private func withImage(_ body: (DiskImage) throws -> Void) throws {
+        try Fixture.with("image") { box in
+            try box.mk("src/rootfile", bytes: 400_000)
+            try box.mk("src/sub/inner", bytes: 2_000_000)
+            guard let image = DiskImage(from: box.path("src"), at: box.path("vol.dmg")) else {
+                try Test.cancel("hdiutil create failed")
+            }
+            defer { image.detach() }
+            try body(image)
+        }
+    }
+
     @Test("a snapshot of another root is not used")
     func otherRoot() throws {
         try withSnapshotDir { dir in

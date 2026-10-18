@@ -115,13 +115,16 @@ public enum Incremental {
     /// not to the size of the tree: child lists are kept on the tree, totals are fixed up along ancestor chains.
     private static func apply(_ events: [EventHistory.Event], to tree: DiskTree, options: ScanOptions,
                               report: inout UpdateReport) -> UpdateFailure? {
-        guard !events.isEmpty else { return nil }
+        let prefixes = rootPrefixes(tree.rootPath)
+        let aliases = tree.aliases
+        // FSEvents keeps no Mount or Unmount event in its history (they are delivered live only), so a volume mounted
+        // on a directory of the tree since the snapshot is found in the mount table.
+        let mounted = options.crossDevices ? [] : mountedOver(tree, prefixes: prefixes, aliases: aliases)
+        guard !events.isEmpty || !mounted.isEmpty else { return nil }
         func unattributed() -> UpdateFailure { .unattributedHardLink(paths: tree.hardlinks.unattributedPaths) }
         var t = Timings.Lap("apply")
         let firstNew = tree.nodes.count
         tree.syncLinks()
-        let prefixes = rootPrefixes(tree.rootPath)
-        let aliases = tree.aliases
         t.lap("links")
 
         // 1. Map each event to the nearest directory we know; a new directory is found by re-reading its parent.
@@ -136,6 +139,8 @@ public enum Incremental {
             }
             if e.mustScanSubDirs { full.insert(id) } else { shallow.insert(id) }
         }
+        // Its old contents are hidden now; the rescan's own-device check finds the other volume and removes the node.
+        full.formUnion(mounted)
         func underFull(_ id: Int32, includingSelf: Bool) -> Bool {
             var i = includingSelf ? id : tree.nodes[Int(id)].parent
             while i >= 0 {
@@ -268,13 +273,16 @@ public enum Incremental {
         }
 
         // 4. Walk new directories and flagged subtrees in one parallel pass.
-        let targets = full.sorted() + (newDirs + readable).filter { !tree.nodes[Int($0)].isDead }
+        // A flagged directory may have been removed by its parent's re-read (deleted, or now a mount point); a dead
+        // node has no path of its own.
+        let targets = (full.sorted() + newDirs + readable).filter { !tree.nodes[Int($0)].isDead }
         report.subtreesScanned = targets.count
-        let gone = Scanner.rescanSubtrees(targets, in: tree, options: options)
+        let gone = Scanner.rescanSubtrees(targets, in: tree, options: options, checkRootDevice: true)
         if let e = gone[0] { return .rootUnreadable(errno: e) }
         for id in gone.keys {
             changed.append(tree.nodes[Int(id)].parent)
             tree.nodes[Int(id)].parent = DirNode.dead
+            report.dirsRemoved += 1
         }
         t.lap("rescan(\(targets.count))")
         if options.strictHardlinks && tree.hardlinks.unattributed { return unattributed() }
@@ -316,13 +324,55 @@ public enum Incremental {
         return nil
     }
 
+    /// Live directories of the tree on which another volume is mounted now. A full scan never has a node for a mount
+    /// point, so each one was mounted after the snapshot. One `getfsstat` per update; the child links are synced and
+    /// `lstat` called only for mount points inside the root, the tree lookup first (no `lstat` of an unrelated, perhaps
+    /// slow, network volume). A volume on our own device (the data volume of the boot volume group) is part of the tree.
+    static func mountedOver(_ tree: DiskTree, prefixes: [String], aliases: [FirmlinkTable.Alias]) -> [Int32] {
+        let count = getfsstat(nil, 0, MNT_NOWAIT)
+        guard count > 0 else { return [] }
+        // Room for a few mounts made between the two calls. Plain C structs: the kernel fills the first `got`.
+        let capacity = Int(count) + 8
+        let mounts = UnsafeMutablePointer<statfs>.allocate(capacity: capacity)
+        defer { mounts.deallocate() }
+        let got = getfsstat(mounts, Int32(capacity * MemoryLayout<statfs>.stride), MNT_NOWAIT)
+        guard got > 0 else { return [] }
+        var synced = false
+        var ids: [Int32] = []
+        for i in 0..<Int(got) {
+            let path = withUnsafeBytes(of: mounts[i].f_mntonname) { raw in
+                String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+            }
+            guard let comps = relativeComponents(path, prefixes: prefixes, aliases: aliases), !comps.isEmpty else {
+                continue
+            }
+            if !synced {
+                tree.syncLinks()
+                synced = true
+            }
+            var id: Int32 = 0
+            for c in comps {
+                guard let child = tree.child(of: id, named: String(c)) else {
+                    id = -1
+                    break
+                }
+                id = child
+            }
+            guard id > 0 else { continue }
+            var st = stat()
+            if lstat(path, &st) == 0 && st.st_dev == tree.rootDev { continue }
+            ids.append(id)
+        }
+        return ids
+    }
+
     /// Reads each directory once with up to `options.threads` workers; results are in input order.
     /// Invariant: nothing mutates the hard-link table while this runs. Workers only call `vet`, which reads the
     /// table under its lock; every claim is deferred (the closure returns nil) and made after `forget`, on one thread.
     private static func readDirectories(_ paths: [String], tree: DiskTree, options: ScanOptions) -> [DirOutcome] {
         guard !paths.isEmpty else { return [] }
         let config = DirReader.Config(rootDev: tree.rootDev, options: options, userAccess: true,
-                                      exclusions: tree.exclusions)
+                                      exclusions: tree.exclusions, checkOwnDevice: true)
         let hardlinks = tree.hardlinks
         var results = [DirOutcome](repeating: DirOutcome(), count: paths.count)
         let nextIndex = Atomic<Int>(0)
