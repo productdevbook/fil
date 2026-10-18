@@ -33,4 +33,4 @@ To the extent permitted by law, You waive, or agree not to assert, any moral rig
 
 ## 6. Signing
 
-You sign this agreement electronically through the CLA Assistant bot on Your first pull request. Your signature applies to all Contributions You submit afterward, until You notify the Maintainer otherwise in writing. Revocation does not affect Contributions already accepted.
+You sign this agreement electronically by posting the sentence given by the CLA check on Your first pull request. Your signature is recorded on the `cla-signatures` branch of the repository. Your signature applies to all Contributions You submit afterward, until You notify the Maintainer otherwise in writing. Revocation does not affect Contributions already accepted.

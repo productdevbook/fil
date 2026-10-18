@@ -35,7 +35,7 @@ Changes to the scan engine should include a before/after benchmark and a compari
 
 ## Contributor License Agreement (CLA)
 
-Every contributor must sign the [CLA](CLA.md) before a PR can be merged. The CLA Assistant bot comments on your first PR with a link; sign once and it applies to later contributions.
+Every contributor must sign the [CLA](CLA.md) before a PR can be merged. The CLA check (`.github/workflows/cla.yml`) comments on your first pull request. To sign, reply with exactly: `I have read the CLA Document and I hereby sign the CLA`. Your signature is recorded on the `cla-signatures` branch and covers later contributions. Comment `recheck` to run the check again.
 
 Why: this repository is GPL-3.0, but the author also ships the same engine inside the proprietary Fil desktop app. The CLA gives the author the right to relicense contributions for that purpose. You keep the copyright in your work.
 
