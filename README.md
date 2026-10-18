@@ -22,6 +22,17 @@ Benchmark, 1.46M files:
 | `du` | ~40 s |
 | `FileManager` | ~42 s |
 
+## Install
+
+Requires macOS 27 on Apple Silicon. The binary is signed with a Developer ID and notarized by Apple.
+
+```sh
+brew install --cask productdevbook/tap/fil
+```
+
+Homebrew asks you to trust third-party taps; installing by the full name trusts only this cask.
+Prebuilt binaries are also attached to each [GitHub release](https://github.com/productdevbook/fil/releases).
+
 ## Build
 
 Requires macOS 27 on Apple Silicon and the Swift toolchain.
