@@ -738,6 +738,17 @@ Gaps today, all fixed by the change:
   directory) after option parsing, so usage errors still come first. Error messages quote the argument as typed
   (`fil: <arg>: not a directory`); the header, the snapshot key and `home` in `--json` use the resolved path.
   `--naive` resolves the same way. Several DIRs: still the last one wins until #10.
+- #42 (`clean --json`, 6.4): the items have no `note` key (the human rows' info-only note is not part of the
+  document). `argv` is set by removal type: an array for a command removal, null for the Trash and for info only;
+  `removal` is `trash`, `info only`, or the argv joined by spaces. Ctrl-C lists only the items that ran before the
+  interrupt, not the ones skipped; stderr gets `fil: interrupted; the remaining items were not touched` and the
+  exit status is 130. A failed item still gets its row in the JSON (`outcome` `failed`, `error` set) on stdout and
+  `fil: <n> item(s) failed` on stderr, exit 3. `leftOut` lists each careful candidate once and never repeats an
+  item that was chosen.
+- #26: `fil help help` prints the main help. README "Usage", "Output" and "Exit status" follow the help texts;
+  `ReadmeParityTests` fails when an option or command in `--help` is missing from README.md. The check is a unit
+  test instead of the `scripts/check-help.sh` that 10 proposed. The main help still has no `completion` line
+  until #27.
 
 ## Glossary additions
 

@@ -80,6 +80,7 @@ let cleanHelp = """
 
 func helpText(for command: String) -> String? {
     switch command {
+    case "help": return mainHelp
     case "doctor": return doctorHelp
     case "scan": return scanHelp
     case "list": return listHelp
