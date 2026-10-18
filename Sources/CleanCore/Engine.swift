@@ -4,18 +4,18 @@ import ScanCore
 
 /// Moves one item to the Trash. A seam so tests never touch the real Trash.
 public protocol Trasher: Sendable {
-    /// Returns where the item ended up.
-    func trash(_ url: URL) throws -> URL
+    /// Returns where the item ended up; nil when it moved but the system did not say where.
+    func trash(_ url: URL) throws -> URL?
 }
 
 /// The real thing: `FileManager.trashItem` (the user's ~/.Trash).
 public struct SystemTrasher: Trasher {
     public init() {}
 
-    public func trash(_ url: URL) throws -> URL {
+    public func trash(_ url: URL) throws -> URL? {
         var result: NSURL?
         try FileManager.default.trashItem(at: url, resultingItemURL: &result)
-        return result as URL? ?? url
+        return result as URL?
     }
 }
 
@@ -90,12 +90,15 @@ public enum Cleanup {
         case pathChanged
         /// After the move, the item in the Trash is not the one that was checked: a different item was moved.
         case movedOtherItem(URL)
+        /// The item moved, but the system did not say where, so the move cannot be verified.
+        case movedUnverified
         case system(String)
 
         public var description: String {
             switch self {
             case .pathChanged: "path changed or is not a plain directory in home; skipped"
             case .movedOtherItem(let url): "a different item was moved to the Trash at \(url.path); put it back"
+            case .movedUnverified: "moved to the Trash, but the system did not say where; check the Trash"
             case .system(let text): text
             }
         }
@@ -154,14 +157,18 @@ public enum Cleanup {
                 ran[argv] = outcome
                 results.append((c, outcome))
             case .trash:
-                // Re-check right before moving (chapter 04 §7.2).
+                // Re-check right before moving (chapter 04 §7.2). A window remains between the last check and
+                // `trashItem`, which takes a path; the check after the move (§7.2 step 6) detects a swap there.
                 guard let id = c.fileID, stillSameItem(path: c.path, home: home, homeDev: homeDev, id: id) else {
                     results.append((c, .failed(.pathChanged)))
                     continue
                 }
                 do {
-                    let url = try trasher.trash(URL(fileURLWithPath: c.path))
-                    results.append((c, movedItem(at: url, is: id) ? .trashed(url) : .failed(.movedOtherItem(url))))
+                    if let url = try trasher.trash(URL(fileURLWithPath: c.path)) {
+                        results.append((c, movedItem(at: url, is: id) ? .trashed(url) : .failed(.movedOtherItem(url))))
+                    } else {
+                        results.append((c, .failed(.movedUnverified)))
+                    }
                 } catch {
                     results.append((c, .failed(.system(error.localizedDescription))))
                 }

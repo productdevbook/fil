@@ -18,7 +18,7 @@ final class FakeTrasher: Trasher, @unchecked Sendable {
 
     var movedItems: [URL] { lock.withLock { moved } }
 
-    func trash(_ url: URL) throws -> URL {
+    func trash(_ url: URL) throws -> URL? {
         if let failWith { throw failWith }
         let target = URL(fileURLWithPath: trashDir).appendingPathComponent(UUID().uuidString + "-" + url.lastPathComponent)
         try FileManager.default.createDirectory(atPath: trashDir, withIntermediateDirectories: true)
@@ -279,7 +279,7 @@ struct ExecuteTests {
     final class WrongItemTrasher: Trasher, @unchecked Sendable {
         let other: String, trashDir: String
         init(other: String, trashDir: String) { self.other = other; self.trashDir = trashDir }
-        func trash(_ url: URL) throws -> URL {
+        func trash(_ url: URL) throws -> URL? {
             try FileManager.default.createDirectory(atPath: trashDir, withIntermediateDirectories: true)
             let target = URL(fileURLWithPath: trashDir).appendingPathComponent("wrong")
             try FileManager.default.moveItem(atPath: other, toPath: target.path)
@@ -337,6 +337,22 @@ struct ExecuteTests {
             == "a different item was moved to the Trash at \(url.path); put it back")
     }
 
+    @Test("a move whose destination the system does not report is not called a mix-up")
+    func movedUnverified() async throws {
+        final class SilentTrasher: Trasher, @unchecked Sendable {
+            func trash(_ url: URL) throws -> URL? { nil }
+        }
+        let f = try Fixture(label: "home"), outside = try Fixture(label: "outside")
+        defer { f.remove(); outside.remove() }
+        try makeHome(f, outside: outside)
+        let scan = try await scanCandidates(f)
+        let logs = try #require(scan.candidates.first { $0.id == "logs:Library/Logs/foo" })
+        let results = await Cleanup.execute([logs], home: scan.home, trasher: SilentTrasher())
+        guard case .failed(.movedUnverified)? = results.first?.1 else { Issue.record("\(results)"); return }
+        #expect(Cleanup.Failure.movedUnverified.description
+            == "moved to the Trash, but the system did not say where; check the Trash")
+    }
+
     @Test("info-only items do nothing; a command runs once for candidates that share it")
     func commandsAndInfoOnly() async throws {
         try await Fixture.withAsync { f in
@@ -380,7 +396,7 @@ struct RealTrashTests {
     func systemTrasher() throws {
         try Fixture.with { f in
             try f.mk("item/f", bytes: 1000)
-            let url = try SystemTrasher().trash(URL(fileURLWithPath: f.path("item")))
+            let url = try #require(try SystemTrasher().trash(URL(fileURLWithPath: f.path("item"))))
             let trash = NSHomeDirectory() + "/.Trash/"
             defer { try? FileManager.default.removeItem(at: url) }
             #expect(url.path.hasPrefix(trash))
