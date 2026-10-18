@@ -103,7 +103,8 @@ settings and secrets only a person with admin rights can change).
 - **Acceptance**
   - Format 6 stores `ScanStats` and `fullScanStart`; an incremental run shows the skipped line labelled
     `as of full scan at HH:mm` (chapter 03 §9 rule 2).
-  - `DiskTree.nodes` is `private(set)`; the build has no new warnings.
+  - `DiskTree.nodes` stays `public internal(set)`; `Incremental.update` and `Snapshot.save` take a lock-guarded busy
+    flag (chapter 01 §5.6, 03 §6.5); the build has no new warnings.
 
 ### F-035 · Say why a snapshot was not used
 
