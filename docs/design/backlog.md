@@ -17,8 +17,9 @@ settings and secrets only a person with admin rights can change).
 - **Acceptance**
   - `fil scan /nonexistent/x` and `fil scan /nonexistent/x --porcelain` print `fil: /nonexistent/x: No such file
     or directory` on stderr and exit 1; no `Fatal error`, no exit 133.
-  - An unreadable root, a failing `Snapshot.save` and a JSON encoding error each end in one `fil: <message>` line
-    and exit 1.
+  - An unreadable root (`lstat` fails) and a JSON encoding error each end in one `fil: <message>` line and exit 1.
+  - A failing `Snapshot.save` is a warning (`fil: warning: could not save the snapshot (<reason>); the next run
+    does a full scan`), normal output, exit 0 (chapter 05 §1.1).
   - `Tests/FilTests` runs the built binary for the cases above and checks stderr and exit status.
 
 ### F-011 · Resolve DIR; reject a missing path or a non-directory

@@ -82,7 +82,7 @@ Items: F-027, F-045.
 | `release-engineer` | sonnet / medium | `.github/`, `scripts/release.sh`, `packaging/`, release parts of `CONTRIBUTING.md` | new |
 | `scan-tester` | haiku / medium | `scripts/verify*.sh`, `scripts/bench.sh`; runs the binary, reports pass/fail with numbers. Never edits `Sources/`. | exists, rewrite to playbook format |
 
-Models are confirmed by a blind bake-off on one real item per role before M1 starts (macos-engineer: F-001;
+Bake-off result: see README Decisions (2026-10-18). Models were confirmed by a blind bake-off on one real item per role before M1 starts (macos-engineer: F-001;
 release-engineer: F-039; scan-tester: the F-004 scenario; designer: the F-040 issue text), recorded as a decision.
 Every agent file gets `disallowedTools: Agent` and only that: no list of unrelated tools.
 

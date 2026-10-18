@@ -69,7 +69,12 @@ Approved by the owner with this design (2026-10-18):
   this repository (F-022, F-024).
 - Semantic Versioning; before 1.0 a minor release may change the MapCore API or exit codes.
 - Role agents `designer`, `macos-engineer`, `release-engineer`, `scan-tester` ([08-roadmap.md](08-roadmap.md#role-agents)).
-  Pending: their models are confirmed by a blind bake-off on one real item per role before M1 starts.
+- 2026-10-18 bake-off (same item, two models, worktrees, judged on acceptance, correctness and diff):
+  `macos-engineer` on #1: both passed; Opus gave cleaner system-error messages, Sonnet a smaller diff. Default
+  Sonnet / medium; Opus for engine counting rules, concurrency, unclear bugs (as before). `release-engineer` on
+  #39: identical results; Sonnet / medium. `designer` on #40: Opus clearly better (checked live repository state,
+  ordered steps by dependency, kept M7 items out of M3); Opus / high. `scan-tester`: Haiku, provisional until
+  its first real scenario (#4).
 
 ## Glossary and canonical IDs
 

@@ -471,6 +471,9 @@ the result is a full scan's.
 **[New]** `rootUnreadable` from `lstat`: `runScan` and `runCleanup` catch the full scan's `POSIXError` and call
 `fail("fil: cannot read <path>: <strerror>")` (exit 1) instead of trapping.
 
+As built (#1): the message is `fil: <path>: <strerror>` (chapter 05 §1.1), not `fil: cannot read <path>: …`. A root that
+`lstat` can read but `open` cannot is not an error: `unreadable=1`, exit 0, as before.
+
 **[New]** `historyTimeout` costs 30 s before a full scan starts. `scan -v` prints
 `incremental not usable: history replay timed out after 30 s` (as today); no change to the limit, but section 11
 asks for a test.
