@@ -130,12 +130,45 @@ import Testing
             ),
             (["scan", "--top"], "fil: --top needs a value\nRun 'fil help scan' for usage.\n"),
             (["scan", "-j"], "fil: -j needs a value\nRun 'fil help scan' for usage.\n"),
+            // Each command accepts only its own options (chapter 05 §1.4, #9).
+            (["list", "--yes"], "fil: unknown option --yes for 'fil list'\nRun 'fil help list' for usage.\n"),
+            (["list", "xyz"], "fil: unexpected argument 'xyz' for 'fil list'\nRun 'fil help list' for usage.\n"),
+            (["list", "--home"], "fil: --home needs a value\nRun 'fil help list' for usage.\n"),
+            (["clean", "logs", "--home"], "fil: --home needs a value\nRun 'fil help clean' for usage.\n"),
+            (
+                ["clean", "logs", "--json"],
+                "fil: unknown option --json for 'fil clean'\nRun 'fil help clean' for usage.\n"
+            ),
+            (["scan", "--yes"], "fil: unknown option --yes for 'fil scan'\nRun 'fil help scan' for usage.\n"),
+            (["scan", "--home", "x"], "fil: unknown option --home for 'fil scan'\nRun 'fil help scan' for usage.\n"),
+            (
+                ["scan", "--naive", "--porcelain"],
+                "fil: --naive cannot be combined with --porcelain\nRun 'fil help scan' for usage.\n"
+            ),
+            (["doctor", "--json"], "fil: unknown option --json for 'fil doctor'\nRun 'fil help doctor' for usage.\n"),
         ]
         for (args, message) in cases {
             let r = try cli.run(args, snapshotDir: snap)
             #expect(r.status == 2, "\(args): \(r.status)")
             #expect(r.stdout.isEmpty, "\(args)")
             #expect(r.stderr == message, "\(args): \(r.stderr)")
+        }
+    }
+
+    @Test func eachCommandAcceptsItsOwnOptions() throws {
+        let root = try ErrorHandlingTests.tempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try makeHome(root)
+        let snap = root + "/snap"
+        let list = try cli.run(["list", "--home", root + "/home", "--timings", "--no-color"], snapshotDir: snap)
+        #expect(list.status == 0, "\(list.stderr)")
+        #expect(list.stderr.contains("rules total"), "\(list.stderr)")
+        let clean = try cli.run(["clean", "logs", "--timings", "--home", root + "/home"], snapshotDir: snap)
+        #expect(clean.status == 0, "\(clean.stderr)")
+        #expect(clean.stdout.contains("Would clean"))
+        for command in ["list", "clean"] {
+            let help = try cli.run(["help", command], snapshotDir: snap)
+            #expect(help.stdout.contains("--timings    phase and rule timings on stderr"), "\(command)")
         }
     }
 }

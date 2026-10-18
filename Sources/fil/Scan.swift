@@ -5,7 +5,7 @@ import ScanCore
 // Hard links are strict by default (an unknown old multiply-linked file makes the update fall back to a full
 // scan); --tolerant-hardlinks counts it and reports `uncertain=` bytes (see docs/design/02-size-accounting.md).
 func runScan(_ arguments: [String]) throws {
-    var args = arguments
+    var args = CommandLineWords(arguments)
     var given = NSHomeDirectory()
     var options = ScanOptions()
     var top = 15
@@ -16,24 +16,23 @@ func runScan(_ arguments: [String]) throws {
     var quiet = false
     var noColor = false
 
-    while !args.isEmpty {
-        let a = args.removeFirst()
-        switch a {
-        case "-j": options.threads = Int(takeValue(&args, a)) ?? options.threads
-        case "--private": options.privateSize = true
-        case "--top": top = Int(takeValue(&args, a)) ?? top
-        case "--naive": naive = true
-        case "--full": forceFull = true
-        case "--porcelain": porcelain = true
-        case "-q", "--quiet": quiet = true
-        case "-v", "--verbose": verbose = true
-        case "--no-color": noColor = true
-        case "--tolerant-hardlinks": options.strictHardlinks = false
-        default:
-            if a.hasPrefix("-") { usageError("unknown option \(a) for 'fil scan'") }
-            given = a
+    while let word = args.next() {
+        switch word {
+        case .option("-j"): options.threads = Int(args.value(for: "-j")) ?? options.threads
+        case .option("--private"): options.privateSize = true
+        case .option("--top"): top = Int(args.value(for: "--top")) ?? top
+        case .option("--naive"): naive = true
+        case .option("--full"): forceFull = true
+        case .option("--porcelain"): porcelain = true
+        case .option("-q"), .option("--quiet"): quiet = true
+        case .option("-v"), .option("--verbose"): verbose = true
+        case .option("--no-color"): noColor = true
+        case .option("--tolerant-hardlinks"): options.strictHardlinks = false
+        case .option(let a): unknownOption(a, "scan")
+        case .operand(let a): given = a
         }
     }
+    if naive && porcelain { usageError("--naive cannot be combined with --porcelain") }
 
     UI.setup(noColor: noColor)
     let path = try resolveDirectory(given)

@@ -45,18 +45,20 @@ let scanHelp = """
     """
 
 let listHelp = """
-    Usage: fil list [--home DIR] [--json] [--no-color]
+    Usage: fil list [--home DIR] [--json] [--timings] [--no-color]
 
       --home DIR   use DIR instead of the home folder
       --json       machine-readable output
+      --timings    phase and rule timings on stderr
       --no-color   plain output (also when NO_COLOR is set or stdout is not a terminal)
     """
 
 let cleanHelp = """
-    Usage: fil clean <candidate-id|rule-id>... [--home DIR] [--yes] [--no-color]
+    Usage: fil clean <candidate-id|rule-id>... [--home DIR] [--yes] [--timings] [--no-color]
 
       --home DIR   use DIR instead of the home folder
-      --yes        actually move the items to the Trash (default: dry run)
+      --yes        clean for real (default: dry run)
+      --timings    phase and rule timings on stderr
       --no-color   plain output (also when NO_COLOR is set or stdout is not a terminal)
     """
 
@@ -136,10 +138,35 @@ func usageError(_ msg: String) -> Never {
     exit(2)
 }
 
-/// The value after an option; a missing one is a usage error.
-func takeValue(_ args: inout [String], _ option: String) -> String {
-    guard !args.isEmpty else { usageError("\(option) needs a value") }
-    return args.removeFirst()
+/// One word of a command line after the command.
+enum Word: Equatable {
+    case option(String)
+    case operand(String)
+}
+
+/// Reads the words after the command in order.
+struct CommandLineWords {
+    private var words: [String]
+
+    init(_ words: [String]) { self.words = words }
+
+    /// The next word, or nil at the end. A word starting with `-` is an option.
+    mutating func next() -> Word? {
+        guard !words.isEmpty else { return nil }
+        let w = words.removeFirst()
+        return w.hasPrefix("-") ? .option(w) : .operand(w)
+    }
+
+    /// The word after `option`, taken as is; a missing one is a usage error.
+    mutating func value(for option: String) -> String {
+        guard !words.isEmpty else { usageError("\(option) needs a value") }
+        return words.removeFirst()
+    }
+}
+
+/// `unknown option <opt> for 'fil <command>'`, exit 2.
+func unknownOption(_ option: String, _ command: String) -> Never {
+    usageError("unknown option \(option) for 'fil \(command)'")
 }
 
 var arguments = Array(CommandLine.arguments.dropFirst())

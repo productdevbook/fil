@@ -2,29 +2,27 @@ import CleanCore
 import Foundation
 import ScanCore
 
-// fil list [--home DIR] [--json]
-// fil clean <candidate-id|rule-id>... [--home DIR] [--yes]
+// fil list [--home DIR] [--json] [--timings] [--no-color]
+// fil clean <candidate-id|rule-id>... [--home DIR] [--yes] [--timings] [--no-color]
 func runCleanup(_ command: String, _ arguments: [String]) async throws {
-    var args = arguments
+    var args = CommandLineWords(arguments)
     var givenHome = NSHomeDirectory()
     var json = false
     var yes = false
     var timings = false
     var noColor = false
     var selectors: [String] = []
-    while !args.isEmpty {
-        let a = args.removeFirst()
-        switch a {
-        case "--home":
-            guard !args.isEmpty else { fail("--home needs a directory") }
-            givenHome = args.removeFirst()
-        case "--json": json = true
-        case "--yes": yes = true
-        case "--timings": timings = true
-        case "--no-color": noColor = true
-        default:
-            if a.hasPrefix("-") { usageError("unknown option \(a) for 'fil \(command)'") }
-            selectors.append(a)
+    let isList = command == "list"
+    while let word = args.next() {
+        switch word {
+        case .option("--home"): givenHome = args.value(for: "--home")
+        case .option("--timings"): timings = true
+        case .option("--no-color"): noColor = true
+        case .option("--json") where isList: json = true
+        case .option("--yes") where !isList: yes = true
+        case .option(let a): unknownOption(a, command)
+        case .operand(let a) where isList: usageError("unexpected argument '\(a)' for 'fil list'")
+        case .operand(let a): selectors.append(a)
         }
     }
 

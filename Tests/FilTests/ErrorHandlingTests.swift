@@ -94,8 +94,8 @@ private final class BundleMarker {}
         let json = try JSONSerialization.jsonObject(with: Data(r.stdout.utf8)) as? [String: Any]
         #expect(json?["home"] as? String == dir + "/home", "\(r.stdout)")
         try Data(count: 10).write(to: URL(fileURLWithPath: dir + "/f"))
-        for command in ["list", "clean"] {
-            let f = try run([command, "x", "--home", dir + "/f"], snapshotDir: dir + "/snap")
+        for command in [["list"], ["clean", "x"]] {
+            let f = try run(command + ["--home", dir + "/f"], snapshotDir: dir + "/snap")
             #expect(f.status == 1, "\(command)")
             #expect(f.stderr == "fil: \(dir)/f: not a directory\n", "\(command)")
             #expect(f.stdout.isEmpty, "\(command)")
