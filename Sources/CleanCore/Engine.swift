@@ -41,13 +41,13 @@ public enum Cleanup {
     /// Starts every external query (simctl, docker, cache locations) concurrently, so they run while the tree
     /// is being loaded or updated. Nothing runs when `home` is not the real home. `environment` replaces the
     /// real tools (tests).
-    /// `writesPathCache: false` (a dry run) keeps `tool-paths.json` from being written.
+    /// `writesPathCache: false` (a dry run) still reads `tool-paths.json` but never writes it.
     public static func startToolQueries(home: String, environment: ToolEnvironment? = nil,
                                         writesPathCache: Bool = true) -> ToolQueries {
         if let environment { return .start(environment) }
         guard isRealHome(home) else { return .start(nil) }
         var env = ToolEnvironment.system(home: home)
-        if !writesPathCache { env.pathCache = nil }
+        if !writesPathCache { env.pathCache?.readOnly = true }
         return .start(env)
     }
 

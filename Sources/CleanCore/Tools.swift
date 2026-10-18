@@ -234,6 +234,9 @@ enum CacheTools {
 public struct ToolPathCache: Sendable {
     public let file: URL
 
+    /// A dry run reads the cache but never writes it (#13).
+    public var readOnly = false
+
     public init(file: URL) { self.file = file }
 
     /// `tool-paths.json` next to the snapshots.
@@ -261,6 +264,7 @@ public struct ToolPathCache: Sendable {
     }
 
     func save(_ entries: [String: Entry]) {
+        guard !readOnly else { return }
         guard let data = try? JSONEncoder().encode(entries) else { return }
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
