@@ -27,6 +27,7 @@ let package = Package(
         .target(name: "TestSupport", path: "Tests/TestSupport"),
         .testTarget(name: "ScanCoreTests", dependencies: ["ScanCore", "TestSupport"]),
         .testTarget(name: "CleanCoreTests", dependencies: ["CleanCore", "ScanCore", "TestSupport"]),
+        .testTarget(name: "FilTests", dependencies: ["fil"]),
         .testTarget(name: "MapCoreTests", dependencies: ["MapCore", "CleanCore"]),
     ]
 )

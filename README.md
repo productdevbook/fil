@@ -52,6 +52,10 @@ fil scan ~/Projects --top 20
 fil scan / --full -j 8      # full rescan with 8 workers
 fil scan --private          # count only non-shared (clone) blocks
 fil scan --porcelain        # stable output for scripts
+fil scan -q                 # no warning about unreadable folders
+
+fil doctor                  # check Full Disk Access for your terminal app (opens System Settings if missing)
+fil doctor --no-open        # only print; exit 0 = granted, 1 = missing
 
 fil list                    # list cleanable items and rules
 fil list --json
@@ -60,9 +64,13 @@ fil clean <id|rule>...      # dry run: shows what would move to the Trash
 fil clean <id|rule>... --yes
 ```
 
-Options for `fil scan [DIR]`: `--full` ignores incremental state, `--top N` limits the folder tree, `-j N` sets worker count, `--private` counts only space private to each file (excludes blocks shared by clones), `--porcelain` prints machine-readable output, `-v` adds timing details, `--no-color` forces plain output.
+Options for `fil scan [DIR]`: `--full` ignores incremental state, `--top N` limits the folder tree, `-j N` sets worker count, `--private` counts only space private to each file (excludes blocks shared by clones), `--porcelain` prints machine-readable output (ends with `unreadable=N`, the number of folders that could not be read), `-q` hides the unreadable-folder warning, `-v` adds timing details, `--no-color` forces plain output.
 
 Output is styled (colour, size bars, live progress on stderr) only on a terminal; it is plain when piped or when `NO_COLOR` is set. `--porcelain` output never changes. `fil list` and `fil clean` also accept `--no-color`.
+
+### Full Disk Access
+
+Without Full Disk Access, macOS hides folders such as `~/Library/Mail`, `~/Library/Containers/*`, `~/Pictures/Photos Library` and `/private/var/db`, so scan sizes are too low. `fil scan` lists the folders it could not read. A command-line tool cannot ask for the permission and `sudo` does not help: macOS grants it to the terminal app (Terminal, iTerm2, Ghostty, Warp, VS Code, ...). `fil doctor` finds that app, checks the permission (by opening the user TCC database, which only a process with Full Disk Access can read) and opens System Settings → Privacy & Security → Full Disk Access. After enabling it, quit and reopen the terminal. Folders owned by another user are reported separately: Full Disk Access does not change those.
 
 ## Safety model
 

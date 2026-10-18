@@ -13,6 +13,7 @@ func runScan(_ arguments: [String]) throws {
     var forceFull = false
     var porcelain = false
     var verbose = false
+    var quiet = false
     var noColor = false
 
     while !args.isEmpty {
@@ -24,6 +25,7 @@ func runScan(_ arguments: [String]) throws {
         case "--naive": naive = true
         case "--full": forceFull = true
         case "--porcelain": porcelain = true
+        case "-q", "--quiet": quiet = true
         case "-v", "--verbose": verbose = true
         case "--no-color": noColor = true
         case "--tolerant-hardlinks": options.strictHardlinks = false
@@ -102,12 +104,16 @@ func runScan(_ arguments: [String]) throws {
     // where `alloc` is already private bytes.
     let shared = options.privateSize ? 0 : r.totalAlloc - r.totalCloneAware
 
+    let unreadable = Permissions.unreadable(in: scanned)
+    let unreadableCount = unreadable.count
+
     if porcelain {
         // New fields are only ever appended, so existing parsers keep working.
         print("mode=\(usedIncremental ? "incremental" : "full") alloc=\(r.totalAlloc) logical=\(r.totalLogical) "
             + "files=\(r.totalFiles) dirs=\(r.totalDirs + 1)"
             + (options.strictHardlinks ? "" : " uncertain=\(scanned.uncertainBytes)")
-            + " cloneaware=\(r.totalCloneAware)" + (options.privateSize ? "" : " shared=\(shared)"))
+            + " cloneaware=\(r.totalCloneAware)" + (options.privateSize ? "" : " shared=\(shared)")
+            + " unreadable=\(unreadableCount)")
         return
     }
 
@@ -136,6 +142,12 @@ func runScan(_ arguments: [String]) throws {
         }
     }
 
+    defer {
+        if !quiet {
+            let lines = Permissions.warningLines(unreadable, terminalName: ResponsibleApp.find()?.name)
+            if !lines.isEmpty { print("\n" + lines.map { UI.yellow($0) }.joined(separator: "\n")) }
+        }
+    }
     guard top > 0, total > 0 else { return }
 
     // Largest directories, skipping a parent when one child holds >= 90% of its size.

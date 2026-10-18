@@ -7,6 +7,7 @@ Usage: fil <command> [options]
 
 Commands:
   scan [DIR]    Scan a directory and print its size (default: home folder)
+  doctor        Check Full Disk Access for the terminal app
   list          List cleanup candidates in the home folder
   clean <id>... Move cleanup candidates to the Trash (dry run unless --yes)
   help [cmd]    Show help for a command
@@ -20,7 +21,7 @@ Run 'fil help <command>' for details.
 
 let scanHelp = """
 Usage: fil scan [DIR] [-j N] [--private] [--full] [--top N] [--naive] [--porcelain] [--tolerant-hardlinks]
-           [-v] [--no-color]
+           [-q] [-v] [--no-color]
 
   DIR                   directory to scan (default: home folder)
   -j N                  worker threads
@@ -30,13 +31,16 @@ Usage: fil scan [DIR] [-j N] [--private] [--full] [--top N] [--naive] [--porcela
   --naive               time a plain FileManager walk instead
   --porcelain           one machine-readable line
   --tolerant-hardlinks  count unknown hard links and report them as uncertain
+  -q, --quiet           no warning about folders that could not be read
   -v, --verbose         show timing details and skipped-entry counts
   --no-color            plain output (also when NO_COLOR is set or stdout is not a terminal)
 
 Sizes are on-disk bytes with each APFS clone family counted once; a scan of / counts each firmlinked
 directory once (see docs/specs/accounting.md). Output is styled only on a terminal. --porcelain fields
 are only ever appended: alloc= stays du-compatible, cloneaware= is the clone-aware size and shared= the
-bytes du counts again for clones (not with --private).
+bytes du counts again for clones (not with --private); unreadable= is the number of folders that
+could not be read (permission denied). If some were privacy-protected, scan points to `fil doctor` (Full Disk
+Access for the terminal app).
 """
 
 let listHelp = """
@@ -57,6 +61,7 @@ Usage: fil clean <candidate-id|rule-id>... [--home DIR] [--yes] [--no-color]
 
 func helpText(for command: String) -> String? {
     switch command {
+    case "doctor": return doctorHelp
     case "scan": return scanHelp
     case "list": return listHelp
     case "clean": return cleanHelp
@@ -98,6 +103,9 @@ case "help":
 case "scan":
     if arguments.contains("--help") || arguments.contains("-h") { print(scanHelp); exit(0) }
     try runScan(arguments)
+case "doctor":
+    if arguments.contains("--help") || arguments.contains("-h") { print(doctorHelp); exit(0) }
+    await runDoctor(arguments)
 case "list", "clean":
     if arguments.contains("--help") || arguments.contains("-h") { print(helpText(for: command)!); exit(0) }
     try await runCleanup(command, arguments)

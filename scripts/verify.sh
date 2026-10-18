@@ -45,7 +45,7 @@ run_ok() { [[ $R_RC -eq 0 ]]; }
 # parse_porcelain OUTPUT: sets P_mode P_alloc P_logical P_files P_dirs P_cloneaware P_shared.
 # Returns 1 unless OUTPUT is exactly one line in the porcelain format (fields are only ever appended).
 parse_porcelain() {
-  local re='^mode=(full|incremental) alloc=([0-9]+) logical=([0-9]+) files=([0-9]+) dirs=([0-9]+) cloneaware=([0-9]+) shared=([0-9]+)$'
+  local re='^mode=(full|incremental) alloc=([0-9]+) logical=([0-9]+) files=([0-9]+) dirs=([0-9]+) cloneaware=([0-9]+) shared=([0-9]+)( unreadable=[0-9]+)?$'
   [[ $1 =~ $re ]] || return 1
   P_mode=${BASH_REMATCH[1]}
   P_alloc=${BASH_REMATCH[2]}
