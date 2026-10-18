@@ -208,6 +208,8 @@ public enum Incremental {
         }
         // Its old contents are hidden now; the rescan's own-device check finds the other volume and removes the node.
         full.formUnion(mounts.mounted)
+        // The parent's re-read counts the mount point's own space (the volume root's `st_blocks`, as `du -x` does).
+        for id in mounts.mounted { shallow.insert(tree.nodes[Int(id)].parent) }
         // The folder under an unmounted volume is visible again: its parent's re-read finds it as a new directory.
         shallow.formUnion(mounts.uncovered)
         // A flagged folder whose own path is gone (renamed or removed) is dropped by its re-read; its parent is read

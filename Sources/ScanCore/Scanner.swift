@@ -565,7 +565,10 @@ struct DirReader {
 
     /// `st_dev` of the volume mounted on `dirPath/name`, from `lstat` (as `du -x` sees it). Built from bytes, so a name
     /// that is not valid UTF-8 is found too.
-    private static func mountedDevice(_ dirPath: String, _ dirCPath: [CChar]?, _ name: UnsafeRawPointer) -> dev_t? {
+    /// Also returns the volume root's own allocation (`st_blocks` x 512), which `du -x` counts for a mount point it skips.
+    private static func mountedVolume(
+        _ dirPath: String, _ dirCPath: [CChar]?, _ name: UnsafeRawPointer
+    ) -> (dev: dev_t, alloc: Int64)? {
         var path =
             dirCPath.map { Array($0.dropLast()) }
             ?? (dirPath == "/" ? [] : dirPath.utf8.map { CChar(bitPattern: $0) })
@@ -574,7 +577,7 @@ struct DirReader {
         path += UnsafeBufferPointer(start: cName, count: strlen(cName))
         path.append(0)
         var st = stat()
-        return lstat(path, &st) == 0 ? st.st_dev : nil
+        return lstat(path, &st) == 0 ? (st.st_dev, Int64(st.st_blocks) * 512) : nil
     }
 
     /// `length` rounded up to the volume's allocation unit (0 stays 0; unchanged when the unit is unknown).
@@ -662,13 +665,22 @@ struct DirReader {
         }
 
         if type == UInt32(VDIR.rawValue) {
+            var mountAlloc: Int64 = 0
             if mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT) != 0 && !config.options.crossDevices, let namePtr {
                 // DEVID is the covered directory's; the mounted volume's root decides, as for du -x. One syscall per
                 // mount point, none per file. If lstat fails the device is unknown: not entered.
-                dev = Self.mountedDevice(dirPath, dirCPath, namePtr) ?? ~config.rootDev
+                if let volume = Self.mountedVolume(dirPath, dirCPath, namePtr) {
+                    dev = volume.dev
+                    mountAlloc = volume.alloc
+                } else {
+                    dev = ~config.rootDev
+                }
             }
             if dev != config.rootDev && !config.options.crossDevices {
                 out.stats.mountsSkipped += 1
+                // A skipped mount point still costs its own cluster in the folder that lists it (FAT; 0 on APFS, HFS+).
+                out.alloc += mountAlloc
+                out.cloneAware += mountAlloc
                 // Recorded so that an update finds the folder again after an unmount (no event marks it).
                 if mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT) != 0, let namePtr {
                     out.mountPoints.append(String(cString: namePtr.assumingMemoryBound(to: CChar.self)))

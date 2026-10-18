@@ -197,9 +197,52 @@ struct FATVolumeTests {
             #expect(tree.nodes[mnt].totalAlloc == Fixture.duBlockBytes(root + "/mnt"))
             #expect(
                 tree.nodes[mnt].ownAlloc > 512, "the volume root's own space is counted: \(tree.nodes[mnt].ownAlloc)")
-            // Without the option the volume is left out (du -x still counts the mount point's own 512 bytes).
+            // Without the option the volume is left out, but du -x counts the mount point's own cluster.
             let plain = try Scanner.scan(root)
-            #expect(plain.root.totalAlloc == tree.root.totalAlloc - tree.nodes[mnt].totalAlloc)
+            #expect(plain.root.totalAlloc == Fixture.duBlockBytes(root))
+            #expect(plain.root.totalAlloc == tree.root.totalAlloc - tree.nodes[mnt].totalAlloc + 512)
+        }
+    }
+
+    @Test("a FAT volume mounted inside an APFS folder: the mount point's own cluster counts, in a scan and an update")
+    func skippedMountCountsItsRoot() throws {
+        guard DiskImage.isAvailable else { try Test.cancel("no hdiutil") }
+        try withSnapshotDir { dir in
+            try Fixture.with("mount") { box in
+                guard let image = DiskImage(emptyMegabytes: 64, fs: "MS-DOS FAT32", at: box.path("vol.dmg")) else {
+                    try Test.cancel("hdiutil cannot make FAT32")
+                }
+                defer { image.detach() }
+                try box.mk("root/apfs/file", bytes: 5000)
+                try box.mkdir("root/mnt")
+                let root = box.path("root")
+                try Snapshot.save(try Scanner.scan(root), in: dir)
+
+                guard image.attach(at: box.path("root/mnt")) else { try Test.cancel("hdiutil cannot attach") }
+                let full = try Scanner.scan(root)
+                #expect(full.root.totalAlloc == Fixture.duBlockBytes(root))
+                #expect(full.stats.mountsSkipped == 1)
+
+                // Mounted after the snapshot: the update re-reads the parent, which lists the mount point.
+                let mounted = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir).tree)
+                let result = Incremental.update(mounted)
+                guard case .success = result else {
+                    Issue.record("update after mount failed: \(result)")
+                    return
+                }
+                #expect(Totals(mounted) == Totals(full), "incremental \(Totals(mounted)) full \(Totals(full))")
+                try Snapshot.save(mounted, in: dir)
+
+                image.detach()
+                let again = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir).tree)
+                guard case .success = Incremental.update(again) else {
+                    Issue.record("update after unmount failed")
+                    return
+                }
+                let after = try Scanner.scan(root)
+                #expect(Totals(again) == Totals(after))
+                #expect(after.root.totalAlloc == Fixture.duBlockBytes(root))
+            }
         }
     }
 

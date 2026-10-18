@@ -346,8 +346,10 @@ single-thread scan, family counted once); `shared` and `cloneaware` with a datal
   (`uncertainBytes` is for hard links only). (2) With `--cross-devices`, a mount point is listed with the covered
   folder's attributes: its read takes one `fstat` and one `fstatfs`, so the volume has its own unit and its root's own
   space, and the unit passes down to its subtree. An update's re-read takes the same `fstat` also with
-  `--cross-devices` (it had none, so a re-read folder lost its own space). Without `--cross-devices`, `du -x` still counts
-  a FAT mount point's own cluster, which `fil` does not (known gap, 512 bytes per FAT mount). (3) Test `du` calls set
+  `--cross-devices` (it had none, so a re-read folder lost its own space). Without `--cross-devices`, `du -x` counts a skipped
+  mount point's own blocks (the volume root's `st_blocks`, a cluster on FAT, 0 on APFS and HFS+): the listing's mount
+  check already does one `lstat` of it, and the listing folder counts that; an update re-reads the parent of a newly
+  mounted volume. (3) Test `du` calls set
   `BLOCKSIZE=512`.
   `du -k` rounds a total up to 1 KB, so on 512-byte clusters `du -skx` x 1024 can exceed the exact sum by 512; compare
   with `du -sx` x 512. FAT and exFAT have no FSEvents volume UUID, so an update is refused (`volumeChanged`) and `fil`
