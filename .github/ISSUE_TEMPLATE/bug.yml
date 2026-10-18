@@ -1,0 +1,56 @@
+name: Bug report
+description: Something in fil is wrong or crashes
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems go to a [private security advisory](https://github.com/productdevbook/fil/security/advisories/new), not to an issue.
+  - type: input
+    id: version
+    attributes:
+      label: fil --version
+      placeholder: fil 0.1.1
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      description: Output of `sw_vers`.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: fil doctor --no-open output
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command you ran
+      render: sh
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: du
+    attributes:
+      label: du -skx output
+      description: If sizes are wrong, the output of `du -skx <dir>` for the same folder.
+      render: text
+    validations:
+      required: false
