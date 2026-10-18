@@ -70,7 +70,12 @@ func runScan(_ arguments: [String]) throws {
 
     if !forceFull {
         let loadStart = clock.now
-        if let cached = Snapshot.load(rootPath: path, options: options) {
+        let loaded = Snapshot.load(rootPath: path, options: options)
+        // A tolerant run (`fil list`, `--tolerant-hardlinks`) may have left bytes that are perhaps counted twice; a
+        // strict scan never presents that tree as exact. The full scan's tree starts again at 0.
+        if let cached = loaded, options.strictHardlinks && cached.uncertainBytes > 0 {
+            mode = "full scan (snapshot has uncertain bytes)"
+        } else if let cached = loaded {
             let loadTime = clock.now - loadStart
             switch Incremental.update(cached, options: options) {
             case .success(let report):
