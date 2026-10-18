@@ -260,6 +260,27 @@ struct CachePathTests {
         }
     }
 
+    @Test("a default location that is a symlink to a user folder is not trusted; a wrong Go path count reports nothing")
+    func symlinkedDefaultAndGoCount() async throws {
+        try await Fixture.withAsync("tools") { f in
+            try f.mk("Projects/f", bytes: 2_000_000)
+            try f.mkdir("Library/Caches")
+            try f.symlink(f.path("Projects"), at: "Library/Caches/Homebrew")
+            try f.mk("go/pkg/mod/f", bytes: 2_000_000)
+            try f.mk("Library/Caches/go-build/f", bytes: 2_000_000)
+            let b = "/fake/bin/"
+            let (env, _) = fakeEnvironment(f, tools: ["brew", "go"], answers: [
+                b + "brew --cache": .success(f.path("Projects") + "\n"),
+                b + "go env GOMODCACHE GOCACHE": .success(f.path("go/pkg/mod") + "\n"),    // one line, two expected
+            ])
+            let scan = try await scanWithTools(f, env)
+            #expect(!scan.candidates.contains { $0.ruleId == "homebrew-cache" })
+            #expect(!scan.candidates.contains { $0.path.hasSuffix("/Projects") })
+            #expect(!scan.candidates.contains { $0.ruleId == "pkg-caches" })
+            #expect(scan.skippedCommands.contains("brew: reported cache ~/Projects does not look like a cache folder; ignored"))
+        }
+    }
+
     @Test("a damaged tool-paths.json (wrong count, relative paths) is ignored: defaults, no crash")
     func corruptCache() async throws {
         try await Fixture.withAsync("tools") { f in

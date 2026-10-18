@@ -153,7 +153,11 @@ public enum Rules {
         for tool in tools {
             let defaultPaths = CacheTools.defaults(tool, home: ctx.home)
             var paths = answer.paths[tool.name] ?? defaultPaths
-            if paths.count != defaultPaths.count { paths = defaultPaths }
+            // Go acts on the folders Go names: a wrong answer is never replaced by guessed defaults.
+            if paths.count != defaultPaths.count {
+                if tool.name == "go" { continue }
+                paths = defaultPaths
+            }
             let removals: [Removal]
             if tool.name == "go" {
                 guard let go = answer.reportedBy["go"], paths.count == 2 else { continue }
@@ -198,10 +202,15 @@ public enum Rules {
         let home = resolvedPath(ctx.home), real = resolvedPath(path)
         guard real.hasPrefix(home + "/") else { return .shared }
         let relative = String(real.dropFirst(home.count + 1))
-        // The tool's own default location (or a versioned folder below it) needs no marker.
-        let def = resolvedPath(defaultPath)
-        if real == def || real.hasPrefix(def + "/") { return .accepted(custom: false) }
         let components = relative.split(separator: "/").map { $0.lowercased() }
+        guard components.count >= 2 else { return .notCache(relative: relative) }
+        let def = resolvedPath(defaultPath)
+        let isDefault = real == def || real.hasPrefix(def + "/")
+        // The tool's own default location (or a versioned folder below it) needs no marker, unless the default
+        // is a symlink somewhere below home: then "the default" could be any folder (`Homebrew` -> `Projects`).
+        if isDefault, def == defaultPath {
+            return .accepted(custom: false)
+        }
         // The marker sits in the folder itself, or in its parent when the folder is only a version (`v6`, `10`).
         var window = components.suffix(1)
         if let last = components.last, last.drop(while: { $0 == "v" }).allSatisfy(\.isNumber) {
@@ -210,8 +219,8 @@ public enum Rules {
         let marked = window.contains { c in
             c.contains("cache") || tool.markers.contains { c.contains($0) } || tool.exactMarkers.contains(c)
         }
-        guard components.count >= 2, marked else { return .notCache(relative: relative) }
-        return .accepted(custom: true)
+        guard marked else { return .notCache(relative: relative) }
+        return .accepted(custom: !isDefault)
     }
 
     static func isSharedLocation(_ path: String, _ ctx: RuleContext) -> Bool {
