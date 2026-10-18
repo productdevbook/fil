@@ -50,17 +50,19 @@ swift build -c release
 fil scan                    # scan the default location
 fil scan ~/Projects --top 20
 fil scan / --full -j 8      # full rescan with 8 workers
-fil scan --private          # hide paths in output
+fil scan --private          # count only non-shared (clone) blocks
 fil scan --porcelain        # stable output for scripts
 
 fil list                    # list cleanable items and rules
 fil list --json
 
-fil clean <id|rule>...      # asks before moving items to the Trash
+fil clean <id|rule>...      # dry run: shows what would move to the Trash
 fil clean <id|rule>... --yes
 ```
 
-Options for `fil scan [DIR]`: `--full` ignores incremental state, `--top N` limits the listing, `-j N` sets worker count, `--private` redacts paths, `--porcelain` prints machine-readable output.
+Options for `fil scan [DIR]`: `--full` ignores incremental state, `--top N` limits the folder tree, `-j N` sets worker count, `--private` counts only space private to each file (excludes blocks shared by clones), `--porcelain` prints machine-readable output, `-v` adds timing details, `--no-color` forces plain output.
+
+Output is styled (colour, size bars, live progress on stderr) only on a terminal; it is plain when piped or when `NO_COLOR` is set. `--porcelain` output never changes. `fil list` and `fil clean` also accept `--no-color`.
 
 ## Safety model
 

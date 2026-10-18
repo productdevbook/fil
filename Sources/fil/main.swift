@@ -20,6 +20,7 @@ Run 'fil help <command>' for details.
 
 let scanHelp = """
 Usage: fil scan [DIR] [-j N] [--private] [--full] [--top N] [--naive] [--porcelain] [--tolerant-hardlinks]
+           [-v] [--no-color]
 
   DIR                   directory to scan (default: home folder)
   -j N                  worker threads
@@ -29,20 +30,26 @@ Usage: fil scan [DIR] [-j N] [--private] [--full] [--top N] [--naive] [--porcela
   --naive               time a plain FileManager walk instead
   --porcelain           one machine-readable line
   --tolerant-hardlinks  count unknown hard links and report them as uncertain
+  -v, --verbose         show timing details and skipped-entry counts
+  --no-color            plain output (also when NO_COLOR is set or stdout is not a terminal)
+
+Output is styled only on a terminal. --porcelain output never changes.
 """
 
 let listHelp = """
-Usage: fil list [--home DIR] [--json]
+Usage: fil list [--home DIR] [--json] [--no-color]
 
   --home DIR   use DIR instead of the home folder
   --json       machine-readable output
+  --no-color   plain output (also when NO_COLOR is set or stdout is not a terminal)
 """
 
 let cleanHelp = """
-Usage: fil clean <candidate-id|rule-id>... [--home DIR] [--yes]
+Usage: fil clean <candidate-id|rule-id>... [--home DIR] [--yes] [--no-color]
 
   --home DIR   use DIR instead of the home folder
   --yes        actually move the items to the Trash (default: dry run)
+  --no-color   plain output (also when NO_COLOR is set or stdout is not a terminal)
 """
 
 func helpText(for command: String) -> String? {
@@ -68,13 +75,6 @@ func usageError(_ msg: String, help: String = mainHelp) -> Never {
 func takeValue(_ args: inout [String], _ option: String) -> String {
     guard !args.isEmpty else { usageError("\(option) needs a value") }
     return args.removeFirst()
-}
-
-func human(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
-
-func ms(_ d: Duration) -> String {
-    let (s, atto) = d.components
-    return String(format: "%.0f ms", Double(s) * 1000 + Double(atto) / 1e15)
 }
 
 var arguments = Array(CommandLine.arguments.dropFirst())

@@ -10,6 +10,7 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     var json = false
     var yes = false
     var timings = false
+    var noColor = false
     var selectors: [String] = []
     while !args.isEmpty {
         let a = args.removeFirst()
@@ -20,12 +21,14 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         case "--json": json = true
         case "--yes": yes = true
         case "--timings": timings = true
+        case "--no-color": noColor = true
         default:
             if a.hasPrefix("-") { usageError("unknown option \(a) for 'fil \(command)'", help: command == "list" ? listHelp : cleanHelp) }
             selectors.append(a)
         }
     }
 
+    UI.setup(noColor: noColor)
     let clock = ContinuousClock()
     let start = clock.now
     func phase(_ name: String, _ since: ContinuousClock.Instant, _ extra: String = "") {
@@ -83,27 +86,23 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
             print(String(decoding: data, as: UTF8.self))
             return
         }
-        print("Home: \(scan.home)")
-        print("\nCategories:")
+        func row(_ c: Candidate) -> String {
+            let note = c.note.map { UI.dim("  (\($0))") } ?? ""
+            return "  " + UI.lpad(human(c.bytes), 9) + "  " + UI.safety(c.safety) + "  " + UI.tilde(c.path) + note
+        }
+        print(UI.bold("Cleanup candidates") + "  " + UI.tilde(scan.home))
         for rule in Rules.all {
             let items = scan.candidates.filter { $0.ruleId == rule.id }
             guard !items.isEmpty else { continue }
             let total = items.reduce(Int64(0)) { $0 + $1.bytes }
-            print("  " + human(total).padding(toLength: 10, withPad: " ", startingAt: 0)
-                  + rule.id.padding(toLength: 24, withPad: " ", startingAt: 0) + "\(items.count) item(s)  \(rule.title)")
-            print("             " + rule.explanation)
+            print("\n" + UI.bold(rule.title) + "  " + UI.bold(human(total)) + UI.dim("  \(items.count) item\(items.count == 1 ? "" : "s") · \(rule.id)"))
+            print(UI.dim("  " + rule.explanation))
+            for c in items { print(row(c)); print(UI.dim("  " + String(repeating: " ", count: 9) + "  id \(c.id) -> \(removalText(c.removal))")) }
         }
-        print("\nCandidates (largest first):")
-        for c in scan.candidates {
-            let mark = c.safety == .safe ? "[safe]   " : c.safety == .review ? "[review] " : "[CAREFUL]"
-            let rel = c.path.hasPrefix(scan.home + "/") ? "~/" + c.path.dropFirst(scan.home.count + 1) : c.path
-            print("  " + human(c.bytes).padding(toLength: 10, withPad: " ", startingAt: 0) + mark + " " + rel
-                  + (c.note.map { "  (\($0))" } ?? ""))
-            print("             \(c.id)  ->  \(removalText(c.removal))")
-        }
-        for s in scan.skippedCommands { print("\nSkipped: \(s)") }
+        for s in scan.skippedCommands { print("\n" + UI.yellow("Skipped: \(s)")) }
         let total = scan.candidates.filter { $0.removal.isInfoOnly == false }.reduce(Int64(0)) { $0 + $1.bytes }
-        print("\nTotal removable: \(human(total))   (\(ms(elapsed)))")
+        print("\n" + UI.bold("Total removable  \(human(total))") + UI.dim("  (\(humanDuration(elapsed)))"))
+        print(UI.dim("Move items to the Trash with: fil clean <id|rule> --yes"))
         return
     }
 
@@ -114,14 +113,17 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     let chosen = resolution.chosen
     let leftOut = resolution.leftOut
     if !yes {
-        print("Dry run (add --yes to do it):")
+        print(UI.bold("Would move to the Trash") + "  " + UI.tilde(scan.home))
         for c in chosen {
-            print("  \(human(c.bytes).padding(toLength: 10, withPad: " ", startingAt: 0))\(c.id)  ->  \(removalText(c.removal))")
+            let target = c.removal.isInfoOnly ? "info only" : removalText(c.removal)
+            print("  " + UI.lpad(human(c.bytes), 9) + "  " + UI.safety(c.safety) + "  " + c.id + UI.dim("  -> \(target)"))
         }
         for c in leftOut where !chosen.contains(where: { $0.id == c.id }) {
-            print("  NOT selected (careful, name its id to remove): \(human(c.bytes))  \(c.id)")
+            print("  " + UI.lpad(human(c.bytes), 9) + "  " + UI.safety(c.safety) + "  " + c.id
+                + UI.dim("  not selected, name its id to remove"))
         }
-        print("Would free \(human(chosen.reduce(Int64(0)) { $0 + $1.bytes })) once the Trash is emptied.")
+        print("\n" + UI.bold("Would free \(human(chosen.reduce(Int64(0)) { $0 + $1.bytes }))") + " once the Trash is emptied.")
+        print(UI.yellow("Dry run, nothing moved; add --yes to do it."))
         return
     }
     var moved: Int64 = 0
@@ -132,20 +134,20 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         case .trashed(let url):
             moved += c.bytes
             handled += 1
-            print("  moved to Trash  \(human(c.bytes))  \(c.id)  -> \(url.path)")
+            print("  " + UI.green("✓") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)" + UI.dim("  -> \(url.path)"))
         case .commandRan:
             moved += c.bytes
             handled += 1
-            print("  ran command     \(human(c.bytes))  \(c.id)")
+            print("  " + UI.green("✓") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)" + UI.dim("  ran command"))
         case .commandShared:
             moved += c.bytes
             handled += 1
-            print("  done by the same command  \(human(c.bytes))  \(c.id)")
+            print("  " + UI.green("✓") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)" + UI.dim("  done by the same command"))
         case .nothingToDo:
-            print("  nothing to do   \(c.id)\(c.note.map { " (\($0))" } ?? "")")
+            print("  " + UI.dim("-") + " " + UI.lpad("", 9) + "  \(c.id)" + UI.dim("  nothing to do\(c.note.map { " (\($0))" } ?? "")"))
         case .failed(let why):
             failures += 1
-            print("  FAILED          \(c.id): \(why.description)")
+            print("  " + UI.red("✗") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)" + UI.red("  failed: \(why.description)"))
         }
     }
     let skippedCareful = leftOut.filter { c in !chosen.contains(where: { $0.id == c.id }) }
@@ -153,11 +155,11 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         print(chosen.isEmpty ? "Nothing was cleaned: no safe or review items matched."
                              : "Nothing was cleaned.")
     } else {
-        print("Handled \(human(moved)) in \(handled) item(s). Space is freed when you empty the Trash.")
+        print("\n" + UI.bold("Handled \(human(moved))") + " in \(handled) item\(handled == 1 ? "" : "s"). Space is freed when you empty the Trash.")
     }
     if !skippedCareful.isEmpty {
         print("Left out \(skippedCareful.count) careful item(s); name a candidate id to remove it:")
-        for c in skippedCareful { print("  \(human(c.bytes).padding(toLength: 10, withPad: " ", startingAt: 0))\(c.id)") }
+        for c in skippedCareful { print("  " + UI.lpad(human(c.bytes), 9) + "  " + UI.safety(c.safety) + "  \(c.id)") }
     }
     if failures != 0 { exit(2) }
 }

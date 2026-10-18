@@ -1,7 +1,7 @@
 import Foundation
 import ScanCore
 
-// fil scan [DIR] [-j N] [--private] [--full] [--top N] [--naive] [--porcelain] [--tolerant-hardlinks]
+// fil scan [DIR] [-j N] [--private] [--full] [--top N] [--naive] [--porcelain] [--tolerant-hardlinks] [-v] [--no-color]
 // Hard links are strict by default (an unknown old multiply-linked file makes the update fall back to a full
 // scan); --tolerant-hardlinks counts it and reports `uncertain=` bytes, as the app does.
 func runScan(_ arguments: [String]) throws {
@@ -12,6 +12,8 @@ func runScan(_ arguments: [String]) throws {
     var naive = false
     var forceFull = false
     var porcelain = false
+    var verbose = false
+    var noColor = false
 
     while !args.isEmpty {
         let a = args.removeFirst()
@@ -22,12 +24,16 @@ func runScan(_ arguments: [String]) throws {
         case "--naive": naive = true
         case "--full": forceFull = true
         case "--porcelain": porcelain = true
+        case "-v", "--verbose": verbose = true
+        case "--no-color": noColor = true
         case "--tolerant-hardlinks": options.strictHardlinks = false
         default:
             if a.hasPrefix("-") { usageError("unknown option \(a) for 'fil scan'", help: scanHelp) }
             path = (a as NSString).standardizingPath
         }
     }
+
+    UI.setup(noColor: noColor)
 
     if naive {
         // What most cleaner apps do: FileManager enumerator + per-file resource values.
@@ -50,6 +56,11 @@ func runScan(_ arguments: [String]) throws {
     let clock = ContinuousClock()
     let start = clock.now
     var mode = "full scan"
+    var summary = "full scan"
+    var unattributed: [String] = []
+    let liveProgress = ScanProgress()
+    let spinner = Progress(label: "Scanning", progress: liveProgress)
+    if !porcelain { spinner.start() }
     var usedIncremental = false
     var unchanged = false
     var tree: DiskTree?
@@ -63,20 +74,21 @@ func runScan(_ arguments: [String]) throws {
                 tree = cached
                 usedIncremental = true
                 unchanged = report.events == 0
+                summary = report.events == 0 ? "up to date from snapshot"
+                    : "updated from snapshot, \(count(Int64(report.events))) change\(report.events == 1 ? "" : "s")"
                 mode = "incremental: load \(ms(loadTime)), \(report.events) events in \(ms(report.historyTime)), "
                     + "apply \(ms(report.applyTime)) (\(report.dirsRead) dirs re-read, "
                     + "\(report.subtreesScanned) subtrees walked, \(report.dirsRemoved) removed)"
             case .failure(let why):
                 mode = "full scan (incremental not usable: \(why))"
                 // Not with --porcelain, whose output must stay one line.
-                if !porcelain, case .unattributedHardLink(let paths) = why {
-                    for p in paths { print("  unattributed hard link: \(p)") }
-                }
+                if case .unattributedHardLink(let paths) = why { unattributed = paths }
             }
         }
     }
-    let scanned = try tree ?? Scanner.scan(path, options: options)
+    let scanned = try tree ?? Scanner.scan(path, options: options, progress: liveProgress)
     let scanTime = clock.now - start
+    spinner.finish()
     let saveStart = clock.now
     // An incremental update with no events left the tree untouched: only the event id moves.
     if !(unchanged && Snapshot.advance(scanned)) { try Snapshot.save(scanned) }
@@ -93,32 +105,75 @@ func runScan(_ arguments: [String]) throws {
         return
     }
 
-    print("""
-    \(scanned.rootPath)
-      on disk  \(human(r.totalAlloc))   (logical \(human(r.totalLogical)))
-      files    \(r.totalFiles)   dirs \(r.totalDirs + 1)
-      time     \(ms(scanTime))   [\(mode)]   snapshot saved in \(ms(saveTime))
-    """)
-    if scanned.uncertainBytes > 0 { print("  uncertain  \(human(scanned.uncertainBytes)) (hard links that may be counted twice)") }
-    if mode.hasPrefix("full") {
-        print("  skipped  denied \(s.openErrors)  errors \(s.entryErrors)  hardlinks \(s.hardlinkDupes)  mounts \(s.mountsSkipped)  cloud-dirs \(s.datalessDirs) (cloud-files \(human(s.datalessLogical)))")
+    for p in unattributed { print("  unattributed hard link: \(p)") }
+    let total = r.totalAlloc
+    print(UI.bold(UI.tilde(scanned.rootPath)) + "  " + UI.bold(human(total)))
+    print(UI.dim("\(human(r.totalLogical)) logical · \(count(r.totalFiles)) files · \(count(r.totalDirs + 1)) folders · "
+        + "\(humanDuration(scanTime)) · \(summary)"))
+    if scanned.uncertainBytes > 0 {
+        print(UI.yellow("\(human(scanned.uncertainBytes)) uncertain (hard links that may be counted twice)"))
+    }
+    if verbose {
+        print(UI.dim("""
+
+        timing   \(ms(scanTime)) [\(mode)]
+                 snapshot saved in \(ms(saveTime))
+        """))
+        if !usedIncremental {
+            print(UI.dim("skipped  denied \(s.openErrors) · errors \(s.entryErrors) · hardlinks \(s.hardlinkDupes) · mounts \(s.mountsSkipped) · cloud-dirs \(s.datalessDirs) (cloud files \(human(s.datalessLogical)))"))
+        }
     }
 
-    guard top > 0 else { return }
+    guard top > 0, total > 0 else { return }
 
-    // Largest directories, skipping a parent when one child holds ≥90% of its size.
+    // Largest directories, skipping a parent when one child holds >= 90% of its size.
     var biggestChild = [Int64](repeating: 0, count: nodes.count)
     for i in nodes.indices.dropFirst() {
         let p = Int(nodes[i].parent)
         biggestChild[p] = max(biggestChild[p], nodes[i].totalAlloc)
     }
     let ranked = nodes.indices.dropFirst()
-        .filter { nodes[$0].totalAlloc > r.totalAlloc / 200 && biggestChild[$0] * 10 < nodes[$0].totalAlloc * 9 }
+        .filter { !nodes[$0].isDead && nodes[$0].totalAlloc > total / 200 && biggestChild[$0] * 10 < nodes[$0].totalAlloc * 9 }
         .sorted { nodes[$0].totalAlloc > nodes[$1].totalAlloc }
         .prefix(top)
+    printTree(Array(ranked), nodes: nodes, total: total)
+}
 
-    print("\nLargest directories:")
-    for id in ranked {
-        print(human(nodes[id].totalAlloc).padding(toLength: 12, withPad: " ", startingAt: 0) + scanned.path(of: id))
+/// Prints `ids` as a tree: each directory sits under its nearest listed ancestor, children ordered by size.
+/// A name is the path relative to that ancestor, so skipped intermediate folders show as "a/b".
+private func printTree(_ ids: [Int], nodes: [DirNode], total: Int64) {
+    let listed = Set(ids)
+    var children: [Int: [Int]] = [:]
+    var label: [Int: String] = [:]
+    for id in ids {
+        var parts = [nodes[id].name]
+        var p = Int(nodes[id].parent)
+        while p > 0, !listed.contains(p) {
+            parts.append(nodes[p].name)
+            p = Int(nodes[p].parent)
+        }
+        children[max(p, 0), default: []].append(id)
+        label[id] = parts.reversed().joined(separator: "/")
     }
+    for k in children.keys { children[k]!.sort { nodes[$0].totalAlloc > nodes[$1].totalAlloc } }
+
+    print("\n" + UI.bold("Largest folders"))
+    let fixed = 9 + 2 + 20 + 2 + 4 + 2  // size, bar, percent, gaps
+    let termWidth = UI.width
+
+    func walk(_ id: Int, prefix: String, last: Bool, depth: Int) {
+        let size = nodes[id].totalAlloc
+        let frac = Double(size) / Double(total)
+        let guide = depth == 0 ? "" : prefix + (last ? "└─ " : "├─ ")
+        let budget = max(8, termWidth - fixed - guide.count)
+        let name = UI.truncate(label[id] ?? nodes[id].name, budget)
+        let pct = frac < 0.005 ? "<1%" : String(format: "%.0f%%", locale: nil, frac * 100)
+        print(UI.share(UI.lpad(human(size), 9), frac) + "  " + UI.share(UI.bar(frac), frac) + "  "
+            + UI.lpad(pct, 4) + "  " + UI.dim(guide) + name)
+        let kids = children[id] ?? []
+        let childPrefix = depth == 0 ? "" : prefix + (last ? "   " : "│  ")
+        for (i, k) in kids.enumerated() { walk(k, prefix: childPrefix, last: i == kids.count - 1, depth: depth + 1) }
+    }
+    let tops = children[0] ?? []
+    for t in tops { walk(t, prefix: "", last: true, depth: 0) }
 }
