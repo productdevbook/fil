@@ -32,6 +32,11 @@ struct Totals: Equatable, CustomStringConvertible {
     var description: String { "alloc=\(alloc) logical=\(logical) files=\(files) dirs=\(dirs) cloneAware=\(cloneAware)" }
 }
 
+extension Result {
+    /// The loaded tree, or nil whatever the reason (tests that check the reason use the `Result`).
+    var tree: Success? { try? get() }
+}
+
 /// Where a test keeps its snapshots: always an explicit private folder, never the user's cache.
 func withSnapshotDir<T>(_ body: (URL) throws -> T) throws -> T {
     let dir = try Fixture(label: "snapshots")
@@ -106,14 +111,14 @@ struct FullScanTests {
                 try f.mk("a/b/c", bytes: 4096)
                 try f.mk("x", bytes: 77)
                 let tree = try Scanner.scan(f.root)
-                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir) == nil)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree == nil)
                 try Snapshot.save(tree, in: dir)
-                let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 #expect(Totals(loaded) == Totals(tree))
                 #expect(loaded.eventId == tree.eventId)
                 // A different mode or root is not a usable snapshot.
-                #expect(Snapshot.load(rootPath: f.root, privateSize: true, in: dir) == nil)
-                #expect(Snapshot.load(rootPath: f.root + "/a", privateSize: false, in: dir) == nil)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: true, in: dir).tree == nil)
+                #expect(Snapshot.load(rootPath: f.root + "/a", privateSize: false, in: dir).tree == nil)
             }
         }
     }
@@ -124,13 +129,13 @@ struct FullScanTests {
             try Fixture.with { f in
                 try f.mk("a/b", bytes: 4096)
                 try Snapshot.save(try Scanner.scan(f.root, options: ScanOptions(crossDevices: true)), in: dir)
-                #expect(Snapshot.load(rootPath: f.root, options: ScanOptions(), in: dir) == nil)
-                #expect(Snapshot.load(rootPath: f.root, privateSize: true, crossDevices: true, in: dir) == nil)
-                let crossing = try #require(Snapshot.load(rootPath: f.root, options: ScanOptions(crossDevices: true), in: dir))
+                #expect(Snapshot.load(rootPath: f.root, options: ScanOptions(), in: dir).tree == nil)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: true, crossDevices: true, in: dir).tree == nil)
+                let crossing = try #require(Snapshot.load(rootPath: f.root, options: ScanOptions(crossDevices: true), in: dir).tree)
                 #expect(crossing.crossDevices)
 
                 try Snapshot.save(try Scanner.scan(f.root), in: dir)
-                let plain = try #require(Snapshot.load(rootPath: f.root, options: ScanOptions(), in: dir))
+                let plain = try #require(Snapshot.load(rootPath: f.root, options: ScanOptions(), in: dir).tree)
                 #expect(!plain.crossDevices)
                 #expect(Snapshot.advance(crossing, in: dir))
                 #expect(Snapshot.advance(plain, in: dir))
@@ -141,7 +146,7 @@ struct FullScanTests {
                 let crossingURL = Snapshot.url(for: f.root, crossDevices: true, in: dir)
                 try FileManager.default.removeItem(at: crossingURL)
                 try FileManager.default.copyItem(at: plainURL, to: crossingURL)
-                #expect(Snapshot.load(rootPath: f.root, options: ScanOptions(crossDevices: true), in: dir) == nil)
+                #expect(Snapshot.load(rootPath: f.root, options: ScanOptions(crossDevices: true), in: dir).tree == nil)
                 #expect(!Snapshot.advance(crossing, in: dir))
             }
         }
@@ -168,7 +173,7 @@ struct FullScanTests {
                 for o in modes { try Snapshot.save(try Scanner.scan(f.root, options: o), in: dir) }
                 #expect(!FileManager.default.fileExists(atPath: legacy.path))
                 for o in modes {
-                    let t = try #require(Snapshot.load(rootPath: f.root, options: o, in: dir))
+                    let t = try #require(Snapshot.load(rootPath: f.root, options: o, in: dir).tree)
                     #expect(t.privateSize == o.privateSize && t.crossDevices == o.crossDevices)
                 }
             }
@@ -188,7 +193,7 @@ struct FullScanTests {
                 var old = good
                 old[4] = 5
                 try old.write(to: url)
-                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir) == nil)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree == nil)
 
                 // The end marker is the last 12 bytes: insert a section before it.
                 func withSection(tag: UInt32) -> Data {
@@ -199,12 +204,12 @@ struct FullScanTests {
                     return d + good.suffix(12)
                 }
                 try withSection(tag: 99).write(to: url)
-                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir) != nil)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree != nil)
                 try withSection(tag: 0x8000_0063).write(to: url)
-                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir) == nil)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree == nil)
                 // A known section twice is corrupt.
                 try withSection(tag: 4).write(to: url)
-                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir) == nil)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree == nil)
             }
         }
     }
@@ -222,7 +227,7 @@ struct FullScanTests {
                 #expect(tree.stats.openErrors == 1 && tree.stats.hardlinkDupes == 1)
                 #expect(tree.fullScanStart == tree.scanStart)
                 try Snapshot.save(tree, in: dir)
-                let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 #expect(loaded.stats.openErrors == 1 && loaded.stats.hardlinkDupes == 1)
                 #expect(loaded.fullScanStart == tree.scanStart)
 
@@ -232,12 +237,50 @@ struct FullScanTests {
                 let at = good.count - 12 - 12 - 72
                 #expect(good[at] == 5)
                 try (good.prefix(at) + good.suffix(12)).write(to: url)
-                let bare = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                let bare = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 #expect(bare.fullScanStart == nil)
                 #expect(bare.stats.openErrors == 0 && bare.stats.hardlinkDupes == 0)
                 // Saved again, it still has none: no counters are made up.
                 try Snapshot.save(bare, in: dir)
-                #expect(try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir)).fullScanStart == nil)
+                #expect(try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree).fullScanStart == nil)
+            }
+        }
+    }
+
+    @Test("each reason a snapshot is not used has its own case")
+    func loadFailureCases() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("a/b", bytes: 4096)
+                func load(_ root: String = f.root, privateSize: Bool = false) -> Snapshot.LoadFailure? {
+                    if case .failure(let why) = Snapshot.load(rootPath: root, privateSize: privateSize, in: dir) {
+                        return why
+                    }
+                    return nil
+                }
+                #expect(load() == .missing)
+                try Snapshot.save(try Scanner.scan(f.root), in: dir)
+                #expect(load() == nil)
+                let url = Snapshot.url(for: f.root, in: dir)
+                let good = try Data(contentsOf: url)
+
+                // Another mode's or another root's file under this name (as after a hash collision).
+                let privateURL = Snapshot.url(for: f.root, privateSize: true, in: dir)
+                try good.write(to: privateURL)
+                #expect(load(privateSize: true) == .otherMode)
+                try good.write(to: Snapshot.url(for: f.path("a"), in: dir))
+                #expect(load(f.path("a")) == .otherRoot)
+
+                var old = good
+                old[4] = 5
+                try old.write(to: url)
+                #expect(load() == .otherVersion(5))
+                try Data("garbage".utf8).write(to: url)
+                #expect(load() == .notSnapshot)
+                try good.prefix(good.count / 2).write(to: url)
+                #expect(load() == .corrupt)
+                try good.prefix(6).write(to: url)
+                #expect(load() == .corrupt)
             }
         }
     }
@@ -251,9 +294,9 @@ struct FullScanTests {
                 let url = Snapshot.url(for: f.root, in: dir)
                 let data = try Data(contentsOf: url)
                 try data.prefix(data.count / 2).write(to: url)
-                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir) == nil)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree == nil)
                 try Data("garbage".utf8).write(to: url)
-                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir) == nil)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree == nil)
             }
         }
     }

@@ -196,29 +196,65 @@ public enum Snapshot {
         t.lap("write")
     }
 
-    /// Returns nil if there is no usable snapshot (missing, other format, other scan mode).
-    public static func load(rootPath: String, options: ScanOptions, in directory: URL? = nil) -> DiskTree? {
+    /// Why `load` found no usable snapshot (chapter 03 §6.4). The caller then does a full scan.
+    public enum LoadFailure: Error, Equatable, Sendable, CustomStringConvertible {
+        /// No file for this root and mode, or it cannot be read.
+        case missing
+        /// The file does not start with the snapshot magic.
+        case notSnapshot
+        /// Another format version (older ones are never read: a full scan rebuilds what they lack).
+        case otherVersion(UInt32)
+        /// Written for another scan mode (`--private`, device crossing).
+        case otherMode
+        /// Written for another root (a file-name hash collision).
+        case otherRoot
+        /// Truncated, or a table or section that breaks the format's rules.
+        case corrupt
+
+        public var description: String {
+            switch self {
+            case .missing: "missing"
+            case .notSnapshot: "not a snapshot"
+            case .otherVersion(let v): "other version \(v)"
+            case .otherMode: "other mode"
+            case .otherRoot: "other root"
+            case .corrupt: "corrupt"
+            }
+        }
+    }
+
+    /// The snapshot of `rootPath` in the mode of `options`, never a partial tree.
+    public static func load(rootPath: String, options: ScanOptions,
+                            in directory: URL? = nil) -> Result<DiskTree, LoadFailure> {
         load(rootPath: rootPath, privateSize: options.privateSize, crossDevices: options.crossDevices, in: directory)
     }
 
-    /// Returns nil if there is no usable snapshot (missing, other format, other scan mode).
+    /// The snapshot of `rootPath` in the given mode, never a partial tree.
     public static func load(rootPath: String, privateSize: Bool, crossDevices: Bool = false,
-                            in directory: URL? = nil) -> DiskTree? {
+                            in directory: URL? = nil) -> Result<DiskTree, LoadFailure> {
         var t = Timings.Lap("load")
         let url = url(for: rootPath, privateSize: privateSize, crossDevices: crossDevices, in: directory)
-        guard let data = try? Data(contentsOf: url, options: .alwaysMapped) else { return nil }
-        return data.withUnsafeBytes { raw -> DiskTree? in
+        guard let data = try? Data(contentsOf: url, options: .alwaysMapped) else { return .failure(.missing) }
+        return data.withUnsafeBytes { raw -> Result<DiskTree, LoadFailure> in
             var r = Reader(raw)
-            guard r.get(UInt32.self) == magic, r.get(UInt32.self) == version,
-                  r.get(UInt8.self) == modeByte(privateSize: privateSize, crossDevices: crossDevices) else { return nil }
+            guard r.get(UInt32.self) == magic else { return .failure(.notSnapshot) }
+            let fileVersion = r.get(UInt32.self)
+            let mode = r.get(UInt8.self)
+            guard r.ok else { return .failure(.corrupt) }
+            guard fileVersion == version else { return .failure(.otherVersion(fileVersion)) }
+            guard mode == modeByte(privateSize: privateSize, crossDevices: crossDevices) else {
+                return .failure(.otherMode)
+            }
             let dev = dev_t(r.get(Int32.self))
             let eventId = r.get(UInt64.self)
             let scanStart = r.get(Int64.self)
             let uncertainBytes = r.get(Int64.self)
             let uuid = r.getString()
-            guard r.getString() == rootPath else { return nil }
+            let storedRoot = r.getString()
+            guard r.ok else { return .failure(.corrupt) }
+            guard storedRoot == rootPath else { return .failure(.otherRoot) }
             let aliasCount = Int(r.get(UInt32.self))
-            guard r.ok, aliasCount <= (raw.count - r.offset) / 8 else { return nil }
+            guard r.ok, aliasCount <= (raw.count - r.offset) / 8 else { return .failure(.corrupt) }
             var aliases: [FirmlinkTable.Alias] = []
             for _ in 0..<aliasCount { aliases.append(FirmlinkTable.Alias(dataPath: r.getString(), source: r.getString())) }
 
@@ -231,18 +267,18 @@ public enum Snapshot {
             while true {
                 let tag = r.get(UInt32.self)
                 let size = r.get(UInt64.self)
-                guard r.ok, size <= UInt64(raw.count - r.offset) else { return nil }
+                guard r.ok, size <= UInt64(raw.count - r.offset) else { return .failure(.corrupt) }
                 let sectionEnd = r.offset + Int(size)
                 if tag == Section.end.rawValue { break }
-                guard seen.insert(tag).inserted else { return nil }
+                guard seen.insert(tag).inserted else { return .failure(.corrupt) }
                 guard let section = Section(rawValue: tag) else {
                     // Optional data of a later writer is skipped; data it marks as required rejects the file.
-                    guard tag & Section.mustUnderstand == 0 else { return nil }
+                    guard tag & Section.mustUnderstand == 0 else { return .failure(.corrupt) }
                     r.offset = sectionEnd
                     continue
                 }
                 // The other sections refer to node ids.
-                guard section == .nodes || !nodes.isEmpty else { return nil }
+                guard section == .nodes || !nodes.isEmpty else { return .failure(.corrupt) }
                 let ok: Bool
                 switch section {
                 case .nodes: ok = r.getNodes(into: &nodes)
@@ -255,11 +291,11 @@ public enum Snapshot {
                     ok = r.ok
                 case .end: ok = false
                 }
-                guard ok, r.ok, r.offset == sectionEnd else { return nil }
+                guard ok, r.ok, r.offset == sectionEnd else { return .failure(.corrupt) }
                 t.lap("\(section)")
             }
             let required: [Section] = [.nodes, .hardlinks, .cloneFamilies, .mountPoints]
-            guard r.ok, required.allSatisfy({ seen.contains($0.rawValue) }) else { return nil }
+            guard r.ok, required.allSatisfy({ seen.contains($0.rawValue) }) else { return .failure(.corrupt) }
             let tree = DiskTree(rootPath: rootPath, rootDev: dev, privateSize: privateSize, crossDevices: crossDevices,
                                 nodes: nodes, eventId: eventId, volumeUUID: uuid, scanStart: scanStart,
                                 hardlinks: HardlinkRegistry(table), clones: CloneRegistry(families), aliases: aliases,
@@ -269,7 +305,7 @@ public enum Snapshot {
             tree.fullScanStart = stats?.start
             tree.computeTotals()
             t.lap("computeTotals")
-            return tree
+            return .success(tree)
         }
     }
 }

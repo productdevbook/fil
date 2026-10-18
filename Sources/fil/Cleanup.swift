@@ -42,7 +42,9 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     var tree: DiskTree?
     var unchanged = false
     var t = clock.now
-    if let cached = Snapshot.load(rootPath: home, privateSize: options.privateSize) {
+    let loaded = Snapshot.load(rootPath: home, privateSize: options.privateSize)
+    if case .failure(let why) = loaded { phase("snapshot load", t, "  (not used: \(why); full scan)") }
+    if case .success(let cached) = loaded {
         phase("snapshot load", t)
         t = clock.now
         switch Incremental.update(cached, options: options) {

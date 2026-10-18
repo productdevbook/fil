@@ -70,7 +70,13 @@ func runScan(_ arguments: [String]) throws {
 
     if !forceFull {
         let loadStart = clock.now
-        let loaded = Snapshot.load(rootPath: path, options: options)
+        let loaded: DiskTree?
+        switch Snapshot.load(rootPath: path, options: options) {
+        case .success(let t): loaded = t
+        case .failure(let why):
+            loaded = nil
+            mode = "full scan (snapshot not used: \(why))"
+        }
         // A tolerant run (`fil list`, `--tolerant-hardlinks`) may have left bytes that are perhaps counted twice; a
         // strict scan never presents that tree as exact. The full scan's tree starts again at 0.
         if let cached = loaded, options.strictHardlinks && cached.uncertainBytes > 0 {

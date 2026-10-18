@@ -95,7 +95,7 @@ struct CloneAccountingTests {
                 try f.clone("x/a", to: "y/b")
                 let tree = try Scanner.scan(f.root)
                 try Snapshot.save(tree, in: dir)
-                let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 #expect(Totals(loaded) == Totals(tree))
                 #expect(loaded.clones.table.count == 1)
                 #expect(loaded.clones.table.values.first?.original == Int32(try #require(loaded.node(at: f.path("x")))))
@@ -113,7 +113,7 @@ struct UpdateStatsTests {
                 try f.mk("x/a", bytes: 1000)
                 try f.mk("y/other", bytes: 10)
                 try Snapshot.save(try Scanner.scan(f.root), in: dir)
-                let tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                let tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 // A denied folder found by the update: counted in the report and as an unreadable node, not in stats.
                 try f.mk("y/locked/secret", bytes: 100)
                 try f.chmod("y/locked", 0o000)
@@ -140,7 +140,7 @@ struct CloneAdoptionTests {
                 try f.mk("y/other", bytes: 10)
                 try Snapshot.save(try Scanner.scan(f.root), in: dir)
                 try f.clone("x/a", to: "y/b")
-                let tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                let tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 // Only y is replayed, as if FSEvents had reported nothing for the original's directory.
                 var report = UpdateReport()
                 let failure = Incremental.applyTracked([EventHistory.Event(path: f.path("y"), mustScanSubDirs: false)],
@@ -163,7 +163,7 @@ struct CloneAdoptionTests {
                 try f.chmod("x", 0o300)
                 try Snapshot.save(try Scanner.scan(f.root), in: dir)
                 try f.clone("x/a", to: "y/b")
-                let tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                let tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 var report = UpdateReport()
                 let failure = Incremental.applyTracked([EventHistory.Event(path: f.path("y"), mustScanSubDirs: false)],
                                                        to: tree, options: ScanOptions(), report: &report)
@@ -293,7 +293,7 @@ struct FirmlinkTests {
                 try f.mk("data/Users/file", bytes: 1000)
                 let table = FirmlinkTable(dataRoot: f.path("data"), links: [.init(source: f.path("sys/Users"), target: "Users")])
                 try Snapshot.save(try Scanner.scan(f.root, options: ScanOptions(firmlinks: table)), in: dir)
-                let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 #expect(loaded.aliases == table.aliases(for: f.root))
                 guard case .failure(.firmlinksChanged) = Incremental.update(loaded, options: ScanOptions(firmlinks: .empty)) else {
                     Issue.record("expected firmlinksChanged")

@@ -640,6 +640,12 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   `save` unlinks the pre-#33 file of the same root (hash of the path alone) so the old snapshot does not stay in the
   cache; it was never readable by the new name. Checked: `fil scan X` / `fil scan X --private` alternating is
   `incremental` from the third run on.
+- #35 (2026-10-18): `Snapshot.load` returns `Result<DiskTree, Snapshot.LoadFailure>` with the six cases of §6.4;
+  `description` is `missing`, `not a snapshot`, `other version N`, `other mode`, `other root`, `corrupt`. A file too
+  short for the version or mode byte, or a must-understand section of a later writer, is `corrupt`. `scan -v` shows
+  it in the timing bracket like an update failure: `[full scan (snapshot not used: missing)]` (not with `--full`,
+  which never loads); `list`/`clean --timings` print the `snapshot load` line also on failure:
+  `snapshot load  0 ms  (not used: <case>; full scan)`.
 
 ## Glossary additions
 

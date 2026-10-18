@@ -122,7 +122,7 @@ func scanChangeUpdate(_ f: Fixture, dir: URL, options: ScanOptions,
     let baseline = try Scanner.scan(f.root, options: options)
     try Snapshot.save(baseline, in: dir)
     try change()
-    let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: options.privateSize, in: dir))
+    let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: options.privateSize, in: dir).tree)
     let outcome: UpdateOutcome
     switch Incremental.update(loaded, options: options) {
     case .success(let report): outcome = .incremental(loaded, report)
@@ -204,7 +204,7 @@ struct IncrementalFSEventsTests {
                 try f.mk("a/b", bytes: 1234)
                 let baseline = try Scanner.scan(f.root)
                 try Snapshot.save(baseline, in: dir)
-                var loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                var loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 guard case .success(var report) = Incremental.update(loaded) else {
                     Issue.record("update failed")
                     return
@@ -214,7 +214,7 @@ struct IncrementalFSEventsTests {
                 for _ in 0..<10 where report.treeChanged {
                     #expect(!Snapshot.advance(loaded, in: dir))
                     try Snapshot.save(loaded, in: dir)
-                    loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                    loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                     guard case .success(let next) = Incremental.update(loaded) else {
                         Issue.record("update failed")
                         return
@@ -224,7 +224,7 @@ struct IncrementalFSEventsTests {
                 try #require(!report.treeChanged, "fseventsd kept reporting the fixture's creation")
                 #expect(loaded.eventId >= baseline.eventId)
                 #expect(Snapshot.advance(loaded, in: dir))
-                let again = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                let again = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 #expect(again.eventId == loaded.eventId)
                 #expect(Totals(again) == Totals(baseline))
             }
@@ -237,7 +237,7 @@ struct IncrementalFSEventsTests {
             try Fixture.with { f in
                 try f.mk("a/keep", bytes: 500)
                 try Snapshot.save(try Scanner.scan(f.root), in: dir)
-                var tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                var tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 for round in 1...3 {
                     try f.mk("a/r\(round)", bytes: 10_000 * round)
                     try f.mk("n\(round)/deep/x", bytes: 777)
@@ -247,7 +247,7 @@ struct IncrementalFSEventsTests {
                     }
                     #expect(Totals(tree) == Totals(try Scanner.scan(f.root)), "round \(round)")
                     try Snapshot.save(tree, in: dir)
-                    tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                    tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 }
             }
         }
@@ -331,7 +331,7 @@ struct IncrementalFSEventsTests {
 
                 // FSEvents keeps no Mount event in its history: the update finds the mount in the mount table.
                 guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
-                let mounted = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                let mounted = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 guard case .success = Incremental.update(mounted) else {
                     Issue.record("update after mount failed")
                     return
@@ -350,7 +350,7 @@ struct IncrementalFSEventsTests {
 
                 // No event marks an unmount either: the recorded mount point is missing from the mount table.
                 image.detach()
-                let unmounted = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                let unmounted = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 #expect(unmounted.mountPoints == [MountPoint(parent: 0, name: "mnt")])
                 guard case .success = Incremental.update(unmounted) else {
                     Issue.record("update after unmount failed")
@@ -400,7 +400,7 @@ struct IncrementalFSEventsTests {
                 let root = FirmlinkTable.system.dataRoot + f.path("t")
                 try Snapshot.save(try Scanner.scan(root), in: dir)
                 try f.mk("t/y/new", bytes: 50_000)
-                let tree = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir))
+                let tree = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir).tree)
                 guard case .success(let report) = Incremental.update(tree) else {
                     Issue.record("update failed")
                     return
@@ -427,7 +427,7 @@ struct IncrementalFSEventsTests {
                 func update(_ relative: String) throws -> Result<UpdateReport, UpdateFailure> {
                     let root = f.path(relative)
                     try Snapshot.save(try Scanner.scan(root, options: options), in: dir)
-                    let tree = try #require(Snapshot.load(rootPath: root, options: options, in: dir))
+                    let tree = try #require(Snapshot.load(rootPath: root, options: options, in: dir).tree)
                     return Incremental.update(tree, options: options)
                 }
                 // The data volume itself, and a folder that holds a target below it (usr holds usr/local).
@@ -459,7 +459,7 @@ struct IncrementalFSEventsTests {
                 try Snapshot.save(try Scanner.scan(root), in: dir)
                 try f.move("t", to: "t.old")
                 try f.mk("t/b", bytes: 10_000)
-                let tree = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir))
+                let tree = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir).tree)
                 switch Incremental.update(tree) {
                 case .failure(let why):
                     // RootChanged: a full scan follows.
@@ -485,7 +485,7 @@ struct IncrementalFSEventsTests {
                 try Snapshot.save(try Scanner.scan(root), in: dir)
 
                 guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
-                let mounted = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir))
+                let mounted = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir).tree)
                 guard case .success(let report) = Incremental.update(mounted) else {
                     Issue.record("update after mount failed")
                     return
@@ -498,7 +498,7 @@ struct IncrementalFSEventsTests {
                 try Snapshot.save(mounted, in: dir)
 
                 // Still mounted: the record matches, nothing is re-read.
-                let again = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir))
+                let again = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir).tree)
                 guard case .success(let idle) = Incremental.update(again) else {
                     Issue.record("second update failed")
                     return
@@ -532,7 +532,7 @@ struct IncrementalFSEventsTests {
                 let full = try Scanner.scan(root, options: options)
                 #expect(full.mountPoints == [MountPoint(parent: 0, name: "mnt")])
                 try Snapshot.save(full, in: dir)
-                let tree = try #require(Snapshot.load(rootPath: root, options: options, in: dir))
+                let tree = try #require(Snapshot.load(rootPath: root, options: options, in: dir).tree)
                 guard case .success(let report) = Incremental.update(tree, options: options) else {
                     Issue.record("update failed")
                     return
@@ -565,7 +565,7 @@ struct IncrementalFSEventsTests {
             try Fixture.with { f in
                 try f.mk("a/b", bytes: 10)
                 try Snapshot.save(try Scanner.scan(f.root), in: dir)
-                #expect(Snapshot.load(rootPath: f.root + "/a", privateSize: false, in: dir) == nil)
+                #expect(Snapshot.load(rootPath: f.root + "/a", privateSize: false, in: dir).tree == nil)
             }
         }
     }
