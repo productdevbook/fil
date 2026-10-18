@@ -5,10 +5,19 @@ name: Release
 # Only tag pushes run it, so pull requests never see the signing secrets. A manual run (Actions tab)
 # tests, builds, signs and notarizes the current version and uploads the tarball as an artifact; it
 # publishes nothing (jobs `publish` and `tap` are skipped).
+# Recovery: a manual run with `tap_version` (e.g. 0.2.0) runs only `tap`, for that already published
+# release: it takes the SHA-256 from the release's .sha256 asset and renders, audits, installs and
+# pushes the cask. Nothing is built, signed or published.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tap_version:
+        description: "Only update the Homebrew cask for this already published release (X.Y.Z, no v). Leave empty to build without publishing."
+        type: string
+        required: false
+        default: ""
 
 permissions: {}
 
@@ -23,6 +32,7 @@ env:
 jobs:
   # Nothing is signed unless the release build and the unit tests pass on this commit.
   test:
+    if: inputs.tap_version == ''
     runs-on: xcode-27
     permissions:
       contents: read
@@ -49,6 +59,7 @@ jobs:
 
   build:
     needs: test
+    if: inputs.tap_version == ''
     runs-on: xcode-27
     permissions:
       contents: read
@@ -109,7 +120,7 @@ jobs:
 
   publish:
     needs: [test, build]
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -159,13 +170,15 @@ jobs:
 
   tap:
     needs: [test, build, publish]
-    if: github.ref_type == 'tag'
+    # A tag run needs a published release; a recovery run (tap_version) skips the jobs it needs.
+    if: ${{ !cancelled() && (inputs.tap_version != '' || (github.event_name == 'push' && needs.publish.result == 'success')) }}
     runs-on: xcode-27
     timeout-minutes: 20
-    permissions: {}
+    # contents: read for `gh release view/download` and `gh api`; the cask is pushed with the deploy key.
+    permissions:
+      contents: read
     env:
-      VERSION: ${{ needs.test.outputs.version }}
-      SHA256: ${{ needs.build.outputs.sha256 }}
+      VERSION: ${{ inputs.tap_version || needs.test.outputs.version }}
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_FROM_API: "1"
       HOMEBREW_NO_ANALYTICS: "1"
@@ -174,14 +187,41 @@ jobs:
         with:
           persist-credentials: false
 
+      # SHA256 comes from the build for a tag run, from the published .sha256 asset for a recovery run.
+      - name: Resolve the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_SHA256: ${{ needs.build.outputs.sha256 }}
+          RECOVERY: ${{ inputs.tap_version != '' }}
+        run: |
+          [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::bad version '$VERSION'"; exit 1; }
+          if [[ $RECOVERY == true ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" --silent \
+              || { echo "::error::tag v$VERSION does not exist"; exit 1; }
+            [[ "$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == false ]] \
+              || { echo "::error::release v$VERSION is a draft"; exit 1; }
+            NAME=fil-$VERSION-arm64.tar.gz
+            mkdir "$RUNNER_TEMP/release"
+            gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$NAME.sha256" --dir "$RUNNER_TEMP/release"
+            read -r SHA FILE < "$RUNNER_TEMP/release/$NAME.sha256"
+            FILE=${FILE#\*}
+            [[ $FILE == "$NAME" ]] || { echo "::error::checksum file names '$FILE', not $NAME"; exit 1; }
+          else
+            SHA=$BUILD_SHA256
+          fi
+          [[ $SHA =~ ^[0-9a-f]{64}$ ]] || { echo "::error::bad sha256"; exit 1; }
+          echo "SHA256=$SHA" >> "$GITHUB_ENV"
+
       - name: Tap
         env:
+          GH_TOKEN: ${{ github.token }}
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
         run: |
           printf '%s\n' "$TAP_DEPLOY_KEY" > "$RUNNER_TEMP/tap_key"
           chmod 600 "$RUNNER_TEMP/tap_key"
-          # GitHub's own SSH host keys, not trust-on-first-use.
-          curl -fsSL https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$RUNNER_TEMP/known_hosts"
+          # GitHub's own SSH host keys, not trust-on-first-use. Authenticated: anonymous API calls from the
+          # runner's shared address are refused or rate-limited (403).
+          gh api meta --jq '.ssh_keys[] | "github.com " + .' > "$RUNNER_TEMP/known_hosts"
           [[ -s "$RUNNER_TEMP/known_hosts" ]] || { echo "::error::no GitHub host keys"; exit 1; }
           SSH="ssh -i $RUNNER_TEMP/tap_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes"
           echo "GIT_SSH_COMMAND=$SSH" >> "$GITHUB_ENV"
@@ -221,4 +261,4 @@ jobs:
 
       - name: Remove the tap key
         if: always()
-        run: rm -f "$RUNNER_TEMP/tap_key" "$RUNNER_TEMP/known_hosts"
+        run: rm -rf "$RUNNER_TEMP/tap_key" "$RUNNER_TEMP/known_hosts" "$RUNNER_TEMP/release"

@@ -919,6 +919,16 @@ the CLA check on Your first pull request".
 - #24: `tap` taps `productdevbook/tap` with the deploy key, renders `packaging/homebrew/fil.rb.in` into it, audits
   and installs from the local tap, smoke-tests `fil --version` and `fil scan --porcelain`, then pushes. The
   template has no completion/man stanzas until #27/#45.
+  - v0.2.0 run 39158157151: `tap` failed at the host-key fetch (`curl https://api.github.com/meta` got 403 from the
+    runner). The job now has `contents: read` and `GH_TOKEN: ${{ github.token }}` and uses `gh api meta --jq`;
+    host keys are still pinned (`StrictHostKeyChecking=yes`), never trust-on-first-use. `/meta` needs no scope;
+    `contents: read` is for the release lookups below.
+  - Recovery path: a manual run with the `tap_version` input (`X.Y.Z`) skips `test`, `build` and `publish` and runs
+    only `tap`. A step first checks that tag `vX.Y.Z` exists and its release is not a draft, downloads
+    `fil-X.Y.Z-arm64.tar.gz.sha256` with `gh release download`, checks the file name and a 64-hex digest, and takes
+    SHA256 from it; the render, audit, install and push steps are the tag path's. A manual run without the input is
+    unchanged (builds, signs, notarizes, publishes nothing). `publish` now also requires a `push` event, so a manual
+    run on a tag ref cannot release.
 
 ## Glossary additions
 
