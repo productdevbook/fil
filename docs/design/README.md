@@ -141,7 +141,7 @@ Developer ID, notarization, stapling, Gatekeeper wait, tap (`productdevbook/tap`
 
 | ID | Meaning |
 |---|---|
-| `F-NNN` | Backlog item; F-N is GitHub issue #N. Never reused; withdrawn items stay listed. |
+| `F-NNN` | Backlog item; F-N is GitHub issue #N. Never reused; withdrawn items stay listed. A number GitHub gives to something else first (e.g. a Dependabot PR) is listed as **not used** and skipped. |
 | `M1`…`M7` | Roadmap milestones; inserted ones get fractional numbers (M2.5). |
 | `P0`…`P3` | Milestone fails without it / expected / welcome / later. |
 | Areas | `scan`, `clean`, `cli`, `map`, `ops`, `design`. |

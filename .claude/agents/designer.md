@@ -20,8 +20,9 @@ to change a rule, change the chapter first.
 - `docs/design/01`–`07` chapters, `08-roadmap.md`, `backlog.md`. Every point carries **[Exists]** (with a file
   reference), **[Change]** (with reason and issue) or **[New]**.
 - Backlog items are `F-NNN`; F-N is GitHub issue #N. Create issues only in ID order, and check the next issue
-  number first (`gh issue list --state all`, `gh pr list --state all`): if it is not the next F-number, stop and
-  report. IDs are never reused; withdrawn items stay listed.
+  number first (`gh issue list --state all`, `gh pr list --state all`). Numbers taken by pull requests (e.g.
+  Dependabot) are listed in `backlog.md` as "not used" F-numbers and skipped; never create an issue whose number
+  differs from its F-number. IDs are never reused; withdrawn items stay listed.
 - Issue body format, labels (`P0`–`P3`, `area:*`, `agent:*`) and milestones as in the existing issues.
 - New canonical names go into the README glossary first.
 - Owner decisions: one issue per milestone listing each question with the choice made for now and "Confirm or

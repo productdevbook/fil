@@ -131,6 +131,15 @@ settings and secrets only a person with admin rights can change).
     that supersedes them.
   - `CLAUDE.md` points to `docs/design/` and lists `doctor` among the commands.
 
+### F-047 · FSEvents checks are reliable and say why they fall back
+
+- **Area** scan · **Owner** scan-tester · **Priority** P2 · **Depends on** — · **Chapters** 03 §11
+- **Acceptance**
+  - Every `scripts/verify.sh` scenario that expects `incremental` prints the `-v` reason when it gets a full scan.
+  - `scripts/verify.sh` run 20 times in a row: flake rate per scenario reported; seen once so far: `hardlink: grow
+    via link A` (full scan instead of incremental) and the ScanCore test "a folder that becomes readable again is
+    walked". Each flaky case gets a cause or an issue for `macos-engineer`.
+
 ### F-020 · ScanCore regression tests
 
 - **Area** scan · **Owner** macos-engineer · **Priority** P1 · **Depends on** F-004, F-006, F-007 · **Chapters** 01 §13; 03 §11
@@ -287,6 +296,10 @@ settings and secrets only a person with admin rights can change).
 ### F-031 · Improvement plan (tracking) — **withdrawn**
 
 - Replaced by the GitHub milestones of this roadmap. Close with a pointer to `docs/design/08-roadmap.md`.
+
+### F-046 · not used
+
+- Number taken by Dependabot pull request #46.
 
 ---
 
