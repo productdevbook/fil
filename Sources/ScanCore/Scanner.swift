@@ -296,8 +296,9 @@ struct DirOutcome {
     var childDirs: [String] = []
     /// Raw bytes of the entries of `childDirs` whose names are not valid UTF-8 (`childDirs` holds a display form).
     var rawChildDirs: [(index: Int, bytes: [UInt8])] = []
-    /// Child directories the caller may not list (no read or search permission); only with `Config.userAccess`.
-    var deniedChildDirs: [String] = []
+    /// Indices into `childDirs` of the child directories the caller may not list (no read or search permission); only
+    /// with `Config.userAccess`.
+    var deniedChildDirs: [Int] = []
     /// Child directories skipped because another volume is mounted on them (not with `crossDevices`).
     var mountPoints: [String] = []
     /// Multiply-linked files whose claim was deferred (the claim closure returned nil).
@@ -542,7 +543,7 @@ struct DirReader {
                 let valid = String(validatingCString: cName)
                 let name = valid ?? String(cString: cName)
                 if let skip, skip.contains(name) { out.stats.firmlinksSkipped += 1; return }
-                if access & UInt32(R_OK | X_OK) != UInt32(R_OK | X_OK) { out.deniedChildDirs.append(name) }
+                if access & UInt32(R_OK | X_OK) != UInt32(R_OK | X_OK) { out.deniedChildDirs.append(out.childDirs.count) }
                 if valid == nil {
                     // Not UTF-8: `name` (with U+FFFD) is for display; the walk opens the raw bytes.
                     out.rawChildDirs.append((out.childDirs.count,

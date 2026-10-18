@@ -57,6 +57,58 @@ struct RawNameTests {
         }
     }
 
+    @Test("an update tells apart raw names whose display forms are the same")
+    func collidingDisplayNames() throws {
+        guard DiskImage.isAvailable else { try Test.cancel("no hdiutil") }
+        try Fixture.with("fat") { box in
+            guard let image = DiskImage(emptyMegabytes: 20, fs: "MS-DOS", at: box.path("fat.dmg")) else {
+                try Test.cancel("hdiutil create failed")
+            }
+            defer { image.detach() }
+            try box.mkdir("mnt")
+            guard image.attach(at: box.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
+            try box.mkdir("mnt/longname_abq")
+            try box.mkdir("mnt/longname_abr")
+            image.detach()
+            // Both long names end in a different lone surrogate (U+D800, U+D801): different bytes, same display form.
+            var data = try Data(contentsOf: URL(fileURLWithPath: image.path))
+            let needle = Data("ame_ab".utf16.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] })
+            var from = data.startIndex
+            var patched = 0
+            while let at = data.range(of: needle, in: from..<data.endIndex) {
+                let q = at.lowerBound - 14 + 28
+                if data[q] == UInt8(ascii: "q") || data[q] == UInt8(ascii: "r") {
+                    let low: UInt8 = data[q] == UInt8(ascii: "q") ? 0x00 : 0x01
+                    data[q] = low
+                    data[q + 1] = 0xD8
+                    patched += 1
+                }
+                from = at.upperBound
+            }
+            try #require(patched == 2)
+            try data.write(to: URL(fileURLWithPath: image.path))
+            guard image.attach(at: box.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
+
+            func rawChildren(_ tree: DiskTree) -> Set<[UInt8]> {
+                Set(tree.nodes.indices.filter { tree.nodes[$0].parent == 0 }.compactMap { tree.rawNames[Int32($0)] })
+            }
+            let tree = try Scanner.scan(box.path("mnt"))
+            let both = rawChildren(tree)
+            #expect(both.count == 2)
+            // As if the second folder had appeared after the snapshot: drop it, then re-read the root.
+            let second = try #require(tree.nodes.indices.last { tree.nodes[$0].parent == 0 })
+            tree.nodes[second].parent = DirNode.dead
+            tree.compact()
+            tree.syncLinks()
+            #expect(rawChildren(tree).count == 1)
+            var report = UpdateReport()
+            #expect(Incremental.applyTracked([EventHistory.Event(path: box.path("mnt"), mustScanSubDirs: false)],
+                                             to: tree, options: ScanOptions(), report: &report) == nil)
+            #expect(rawChildren(tree) == both)
+            #expect(report.dirsRemoved == 0)
+        }
+    }
+
     @Test("an update keeps a raw-named folder that its bytes do not open, in a re-read and in a rescan")
     func updateKeepsUnopenableRawName() throws {
         for subtree in [false, true] {

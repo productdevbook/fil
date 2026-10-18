@@ -242,13 +242,17 @@ public enum Incremental {
             tree.nodes[Int(id)].unreadable = false
             tree.nodes[Int(id)].incomplete = out.incomplete
             changed.append(id)
-            var knownNames = Set<String>()
-            let onDisk = Set(out.childDirs)
-            let denied = Set(out.deniedChildDirs)
+            // Children are matched by their bytes: display forms of names that are not UTF-8 can collide.
+            let rawAt = Dictionary(out.rawChildDirs.map { ($0.index, $0.bytes) }, uniquingKeysWith: { a, _ in a })
+            let listed = out.childDirs.indices.map { ChildKey(name: out.childDirs[$0], raw: rawAt[$0]) }
+            var known = Set<ChildKey>()
+            let onDisk = Set(listed)
+            let denied = Set(out.deniedChildDirs.map { listed[$0] })
             tree.forEachChild(of: id) { c in
                 let n = tree.nodes[Int(c)]
-                knownNames.insert(n.name)
-                if !onDisk.contains(n.name) {
+                let key = ChildKey(name: n.name, raw: tree.rawNames.isEmpty ? nil : tree.rawNames[c])
+                known.insert(key)
+                if !onDisk.contains(key) {
                     killRoots.append(c)
                     return
                 }
@@ -256,7 +260,7 @@ public enum Incremental {
                 // emptied like a full scan leaves it; one that became listable again is walked.
                 // A child re-read or rescanned on its own is settled there.
                 if shallow.contains(c) || full.contains(c) { return }
-                let denied = denied.contains(n.name)
+                let denied = denied.contains(key)
                 if denied && !n.unreadable {
                     tree.nodes[Int(c)].ownAlloc = 0
                     tree.nodes[Int(c)].ownLogical = 0
@@ -270,9 +274,9 @@ public enum Incremental {
                     readable.append(c)
                 }
             }
-            for (k, name) in out.childDirs.enumerated() where !knownNames.contains(name) {
+            for (k, name) in out.childDirs.enumerated() where !known.contains(listed[k]) {
                 newDirs.append(Int32(tree.nodes.count))
-                if let r = out.rawChildDirs.first(where: { $0.index == k }) { tree.rawNames[Int32(tree.nodes.count)] = r.bytes }
+                if let r = rawAt[k] { tree.rawNames[Int32(tree.nodes.count)] = r }
                 tree.nodes.append(DirNode(parent: id, name: name))
             }
             for name in out.mountPoints { newMounts.append(MountPoint(parent: id, name: name)) }
@@ -732,5 +736,16 @@ final class EventHistory: @unchecked Sendable {
         }
         defer { free(real) }
         return String(cString: real)
+    }
+}
+
+/// A child directory as the update diff matches it: by the bytes of its name. Valid names keep their `String`
+/// (no copy); a name that is not UTF-8 is its raw bytes, so two such names never meet through a shared display form.
+private enum ChildKey: Hashable {
+    case name(String)
+    case raw([UInt8])
+
+    init(name: String, raw: [UInt8]?) {
+        self = raw.map { bytes in String(validating: bytes, as: UTF8.self).map(ChildKey.name) ?? .raw(bytes) } ?? .name(name)
     }
 }
