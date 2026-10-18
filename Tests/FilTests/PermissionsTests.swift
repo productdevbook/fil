@@ -6,8 +6,10 @@ import Testing
     let home = "/Users/me"
 
     @Test func classifiesPrivacyProtectedFolders() {
-        for p in ["/Users/me/Library/Mail", "/Users/me/Pictures/Photos Library.photoslibrary", "/Users/me/Desktop",
-                  "/private/var/db/foo", "/Library/Application Support/com.apple.TCC"] {
+        for p in [
+            "/Users/me/Library/Mail", "/Users/me/Pictures/Photos Library.photoslibrary", "/Users/me/Desktop",
+            "/private/var/db/foo", "/Library/Application Support/com.apple.TCC",
+        ] {
             #expect(Permissions.classify(p, ownerUID: 0, home: home, myUID: 501) == .privacyProtected, "\(p)")
         }
     }
@@ -34,8 +36,9 @@ import Testing
     }
 
     @Test func incompleteFoldersChangeTheHeaderAndGetANote() {
-        let lines = Permissions.warningLines([("/Users/me/Library/Mail", .privacyProtected), ("/data/x", .incomplete)],
-                                             terminalName: "Ghostty")
+        let lines = Permissions.warningLines(
+            [("/Users/me/Library/Mail", .privacyProtected), ("/data/x", .incomplete)],
+            terminalName: "Ghostty")
         #expect(lines[0] == "2 folders could not be read fully; sizes below them are too low.")
         #expect(lines[1] == "  /Users/me/Library/Mail")
         #expect(lines[2] == "  /data/x  (could not be read completely)")
@@ -43,10 +46,12 @@ import Testing
     }
 
     @Test func findsOutermostAppBundle() {
-        #expect(ResponsibleApp.outermostBundle(in: "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal")
-            == "/System/Applications/Utilities/Terminal.app")
-        #expect(ResponsibleApp.outermostBundle(in: "/Applications/Code.app/Contents/Frameworks/Helper.app/Contents/MacOS/H")
-            == "/Applications/Code.app")
+        #expect(
+            ResponsibleApp.outermostBundle(in: "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal")
+                == "/System/Applications/Utilities/Terminal.app")
+        #expect(
+            ResponsibleApp.outermostBundle(in: "/Applications/Code.app/Contents/Frameworks/Helper.app/Contents/MacOS/H")
+                == "/Applications/Code.app")
         #expect(ResponsibleApp.outermostBundle(in: "/usr/bin/zsh") == nil)
     }
 

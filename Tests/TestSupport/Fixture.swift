@@ -12,8 +12,9 @@ public final class Fixture: @unchecked Sendable {
         let made = String(decoding: template.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
         guard let real = realpath(made, nil) else { throw POSIXError(.ENOENT) }
         defer { free(real) }
-        root = String(decoding: UnsafeBufferPointer(start: real, count: strlen(real)).map { UInt8(bitPattern: $0) },
-                      as: UTF8.self)
+        root = String(
+            decoding: UnsafeBufferPointer(start: real, count: strlen(real)).map { UInt8(bitPattern: $0) },
+            as: UTF8.self)
     }
 
     /// Runs `body` with a fixture and removes it afterwards, also when `body` throws.
@@ -23,7 +24,8 @@ public final class Fixture: @unchecked Sendable {
         return try body(f)
     }
 
-    public static func withAsync<T>(_ label: String = "fixture", _ body: (Fixture) async throws -> T) async throws -> T {
+    public static func withAsync<T>(_ label: String = "fixture", _ body: (Fixture) async throws -> T) async throws -> T
+    {
         let f = try Fixture(label: label)
         defer { f.remove() }
         return try await body(f)
@@ -58,7 +60,9 @@ public final class Fixture: @unchecked Sendable {
     /// `rename(2)` itself: also for a name that differs only in case, which `FileManager.moveItem` refuses on a
     /// case-insensitive volume.
     public func rename(_ from: String, to: String) throws {
-        guard Darwin.rename(path(from), path(to)) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        guard Darwin.rename(path(from), path(to)) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     public func link(_ from: String, to: String) throws {
@@ -94,7 +98,9 @@ public final class Fixture: @unchecked Sendable {
     /// `du -skx` x 1024: the reference for on-disk sizes. Directories that cannot be read still print a total.
     public func duBytes(_ relative: String = "") -> Int64 {
         let out = Process.output("/usr/bin/du", ["-skx", path(relative)])
-        guard let first = out.split(whereSeparator: { $0 == " " || $0 == "\t" }).first, let kb = Int64(first) else { return -1 }
+        guard let first = out.split(whereSeparator: { $0 == " " || $0 == "\t" }).first, let kb = Int64(first) else {
+            return -1
+        }
         return kb * 1024
     }
 }

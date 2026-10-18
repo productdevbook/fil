@@ -6,8 +6,8 @@ import Synchronization
 public struct UpdateReport: Sendable {
     /// Events inside the tree delivered before the barrier (directory-level, so several changes may share one).
     public var events = 0
-    public var dirsRead = 0          // directories re-read on their own (contents changed)
-    public var subtreesScanned = 0   // new or flagged directories walked in full
+    public var dirsRead = 0  // directories re-read on their own (contents changed)
+    public var subtreesScanned = 0  // new or flagged directories walked in full
     public var dirsRemoved = 0
     public var historyTime: Duration = .zero
     public var applyTime: Duration = .zero
@@ -55,7 +55,8 @@ public enum UpdateFailure: Error, Sendable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .rootUnreadable(let e): "root unreadable (\(String(cString: strerror(e))))"
-        case .volumeChanged(let a, let b): "volume changed (\(a.isEmpty ? "unknown" : a) -> \(b.isEmpty ? "unknown" : b))"
+        case .volumeChanged(let a, let b):
+            "volume changed (\(a.isEmpty ? "unknown" : a) -> \(b.isEmpty ? "unknown" : b))"
         case .historyUntrusted(let flags, let path): "history untrusted (\(flags.joined(separator: ", ")) at \(path))"
         case .historyTimeout(let s): "history replay timed out after \(s) s"
         case .barrierTimeout(let s): "barrier event timed out after \(s) s"
@@ -64,7 +65,8 @@ public enum UpdateFailure: Error, Sendable, CustomStringConvertible {
             "unattributed hard link: \(paths.prefix(5).joined(separator: ", "))"
                 + (paths.count > 5 ? " (+\(paths.count - 5) more)" : "")
         case .firmlinksChanged: "firmlinks changed"
-        case .dataVolumeRoot: "incremental updates are not supported for a data-volume root that holds firmlinked folders"
+        case .dataVolumeRoot:
+            "incremental updates are not supported for a data-volume root that holds firmlinked folders"
         }
     }
 }
@@ -75,7 +77,9 @@ public enum Incremental {
     /// Fails when the history cannot be trusted (other volume, journal reset, dropped events, ...);
     /// the caller should then discard the tree and do a full scan.
     /// The tree is owned by this call until it returns (`DiskTree` concurrent access).
-    public static func update(_ tree: DiskTree, options: ScanOptions = ScanOptions()) -> Result<UpdateReport, UpdateFailure> {
+    public static func update(_ tree: DiskTree, options: ScanOptions = ScanOptions()) -> Result<
+        UpdateReport, UpdateFailure
+    > {
         tree.acquire("Incremental.update")
         defer { tree.release() }
         guard !options.firmlinks.holdsFirmlinkTargets(tree.rootPath) else { return .failure(.dataVolumeRoot) }
@@ -96,25 +100,28 @@ public enum Incremental {
         // Before the barrier event is made, like in a full scan: later changes are replayed by the next update.
         let startWallClock = Scanner.nowNanoseconds()
         let history: EventHistory
-#if DEBUG
-        let fetched = EventHistory.fetch(root: tree.rootPath, since: tree.eventId, faults: options.faults.history)
-#else
-        let fetched = EventHistory.fetch(root: tree.rootPath, since: tree.eventId)
-#endif
+        #if DEBUG
+            let fetched = EventHistory.fetch(root: tree.rootPath, since: tree.eventId, faults: options.faults.history)
+        #else
+            let fetched = EventHistory.fetch(root: tree.rootPath, since: tree.eventId)
+        #endif
         switch fetched {
         case .failure(let why): return .failure(why)
         case .success(let h): history = h
         }
         if Timings.enabled {
             for e in history.events {
-                FileHandle.standardError.write(Data("[timing] update.event \(e.mustScanSubDirs ? "(subdirs) " : "")\(e.path)\n".utf8))
+                FileHandle.standardError.write(
+                    Data("[timing] update.event \(e.mustScanSubDirs ? "(subdirs) " : "")\(e.path)\n".utf8))
             }
         }
         // Only changes inside the tree count. The stream also watches the barrier directory, and the creation and
         // removal of the previous barrier directories are reported on their parent, the temporary folder: one event
         // on almost every run that is not a change of the tree (unless the tree holds that folder).
         let prefixes = rootPrefixes(tree.rootPath, firmlinks: options.firmlinks)
-        let events = history.events.filter { relativeComponents($0.path, prefixes: prefixes, aliases: tree.aliases) != nil }
+        let events = history.events.filter {
+            relativeComponents($0.path, prefixes: prefixes, aliases: tree.aliases) != nil
+        }
         report.events = events.count
         report.historyTime = ContinuousClock.now - start
         t.lap("history(\(history.events.count) events, \(events.count) inside the tree)")
@@ -135,8 +142,10 @@ public enum Incremental {
     }
 
     /// `apply` with the registries in update mode. Tests call it directly with chosen events.
-    static func applyTracked(_ events: [EventHistory.Event], to tree: DiskTree, options: ScanOptions,
-                             report: inout UpdateReport) -> UpdateFailure? {
+    static func applyTracked(
+        _ events: [EventHistory.Event], to tree: DiskTree, options: ScanOptions,
+        report: inout UpdateReport
+    ) -> UpdateFailure? {
         tree.hardlinks.beginUpdate(cutoff: tree.scanStart, strict: options.strictHardlinks)
         tree.hardlinks.trackDrift()
         tree.clones.beginUpdate()
@@ -155,14 +164,18 @@ public enum Incremental {
 
     /// Replays `events` on `tree`. Work is proportional to the changed directories and their ancestors,
     /// not to the size of the tree: child lists are kept on the tree, totals are fixed up along ancestor chains.
-    private static func apply(_ events: [EventHistory.Event], to tree: DiskTree, options: ScanOptions,
-                              report: inout UpdateReport) -> UpdateFailure? {
+    private static func apply(
+        _ events: [EventHistory.Event], to tree: DiskTree, options: ScanOptions,
+        report: inout UpdateReport
+    ) -> UpdateFailure? {
         let prefixes = rootPrefixes(tree.rootPath, firmlinks: options.firmlinks)
         let aliases = tree.aliases
         // FSEvents keeps no Mount or Unmount event in its history (they are delivered live only), so a volume mounted
         // on a directory of the tree since the snapshot, or unmounted from a recorded mount point, is found in the
         // mount table.
-        let mounts = options.crossDevices ? MountChanges()
+        let mounts =
+            options.crossDevices
+            ? MountChanges()
             : mountChanges(tree, prefixes: prefixes, aliases: aliases, firmlinks: options.firmlinks)
         // A folder read only in part is read again on every update until a read is complete: the error may be gone
         // without any event. One pass over the flags; empty for almost every tree.
@@ -218,16 +231,17 @@ public enum Incremental {
         // 2. Re-read changed directories in parallel, then apply the results in id order.
         // Hard links are claimed only after their old records are dropped.
         let reread = shallow.sorted()
-        let outcomes = readDirectories(reread.map { tree.path(of: Int($0)) }, cPaths: reread.map { tree.cPath(of: Int($0)) },
-                                       tree: tree, options: options)
+        let outcomes = readDirectories(
+            reread.map { tree.path(of: Int($0)) }, cPaths: reread.map { tree.cPath(of: Int($0)) },
+            tree: tree, options: options)
         report.dirsRead += reread.count
         t.lap("reread(\(reread.count))")
         if options.strictHardlinks && tree.hardlinks.unattributed { return unattributed() }
 
-        var changed: [Int32] = []           // own sizes or children changed; totals are fixed up from here
+        var changed: [Int32] = []  // own sizes or children changed; totals are fixed up from here
         var killRoots: [Int32] = []
-        var unreadable: [Int32] = []        // kept, but a full scan would not know what is inside
-        var readable: [Int32] = []          // unreadable children that can be listed again
+        var unreadable: [Int32] = []  // kept, but a full scan would not know what is inside
+        var readable: [Int32] = []  // unreadable children that can be listed again
         var newDirs: [Int32] = []
         var pendingLinks: [(dir: Int32, inode: UInt64, alloc: Int64, logical: Int64, cloneAware: Int64)] = []
         var pendingClones: [(dir: Int32, members: [CloneMember])] = []
@@ -345,8 +359,10 @@ public enum Incremental {
         tree.mountPoints += newMounts
         t.lap("forget")
 
-        for l in pendingLinks where !tree.nodes[Int(l.dir)].isDead
-            && tree.hardlinks.claim(l.inode, by: l.dir, alloc: l.alloc, logical: l.logical, cloneAware: l.cloneAware) {
+        for l in pendingLinks
+        where !tree.nodes[Int(l.dir)].isDead
+            && tree.hardlinks.claim(l.inode, by: l.dir, alloc: l.alloc, logical: l.logical, cloneAware: l.cloneAware)
+        {
             tree.nodes[Int(l.dir)].ownAlloc += l.alloc
             tree.nodes[Int(l.dir)].ownLogical += l.logical
             tree.nodes[Int(l.dir)].ownCloneAware += l.cloneAware
@@ -364,7 +380,9 @@ public enum Incremental {
         let gone = Scanner.rescanSubtrees(targets, in: tree, options: options, checkRootDevice: true)
         if let e = gone[0] { return .rootUnreadable(errno: e) }
         for (id, e) in gone where e == EXDEV || tree.rawNames[id] == nil {
-            if e == EXDEV { tree.mountPoints.append(MountPoint(parent: tree.nodes[Int(id)].parent, name: tree.nodes[Int(id)].name)) }
+            if e == EXDEV {
+                tree.mountPoints.append(MountPoint(parent: tree.nodes[Int(id)].parent, name: tree.nodes[Int(id)].name))
+            }
             changed.append(tree.nodes[Int(id)].parent)
             tree.nodes[Int(id)].parent = DirNode.dead
             report.dirsRemoved += 1
@@ -398,8 +416,9 @@ public enum Incremental {
         // after the snapshot and its directory, not re-read, still counts it as a plain file. That directory
         // becomes the owner; the member's directory stops counting it. Costs two syscalls per such family.
         tree.syncLinks()
-        let adopted = adoptOriginals(tree.clones.takeCreated(), in: tree, prefixes: prefixes,
-                                     settled: { Int($0) < firstNew && !affected[Int($0)] })
+        let adopted = adoptOriginals(
+            tree.clones.takeCreated(), in: tree, prefixes: prefixes,
+            settled: { Int($0) < firstNew && !affected[Int($0)] })
         changed += adopted
         changed += Scanner.applyPreferredOriginals(tree)
         t.lap("links+orphans(\(adopted.count) clone originals adopted)")
@@ -431,10 +450,13 @@ public enum Incremental {
     /// data-volume path (`/System/Volumes/Data/private/tmp/t`, or the data volume itself) such a name is rewritten to
     /// the data-volume form before it is matched. A recorded mount point not found in the table is checked with one
     /// `lstat` before it is called gone: the table keeps the old name after a parent is renamed.
-    static func mountChanges(_ tree: DiskTree, prefixes: [String], aliases: [FirmlinkTable.Alias],
-                             firmlinks: FirmlinkTable) -> MountChanges {
+    static func mountChanges(
+        _ tree: DiskTree, prefixes: [String], aliases: [FirmlinkTable.Alias],
+        firmlinks: FirmlinkTable
+    ) -> MountChanges {
         var out = MountChanges()
-        let onDataVolume = !firmlinks.dataRoot.isEmpty
+        let onDataVolume =
+            !firmlinks.dataRoot.isEmpty
             && FirmlinkTable.isInside(tree.rootPath, firmlinks.dataRoot, orEqual: true)
         let recordedParents = { Array(Set(tree.mountPoints.map(\.parent))) }
         let count = getfsstat(nil, 0, MNT_NOWAIT)
@@ -505,11 +527,14 @@ public enum Incremental {
     /// Invariant: nothing mutates the hard-link table while this runs. Workers only call `vet`, which reads the
     /// table under its lock; every claim is deferred (the closure returns nil) and made after `forget`, on one thread.
     /// `cPaths[k]`, when set, is what is opened for `paths[k]` (`DiskTree.cPath(of:)`).
-    private static func readDirectories(_ paths: [String], cPaths: [[CChar]?], tree: DiskTree,
-                                        options: ScanOptions) -> [DirOutcome] {
+    private static func readDirectories(
+        _ paths: [String], cPaths: [[CChar]?], tree: DiskTree,
+        options: ScanOptions
+    ) -> [DirOutcome] {
         guard !paths.isEmpty else { return [] }
-        let config = DirReader.Config(rootDev: tree.rootDev, options: options, userAccess: true,
-                                      exclusions: tree.exclusions, checkOwnDevice: true)
+        let config = DirReader.Config(
+            rootDev: tree.rootDev, options: options, userAccess: true,
+            exclusions: tree.exclusions, checkOwnDevice: true)
         let hardlinks = tree.hardlinks
         var results = [DirOutcome](repeating: DirOutcome(), count: paths.count)
         let nextIndex = Atomic<Int>(0)
@@ -541,8 +566,10 @@ public enum Incremental {
     /// For each family in `created` whose original file was not seen by this update: if the original is a single-link
     /// full clone of the family in a listed (not unreadable) directory that `settled` says was not re-read, that directory
     /// becomes the owner (it counts the file already) and the previous owner stops counting it.
-    private static func adoptOriginals(_ created: [UInt64], in tree: DiskTree, prefixes: [String],
-                                       settled: (Int32) -> Bool) -> [Int32] {
+    private static func adoptOriginals(
+        _ created: [UInt64], in tree: DiskTree, prefixes: [String],
+        settled: (Int32) -> Bool
+    ) -> [Int32] {
         guard !created.isEmpty else { return [] }
         var fs = statfs()
         guard statfs(tree.rootPath, &fs) == 0 else { return [] }
@@ -554,7 +581,7 @@ public enum Incremental {
             guard fsgetpath(&buf, buf.count, &fsid, cid) > 0 else { continue }
             let path = buf.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
             guard isSingleLinkClone(path, cloneID: cid),
-                  let comps = relativeComponents(path, prefixes: prefixes, aliases: tree.aliases), !comps.isEmpty
+                let comps = relativeComponents(path, prefixes: prefixes, aliases: tree.aliases), !comps.isEmpty
             else { continue }
             var dir: Int32 = 0
             var found = true
@@ -563,7 +590,8 @@ public enum Incremental {
                 dir = child
             }
             guard found, !tree.nodes[Int(dir)].isDead, !tree.nodes[Int(dir)].unreadable, settled(dir),
-                  let moved = tree.clones.adopt(cid, by: dir) else { continue }
+                let moved = tree.clones.adopt(cid, by: dir)
+            else { continue }
             tree.nodes[Int(moved.previous)].ownCloneAware -= moved.alloc
             changed.append(moved.previous)
         }
@@ -574,20 +602,25 @@ public enum Incremental {
     private static func isSingleLinkClone(_ path: String, cloneID: UInt64) -> Bool {
         var al = attrlist()
         al.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
-        al.commonattr = attrgroup_t(ATTR_CMN_RETURNED_ATTRS) | attrgroup_t(ATTR_CMN_OBJTYPE) | attrgroup_t(ATTR_CMN_FILEID)
+        al.commonattr =
+            attrgroup_t(ATTR_CMN_RETURNED_ATTRS) | attrgroup_t(ATTR_CMN_OBJTYPE) | attrgroup_t(ATTR_CMN_FILEID)
         al.fileattr = attrgroup_t(ATTR_FILE_LINKCOUNT)
         al.forkattr = attrgroup_t(ATTR_CMNEXT_CLONEID) | attrgroup_t(ATTR_CMNEXT_EXT_FLAGS)
         var buf = [UInt8](repeating: 0, count: 128)
         let ok = buf.withUnsafeMutableBytes { raw -> Bool in
-            guard getattrlist(path, &al, raw.baseAddress, raw.count,
-                              UInt32(FSOPT_NOFOLLOW) | UInt32(FSOPT_ATTR_CMN_EXTENDED)) == 0 else { return false }
+            guard
+                getattrlist(
+                    path, &al, raw.baseAddress, raw.count,
+                    UInt32(FSOPT_NOFOLLOW) | UInt32(FSOPT_ATTR_CMN_EXTENDED)) == 0
+            else { return false }
             var f = UnsafeRawPointer(raw.baseAddress!) + 4
             let returned = f.loadUnaligned(as: attribute_set_t.self)
             f += MemoryLayout<attribute_set_t>.size
             let want = attrgroup_t(ATTR_CMN_OBJTYPE) | attrgroup_t(ATTR_CMN_FILEID)
             let wantFork = attrgroup_t(ATTR_CMNEXT_CLONEID) | attrgroup_t(ATTR_CMNEXT_EXT_FLAGS)
             guard returned.commonattr & want == want, returned.fileattr & attrgroup_t(ATTR_FILE_LINKCOUNT) != 0,
-                  returned.forkattr & wantFork == wantFork else { return false }
+                returned.forkattr & wantFork == wantFork
+            else { return false }
             let type = f.loadUnaligned(as: UInt32.self)
             let fileID = (f + 4).loadUnaligned(as: UInt64.self)
             let links = (f + 12).loadUnaligned(as: UInt32.self)
@@ -619,8 +652,10 @@ public enum Incremental {
 
     /// Components of `path` below the tree's root, or nil when it is outside. A data-volume path the tree reaches
     /// through a firmlink is first rewritten to the firmlink path.
-    static func relativeComponents(_ path: String, prefixes: [String],
-                                   aliases: [FirmlinkTable.Alias] = []) -> [Substring]? {
+    static func relativeComponents(
+        _ path: String, prefixes: [String],
+        aliases: [FirmlinkTable.Alias] = []
+    ) -> [Substring]? {
         var p = Substring(path)
         while p.count > 1 && p.hasSuffix("/") { p = p.dropLast() }
         if !aliases.isEmpty { p = aliases.translate(p) }
@@ -666,17 +701,21 @@ final class EventHistory: @unchecked Sendable {
         fetch(root: root, since: since, into: EventHistory())
     }
 
-#if DEBUG
-    static func fetch(root: String, since: FSEventStreamEventId, faults: HistoryFaults) -> Result<EventHistory, UpdateFailure> {
-        let history = EventHistory()
-        history.faults = faults
-        return fetch(root: root, since: since, into: history)
-    }
+    #if DEBUG
+        static func fetch(root: String, since: FSEventStreamEventId, faults: HistoryFaults) -> Result<
+            EventHistory, UpdateFailure
+        > {
+            let history = EventHistory()
+            history.faults = faults
+            return fetch(root: root, since: since, into: history)
+        }
 
-    var faults = HistoryFaults()
-#endif
+        var faults = HistoryFaults()
+    #endif
 
-    private static func fetch(root: String, since: FSEventStreamEventId, into history: EventHistory) -> Result<EventHistory, UpdateFailure> {
+    private static func fetch(root: String, since: FSEventStreamEventId, into history: EventHistory) -> Result<
+        EventHistory, UpdateFailure
+    > {
         guard let barrierDir = makeBarrierDir() else {
             return .failure(.streamFailed("barrier directory: \(String(cString: strerror(errno)))"))
         }
@@ -686,39 +725,41 @@ final class EventHistory: @unchecked Sendable {
             rmdir(barrierDir)
         }
         history.barrierPaths = Set(Incremental.rootPrefixes(barrierDir))
-        var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(history).toOpaque(),
-                                           retain: nil, release: nil, copyDescription: nil)
+        var context = FSEventStreamContext(
+            version: 0, info: Unmanaged.passUnretained(history).toOpaque(),
+            retain: nil, release: nil, copyDescription: nil)
         let callback: FSEventStreamCallback = { _, info, count, paths, flags, ids in
             let h = Unmanaged<EventHistory>.fromOpaque(info!).takeUnretainedValue()
             guard h.phase != .finished else { return }
             let paths = unsafeBitCast(paths, to: NSArray.self)
             for i in 0..<count {
-#if DEBUG
-                let f = flags[i] | h.faults.extraFlags
-#else
-                let f = flags[i]
-#endif
+                #if DEBUG
+                    let f = flags[i] | h.faults.extraFlags
+                #else
+                    let f = flags[i]
+                #endif
                 let path = paths[i] as! String
                 if f & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 {
-#if DEBUG
-                    if h.faults.dropHistoryDone { continue }
-#endif
+                    #if DEBUG
+                        if h.faults.dropHistoryDone { continue }
+                    #endif
                     if h.phase == .history {
                         h.phase = .live
                         h.historyDone.signal()
                     }
                     continue
                 }
-                let lost = FSEventStreamEventFlags(kFSEventStreamEventFlagUserDropped
-                    | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped
-                    | kFSEventStreamEventFlagRootChanged)
+                let lost = FSEventStreamEventFlags(
+                    kFSEventStreamEventFlagUserDropped
+                        | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped
+                        | kFSEventStreamEventFlagRootChanged)
                 // Untrusted history means a full scan anyway, so there is no barrier to wait for.
                 let untrusted = f & lost != 0
-#if DEBUG
-                let isBarrier = h.phase == .live && h.isBarrier(path) && !h.faults.dropBarrier
-#else
-                let isBarrier = h.phase == .live && h.isBarrier(path)
-#endif
+                #if DEBUG
+                    let isBarrier = h.phase == .live && h.isBarrier(path) && !h.faults.dropBarrier
+                #else
+                    let isBarrier = h.phase == .live && h.isBarrier(path)
+                #endif
                 if untrusted || isBarrier {
                     if untrusted { h.untrusted = (EventHistory.lostFlagNames(f), path) } else { h.barrierId = ids[i] }
                     if h.phase == .history { h.historyDone.signal() }
@@ -730,10 +771,14 @@ final class EventHistory: @unchecked Sendable {
                 h.events.append(Event(path: path, mustScanSubDirs: must))
             }
         }
-        let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer
-            | kFSEventStreamCreateFlagWatchRoot)
-        guard let stream = FSEventStreamCreate(kCFAllocatorDefault, callback, &context,
-                                               [root, barrierDir] as CFArray, since, 0, flags) else {
+        let flags = FSEventStreamCreateFlags(
+            kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer
+                | kFSEventStreamCreateFlagWatchRoot)
+        guard
+            let stream = FSEventStreamCreate(
+                kCFAllocatorDefault, callback, &context,
+                [root, barrierDir] as CFArray, since, 0, flags)
+        else {
             return .failure(.streamFailed("FSEventStreamCreate"))
         }
         let queue = DispatchQueue(label: "Fil.fsevents")
@@ -744,11 +789,11 @@ final class EventHistory: @unchecked Sendable {
             return .failure(.streamFailed("FSEventStreamStart"))
         }
         // 30 s for the history replay; the barrier event, made after it, gets its own short timeout.
-#if DEBUG
-        let historyLimit = history.faults.historyLimit ?? 30, barrierLimit = history.faults.barrierLimit ?? 2
-#else
-        let historyLimit = 30, barrierLimit = 2
-#endif
+        #if DEBUG
+            let historyLimit = history.faults.historyLimit ?? 30, barrierLimit = history.faults.barrierLimit ?? 2
+        #else
+            let historyLimit = 30, barrierLimit = 2
+        #endif
         var failure: UpdateFailure?
         if history.historyDone.wait(timeout: .now() + .seconds(historyLimit)) != .success {
             failure = .historyTimeout(seconds: historyLimit)
@@ -766,7 +811,7 @@ final class EventHistory: @unchecked Sendable {
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
         FSEventStreamRelease(stream)
-        queue.sync {} // the callback runs on `queue`; drain it before reading `events`
+        queue.sync {}  // the callback runs on `queue`; drain it before reading `events`
         if let lost = history.untrusted { return .failure(.historyUntrusted(flags: lost.flags, path: lost.path)) }
         if let failure { return .failure(failure) }
         return .success(history)
@@ -774,8 +819,10 @@ final class EventHistory: @unchecked Sendable {
 
     private static func lostFlagNames(_ f: FSEventStreamEventFlags) -> [String] {
         let names: [(Int, String)] = [
-            (kFSEventStreamEventFlagUserDropped, "UserDropped"), (kFSEventStreamEventFlagKernelDropped, "KernelDropped"),
-            (kFSEventStreamEventFlagEventIdsWrapped, "EventIdsWrapped"), (kFSEventStreamEventFlagRootChanged, "RootChanged"),
+            (kFSEventStreamEventFlagUserDropped, "UserDropped"),
+            (kFSEventStreamEventFlagKernelDropped, "KernelDropped"),
+            (kFSEventStreamEventFlagEventIdsWrapped, "EventIdsWrapped"),
+            (kFSEventStreamEventFlagRootChanged, "RootChanged"),
         ]
         return names.filter { f & FSEventStreamEventFlags($0.0) != 0 }.map(\.1)
     }

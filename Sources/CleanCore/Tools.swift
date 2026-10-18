@@ -16,9 +16,11 @@ public struct ToolEnvironment: Sendable {
     /// True when talking to the Docker socket could start a stopped engine app (OrbStack, Docker Desktop, ...).
     public var dockerMayAutostart: @Sendable () -> Bool
 
-    public init(home: String, runner: any CommandRunner, locate: @escaping @Sendable (String) -> String?,
-                timeout: Duration = .seconds(3), pathCache: ToolPathCache? = nil,
-                dockerMayAutostart: @escaping @Sendable () -> Bool = { false }) {
+    public init(
+        home: String, runner: any CommandRunner, locate: @escaping @Sendable (String) -> String?,
+        timeout: Duration = .seconds(3), pathCache: ToolPathCache? = nil,
+        dockerMayAutostart: @escaping @Sendable () -> Bool = { false }
+    ) {
         self.home = home
         self.runner = runner
         self.locate = locate
@@ -29,9 +31,10 @@ public struct ToolEnvironment: Sendable {
 
     /// The real tools of the real home.
     public static func system(home: String) -> ToolEnvironment {
-        ToolEnvironment(home: home, runner: SystemCommandRunner(workingDirectory: home),
-                        locate: { ToolLocator.find($0, home: home) }, pathCache: .standard,
-                        dockerMayAutostart: { DockerQuery.engineAppStopped() })
+        ToolEnvironment(
+            home: home, runner: SystemCommandRunner(workingDirectory: home),
+            locate: { ToolLocator.find($0, home: home) }, pathCache: .standard,
+            dockerMayAutostart: { DockerQuery.engineAppStopped() })
     }
 
     func describe(_ argv: [String]) -> String {
@@ -50,20 +53,27 @@ public struct ToolEnvironment: Sendable {
 /// Finds tool binaries without a shell.
 public enum ToolLocator {
     public static func searchDirectories(home: String) -> [String] {
-        ["/opt/homebrew/bin", "/usr/local/bin", home + "/.local/bin", home + "/.cargo/bin", home + "/Library/pnpm",
-         home + "/.docker/bin", home + "/.orbstack/bin", "/usr/bin", "/bin"]
+        [
+            "/opt/homebrew/bin", "/usr/local/bin", home + "/.local/bin", home + "/.cargo/bin", home + "/Library/pnpm",
+            home + "/.docker/bin", home + "/.orbstack/bin", "/usr/bin", "/bin",
+        ]
     }
 
     /// `/usr/bin` stubs that open the "install developer tools" dialog when no developer directory exists;
     /// each needs one of the listed real binaries.
     static let developerStubs: [String: [String]] = [
-        "pip3": ["/Library/Developer/CommandLineTools/usr/bin/pip3",
-                 "/Applications/Xcode.app/Contents/Developer/usr/bin/pip3"],
+        "pip3": [
+            "/Library/Developer/CommandLineTools/usr/bin/pip3",
+            "/Applications/Xcode.app/Contents/Developer/usr/bin/pip3",
+        ]
     ]
 
-    public static func find(_ name: String, home: String,
-                            isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) })
-        -> String? {
+    public static func find(
+        _ name: String, home: String,
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    )
+        -> String?
+    {
         for dir in searchDirectories(home: home) {
             let p = dir + "/" + name
             guard isExecutable(p) else { continue }
@@ -91,16 +101,18 @@ public struct ToolQueries: Sendable {
     /// Starts every query concurrently. `nil` environment: no tool runs; cache rules use default paths.
     public static func start(_ env: ToolEnvironment?) -> ToolQueries {
         guard let env else { return none(reason: "external commands (not the real home)") }
-        return ToolQueries(cachePaths: Task { await CacheTools.discover(env) },
-                           simulators: Task { await Simctl.query(env) },
-                           docker: Task { await DockerQuery.query(env) }, skippedReason: nil)
+        return ToolQueries(
+            cachePaths: Task { await CacheTools.discover(env) },
+            simulators: Task { await Simctl.query(env) },
+            docker: Task { await DockerQuery.query(env) }, skippedReason: nil)
     }
 
     /// No tool runs.
     public static func none(reason: String? = nil) -> ToolQueries {
-        ToolQueries(cachePaths: Task { ToolAnswer(value: CachePathReport(), notes: []) },
-                    simulators: Task { ToolAnswer(value: SimulatorReport(), notes: []) },
-                    docker: Task { ToolAnswer(value: nil, notes: []) }, skippedReason: reason)
+        ToolQueries(
+            cachePaths: Task { ToolAnswer(value: CachePathReport(), notes: []) },
+            simulators: Task { ToolAnswer(value: SimulatorReport(), notes: []) },
+            docker: Task { ToolAnswer(value: nil, notes: []) }, skippedReason: reason)
     }
 }
 
@@ -137,27 +149,35 @@ struct CacheTool: Sendable {
 }
 
 enum CacheTools {
-    static let brew = CacheTool(name: "brew", args: ["--cache"], defaults: ["Library/Caches/Homebrew"],
-                                configFiles: [".homebrew/brew.env"], envKeys: ["HOMEBREW_CACHE", "XDG_CACHE_HOME"],
-                                markers: ["homebrew"])
+    static let brew = CacheTool(
+        name: "brew", args: ["--cache"], defaults: ["Library/Caches/Homebrew"],
+        configFiles: [".homebrew/brew.env"], envKeys: ["HOMEBREW_CACHE", "XDG_CACHE_HOME"],
+        markers: ["homebrew"])
     static let packageManagers: [CacheTool] = [
-        CacheTool(name: "npm", args: ["config", "get", "cache"], defaults: [".npm"], subpath: "_cacache",
-                  configFiles: [".npmrc"], envKeys: ["npm_config_cache", "NPM_CONFIG_CACHE"], markers: ["npm"],
-                  exactMarkers: ["_cacache"]),
-        CacheTool(name: "pnpm", args: ["store", "path"], defaults: ["Library/pnpm/store"],
-                  configFiles: ["Library/Preferences/pnpm/rc", ".npmrc"],
-                  envKeys: ["PNPM_HOME", "npm_config_store_dir", "XDG_DATA_HOME"], markers: ["pnpm"]),
-        CacheTool(name: "yarn", args: ["cache", "dir"], defaults: ["Library/Caches/Yarn"],
-                  configFiles: [".yarnrc", ".yarnrc.yml"], envKeys: ["YARN_CACHE_FOLDER", "XDG_CACHE_HOME"], markers: ["yarn"]),
-        CacheTool(name: "go", args: ["env", "GOMODCACHE", "GOCACHE"],
-                  defaults: ["go/pkg/mod", "Library/Caches/go-build"],
-                  configFiles: ["Library/Application Support/go/env"],
-                  envKeys: ["GOPATH", "GOMODCACHE", "GOCACHE", "GOENV"], markers: ["go-build", "gomod"]),
-        CacheTool(name: "pip3", args: ["cache", "dir"], defaults: ["Library/Caches/pip"],
-                  configFiles: [".config/pip/pip.conf", "Library/Application Support/pip/pip.conf", ".pip/pip.conf"],
-                  envKeys: ["PIP_CACHE_DIR", "PIP_CONFIG_FILE", "XDG_CACHE_HOME"], markers: ["pip"]),
-        CacheTool(name: "uv", args: ["cache", "dir"], defaults: [".cache/uv"],
-                  configFiles: [".config/uv/uv.toml"], envKeys: ["UV_CACHE_DIR", "XDG_CACHE_HOME"], exactMarkers: ["uv"]),
+        CacheTool(
+            name: "npm", args: ["config", "get", "cache"], defaults: [".npm"], subpath: "_cacache",
+            configFiles: [".npmrc"], envKeys: ["npm_config_cache", "NPM_CONFIG_CACHE"], markers: ["npm"],
+            exactMarkers: ["_cacache"]),
+        CacheTool(
+            name: "pnpm", args: ["store", "path"], defaults: ["Library/pnpm/store"],
+            configFiles: ["Library/Preferences/pnpm/rc", ".npmrc"],
+            envKeys: ["PNPM_HOME", "npm_config_store_dir", "XDG_DATA_HOME"], markers: ["pnpm"]),
+        CacheTool(
+            name: "yarn", args: ["cache", "dir"], defaults: ["Library/Caches/Yarn"],
+            configFiles: [".yarnrc", ".yarnrc.yml"], envKeys: ["YARN_CACHE_FOLDER", "XDG_CACHE_HOME"], markers: ["yarn"]
+        ),
+        CacheTool(
+            name: "go", args: ["env", "GOMODCACHE", "GOCACHE"],
+            defaults: ["go/pkg/mod", "Library/Caches/go-build"],
+            configFiles: ["Library/Application Support/go/env"],
+            envKeys: ["GOPATH", "GOMODCACHE", "GOCACHE", "GOENV"], markers: ["go-build", "gomod"]),
+        CacheTool(
+            name: "pip3", args: ["cache", "dir"], defaults: ["Library/Caches/pip"],
+            configFiles: [".config/pip/pip.conf", "Library/Application Support/pip/pip.conf", ".pip/pip.conf"],
+            envKeys: ["PIP_CACHE_DIR", "PIP_CONFIG_FILE", "XDG_CACHE_HOME"], markers: ["pip"]),
+        CacheTool(
+            name: "uv", args: ["cache", "dir"], defaults: [".cache/uv"],
+            configFiles: [".config/uv/uv.toml"], envKeys: ["UV_CACHE_DIR", "XDG_CACHE_HOME"], exactMarkers: ["uv"]),
     ]
     static var all: [CacheTool] { [brew] + packageManagers }
 
@@ -182,7 +202,9 @@ enum CacheTools {
     static func discover(_ env: ToolEnvironment) async -> ToolAnswer<CachePathReport> {
         let stored = env.pathCache?.load() ?? [:]
         let now = Date().timeIntervalSince1970
-        typealias Result = (name: String, paths: [String], reportedBy: String?, note: String?, entry: ToolPathCache.Entry?)
+        typealias Result = (
+            name: String, paths: [String], reportedBy: String?, note: String?, entry: ToolPathCache.Entry?
+        )
         let results = await withTaskGroup(of: Result.self) { group in
             for tool in all {
                 group.addTask {
@@ -202,8 +224,10 @@ enum CacheTools {
                     let argv = [exe] + tool.args
                     let r = await env.runner.run(argv, timeout: env.timeout)
                     if case .success(let out) = r, let paths = parse(out, for: tool) {
-                        return (tool.name, paths.map { apply(tool, $0) }, exe, nil,
-                                .init(key: key, paths: paths, savedAt: now))
+                        return (
+                            tool.name, paths.map { apply(tool, $0) }, exe, nil,
+                            .init(key: key, paths: paths, savedAt: now)
+                        )
                     }
                     let note = "\(env.describe(argv)): \(env.reason(r)); using the default location"
                     // A timeout is not remembered: the tool may just have been slow this once.
@@ -241,8 +265,9 @@ public struct ToolPathCache: Sendable {
 
     /// `tool-paths.json` next to the snapshots.
     public static var standard: ToolPathCache {
-        ToolPathCache(file: Snapshot.url(for: "/").deletingLastPathComponent()
-            .appendingPathComponent("tool-paths.json"))
+        ToolPathCache(
+            file: Snapshot.url(for: "/").deletingLastPathComponent()
+                .appendingPathComponent("tool-paths.json"))
     }
 
     struct Entry: Codable, Equatable, Sendable {
@@ -259,15 +284,17 @@ public struct ToolPathCache: Sendable {
 
     func load() -> [String: Entry] {
         guard let data = try? Data(contentsOf: file),
-              let entries = try? JSONDecoder().decode([String: Entry].self, from: data) else { return [:] }
+            let entries = try? JSONDecoder().decode([String: Entry].self, from: data)
+        else { return [:] }
         return entries
     }
 
     func save(_ entries: [String: Entry]) {
         guard !readOnly else { return }
         guard let data = try? JSONEncoder().encode(entries) else { return }
-        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
-                                                 withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
         try? data.write(to: file, options: .atomic)
     }
 

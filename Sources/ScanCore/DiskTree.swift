@@ -34,10 +34,10 @@ public struct DirNode: Sendable {
 
 public struct ScanOptions: Sendable {
     public var threads: Int
-#if DEBUG
-    /// Test-only faults injected into every directory read; compiled out of release builds.
-    var faults = DirFaults.environment
-#endif
+    #if DEBUG
+        /// Test-only faults injected into every directory read; compiled out of release builds.
+        var faults = DirFaults.environment
+    #endif
     /// For APFS clones, count only blocks private to this file (ATTR_CMNEXT_PRIVATESIZE).
     public var privateSize: Bool
     public var crossDevices: Bool
@@ -49,8 +49,10 @@ public struct ScanOptions: Sendable {
     public var firmlinks: FirmlinkTable
 
     // Measured on M-series + APFS: throughput plateaus around 8 threads (kernel-bound beyond that).
-    public init(threads: Int = 8, privateSize: Bool = false, crossDevices: Bool = false, strictHardlinks: Bool = true,
-                firmlinks: FirmlinkTable = .system) {
+    public init(
+        threads: Int = 8, privateSize: Bool = false, crossDevices: Bool = false, strictHardlinks: Bool = true,
+        firmlinks: FirmlinkTable = .system
+    ) {
         self.threads = max(1, threads)
         self.strictHardlinks = strictHardlinks
         self.privateSize = privateSize
@@ -60,10 +62,10 @@ public struct ScanOptions: Sendable {
 }
 
 public struct ScanStats: Sendable {
-    public var openErrors = 0          // directories that could not be opened (mostly TCC / permissions)
+    public var openErrors = 0  // directories that could not be opened (mostly TCC / permissions)
     public var entryErrors = 0
-    public var hardlinkDupes = 0       // hard links not counted twice
-    public var datalessDirs = 0        // iCloud/Dropbox placeholder dirs — never downloaded or entered
+    public var hardlinkDupes = 0  // hard links not counted twice
+    public var datalessDirs = 0  // iCloud/Dropbox placeholder dirs — never downloaded or entered
     public var datalessLogical: Int64 = 0
     public var mountsSkipped = 0
     /// Data-volume directories not entered because the scan reaches them through their firmlink.
@@ -75,8 +77,10 @@ public struct ScanStats: Sendable {
 
     /// The fields in the order of `merge`, as stored in the snapshot's stats section.
     var stored: [Int64] {
-        [Int64(openErrors), Int64(entryErrors), Int64(hardlinkDupes), Int64(datalessDirs), datalessLogical,
-         Int64(mountsSkipped), Int64(firmlinksSkipped), Int64(cloneDupes)]
+        [
+            Int64(openErrors), Int64(entryErrors), Int64(hardlinkDupes), Int64(datalessDirs), datalessLogical,
+            Int64(mountsSkipped), Int64(firmlinksSkipped), Int64(cloneDupes),
+        ]
     }
 
     /// The inverse of `stored`; `v` holds 8 values.
@@ -212,7 +216,8 @@ final class HardlinkRegistry: @unchecked Sendable {
     func vet(_ inode: UInt64, alloc: Int64, dirPath: String, name: UnsafePointer<CChar>?) {
         guard let cutoff = birthCutoff, let name else { return }
         lock.lock()
-        let skip = table[inode] != nil || unattributedInodes.contains(inode)
+        let skip =
+            table[inode] != nil || unattributedInodes.contains(inode)
             || (strict && unattributedPaths.count >= maxUnattributedPaths)
         lock.unlock()
         if skip { return }
@@ -296,7 +301,9 @@ final class HardlinkRegistry: @unchecked Sendable {
             } else {
                 table.values[i].owner = map[Int(owner)]
                 if !table.values[i].others.isEmpty {
-                    table.values[i].others = table.values[i].others.compactMap { map[Int($0)] >= 0 ? map[Int($0)] : nil }
+                    table.values[i].others = table.values[i].others.compactMap {
+                        map[Int($0)] >= 0 ? map[Int($0)] : nil
+                    }
                 }
             }
             table.formIndex(after: &i)
@@ -366,9 +373,11 @@ public final class DiskTree: @unchecked Sendable {
     /// Set while `Incremental.update` or `Snapshot.save` owns the tree.
     private let busy = Mutex(false)
 
-    init(rootPath: String, rootDev: dev_t, privateSize: Bool, crossDevices: Bool, nodes: [DirNode],
-         eventId: UInt64, volumeUUID: String, scanStart: Int64, hardlinks: HardlinkRegistry,
-         clones: CloneRegistry, aliases: [FirmlinkTable.Alias], mountPoints: [MountPoint] = []) {
+    init(
+        rootPath: String, rootDev: dev_t, privateSize: Bool, crossDevices: Bool, nodes: [DirNode],
+        eventId: UInt64, volumeUUID: String, scanStart: Int64, hardlinks: HardlinkRegistry,
+        clones: CloneRegistry, aliases: [FirmlinkTable.Alias], mountPoints: [MountPoint] = []
+    ) {
         self.crossDevices = crossDevices
         self.mountPoints = mountPoints
         self.aliases = aliases
@@ -526,9 +535,10 @@ public final class DiskTree: @unchecked Sendable {
             map[Int(m.parent)] < 0 ? nil : MountPoint(parent: map[Int(m.parent)], name: m.name)
         }
         if !rawNames.isEmpty {
-            rawNames = Dictionary(uniqueKeysWithValues: rawNames.compactMap { id, bytes in
-                map[Int(id)] < 0 ? nil : (map[Int(id)], bytes)
-            })
+            rawNames = Dictionary(
+                uniqueKeysWithValues: rawNames.compactMap { id, bytes in
+                    map[Int(id)] < 0 ? nil : (map[Int(id)], bytes)
+                })
         }
     }
 }

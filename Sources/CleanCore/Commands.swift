@@ -53,8 +53,10 @@ public struct SystemCommandRunner: CommandRunner {
         let timer = timeout
         return await withTaskGroup(of: Racer.self) { group in
             group.addTask {
-                .command(await collect(argv, environment: environment, workingDirectory: workingDirectory,
-                                       gracePeriod: gracePeriod))
+                .command(
+                    await collect(
+                        argv, environment: environment, workingDirectory: workingDirectory,
+                        gracePeriod: gracePeriod))
             }
             group.addTask {
                 try? await Task.sleep(for: timer)
@@ -93,8 +95,10 @@ private final class ChildPid: @unchecked Sendable {
 
 /// Runs one command to completion. Returns nil when it was stopped (timeout or cancellation), whatever status the
 /// command exits with after the stop began; a command that finished before any stop returns its real result.
-private func collect(_ argv: [String], environment: [Environment.Key: String?], workingDirectory: String?,
-                     gracePeriod: Duration) async -> CommandResult? {
+private func collect(
+    _ argv: [String], environment: [Environment.Key: String?], workingDirectory: String?,
+    gracePeriod: Duration
+) async -> CommandResult? {
     var options = PlatformOptions()
     options.createSession = true
     var teardown: [TeardownStep] = []
@@ -117,8 +121,10 @@ private func collect(_ argv: [String], environment: [Environment.Key: String?], 
     }
     do {
         let r = try await withTaskCancellationHandler {
-            try await run(configuration, input: .none, output: .string(limit: 16 << 20),
-                          error: .string(limit: 1 << 20)) { execution in
+            try await run(
+                configuration, input: .none, output: .string(limit: 16 << 20),
+                error: .string(limit: 1 << 20)
+            ) { execution in
                 child.set(execution.processIdentifier.value)
             }
         } onCancel: {
@@ -145,4 +151,3 @@ func resolvedPath(_ p: String) -> String {
     defer { free(r) }
     return String(cString: r)
 }
-

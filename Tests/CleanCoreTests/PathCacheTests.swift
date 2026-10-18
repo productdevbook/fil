@@ -11,7 +11,9 @@ struct PathCacheTests {
             try f.mk("custom/homebrew/f", bytes: 2_000_000)
             let file = URL(fileURLWithPath: f.path("state/tool-paths.json"))
             var cache = ToolPathCache(file: file)
-            let answers: [String: CommandResult] = ["/fake/bin/brew --cache": .success(f.path("custom/homebrew") + "\n")]
+            let answers: [String: CommandResult] = [
+                "/fake/bin/brew --cache": .success(f.path("custom/homebrew") + "\n")
+            ]
             let (env1, _) = fakeEnvironment(f, tools: ["brew"], answers: answers, cache: cache)
             _ = await CacheTools.discover(env1)
             // Read-only: a cached answer is used (no command) ...

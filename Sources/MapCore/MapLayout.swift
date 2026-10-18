@@ -115,10 +115,13 @@ public enum MapLayouter {
                 if r.width >= 60, r.height >= 40 { inner = items(source, of: f) }
             }
             let expanded = !inner.isEmpty
-            tiles.append(MapTile(id: tiles.count, kind: item.kind, owner: node, rect: r, depth: 0, bytes: item.bytes,
-                                 name: item.name, safety: safety, expanded: expanded, sizeText: sizeText(item.bytes)))
+            tiles.append(
+                MapTile(
+                    id: tiles.count, kind: item.kind, owner: node, rect: r, depth: 0, bytes: item.bytes,
+                    name: item.name, safety: safety, expanded: expanded, sizeText: sizeText(item.bytes)))
             guard expanded, case .folder(let f) = item.kind else { continue }
-            let area = CGRect(x: r.minX + 1, y: r.minY + headerHeight, width: r.width - 2, height: r.height - headerHeight - 1)
+            let area = CGRect(
+                x: r.minX + 1, y: r.minY + headerHeight, width: r.width - 2, height: r.height - headerHeight - 1)
             guard area.width > minSide, area.height > minSide else { continue }
             let rects = squarify(values: inner.map { Double($0.bytes) }, in: area)
             for (j, child) in inner.enumerated() {
@@ -127,9 +130,11 @@ public enum MapLayouter {
                 var cs = safety
                 if case .folder(let c) = child.kind { cs = source.safety(of: c) ?? safety }
                 let labelled = cr.width >= 40 && cr.height >= 14
-                tiles.append(MapTile(id: tiles.count, kind: child.kind, owner: f, rect: cr, depth: 1, bytes: child.bytes,
-                                     name: child.name, safety: cs, expanded: false,
-                                     sizeText: labelled ? sizeText(child.bytes) : ""))
+                tiles.append(
+                    MapTile(
+                        id: tiles.count, kind: child.kind, owner: f, rect: cr, depth: 1, bytes: child.bytes,
+                        name: child.name, safety: cs, expanded: false,
+                        sizeText: labelled ? sizeText(child.bytes) : ""))
             }
         }
         return MapLayout(tiles: tiles)

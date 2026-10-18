@@ -31,7 +31,8 @@ enum DockerQuery {
     static func parseSize(_ text: String) -> Int64? {
         let s = text.split(separator: "(").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
         guard let split = s.firstIndex(where: { !($0.isNumber || $0 == ".") }),
-              let number = Double(s[..<split]) else { return nil }
+            let number = Double(s[..<split])
+        else { return nil }
         let unit = s[split...].trimmingCharacters(in: .whitespaces).lowercased()
         let factors: [String: Double] = [
             "b": 1, "kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12, "pb": 1e15,
@@ -67,19 +68,22 @@ enum DockerQuery {
     ///   by `UniqueSize` (layers shared with other images stay on disk). Unknown counts or sizes count as 0.
     static func parseVerboseDF(_ text: String) -> (buildCache: Int64, danglingImages: Int64)? {
         guard let obj = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
-              obj["Images"] != nil || obj["BuildCache"] != nil else { return nil }
+            obj["Images"] != nil || obj["BuildCache"] != nil
+        else { return nil }
         var cache: Int64 = 0
         for r in obj["BuildCache"] as? [[String: Any]] ?? [] {
             guard flag(r["InUse"]) == false, flag(r["Shared"]) == false,
-                  let type = r["CacheType"] as? String, type != "internal", type != "frontend",
-                  let size = (r["Size"] as? String).flatMap(parseSize) else { continue }
+                let type = r["CacheType"] as? String, type != "internal", type != "frontend",
+                let size = (r["Size"] as? String).flatMap(parseSize)
+            else { continue }
             cache += size
         }
         var dangling: Int64 = 0
         for i in obj["Images"] as? [[String: Any]] ?? [] {
             guard i["Repository"] as? String == "<none>", i["Tag"] as? String == "<none>",
-                  count(i["Containers"]) == 0,
-                  let size = (i["UniqueSize"] as? String).flatMap(parseSize) else { continue }
+                count(i["Containers"]) == 0,
+                let size = (i["UniqueSize"] as? String).flatMap(parseSize)
+            else { continue }
             dangling += size
         }
         return (cache, dangling)
@@ -94,15 +98,17 @@ enum DockerQuery {
         let r = await env.runner.run(argv, timeout: env.timeout)
         switch r {
         case .failed:
-            return ToolAnswer(value: nil, notes: [])    // daemon not running: not an error
+            return ToolAnswer(value: nil, notes: [])  // daemon not running: not an error
         case .timedOut:
             return ToolAnswer(value: nil, notes: ["\(env.describe(argv)): \(env.reason(r))"])
         case .success(let text):
             guard let sizes = parseVerboseDF(text) else {
                 return ToolAnswer(value: nil, notes: ["\(env.describe(argv)): unexpected output"])
             }
-            return ToolAnswer(value: DockerReport(docker: docker, buildCacheBytes: sizes.buildCache,
-                                                  danglingImageBytes: sizes.danglingImages), notes: [])
+            return ToolAnswer(
+                value: DockerReport(
+                    docker: docker, buildCacheBytes: sizes.buildCache,
+                    danglingImageBytes: sizes.danglingImages), notes: [])
         }
     }
 }

@@ -13,8 +13,12 @@ public final class DiskImage: @unchecked Sendable {
     /// Creates the image at `path` with the contents of `sourceFolder`; nil when `hdiutil create` fails.
     public init?(from sourceFolder: String, at path: String, volumeName: String = "FilTest") {
         self.path = path
-        let status = Process.run(Self.hdiutil, ["create", "-quiet", "-ov", "-fs", "APFS", "-format", "UDRW",
-                                                "-volname", volumeName, "-srcfolder", sourceFolder, path])
+        let status = Process.run(
+            Self.hdiutil,
+            [
+                "create", "-quiet", "-ov", "-fs", "APFS", "-format", "UDRW",
+                "-volname", volumeName, "-srcfolder", sourceFolder, path,
+            ])
         guard status == 0 else { return nil }
     }
 
@@ -22,15 +26,23 @@ public final class DiskImage: @unchecked Sendable {
     /// partition map so that its file system starts at byte 0. Nil when `hdiutil create` fails.
     public init?(emptyMegabytes megabytes: Int, fs: String, at path: String, volumeName: String = "FILTEST") {
         self.path = path
-        let status = Process.run(Self.hdiutil, ["create", "-quiet", "-ov", "-size", "\(megabytes)m", "-fs", fs,
-                                                "-layout", "NONE", "-volname", volumeName, path])
+        let status = Process.run(
+            Self.hdiutil,
+            [
+                "create", "-quiet", "-ov", "-size", "\(megabytes)m", "-fs", fs,
+                "-layout", "NONE", "-volname", volumeName, path,
+            ])
         guard status == 0 else { return nil }
     }
 
     /// Mounts the image on the existing directory `mountPoint` (not shown in the Finder). False when it fails.
     public func attach(at mountPoint: String) -> Bool {
-        let status = Process.run(Self.hdiutil, ["attach", "-quiet", "-nobrowse", "-noautoopen", "-noverify",
-                                                "-mountpoint", mountPoint, path])
+        let status = Process.run(
+            Self.hdiutil,
+            [
+                "attach", "-quiet", "-nobrowse", "-noautoopen", "-noverify",
+                "-mountpoint", mountPoint, path,
+            ])
         guard status == 0 else { return false }
         self.mountPoint = mountPoint
         return true

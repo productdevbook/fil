@@ -4,61 +4,61 @@ import ScanCore
 let version = "0.1.1"
 
 let mainHelp = """
-Usage: fil <command> [options]
+    Usage: fil <command> [options]
 
-Commands:
-  scan [DIR]    Scan a directory and print its size (default: home folder)
-  doctor        Check Full Disk Access for the terminal app
-  list          List cleanup candidates in the home folder
-  clean <id>... Move cleanup candidates to the Trash (dry run unless --yes)
-  help [cmd]    Show help for a command
+    Commands:
+      scan [DIR]    Scan a directory and print its size (default: home folder)
+      doctor        Check Full Disk Access for the terminal app
+      list          List cleanup candidates in the home folder
+      clean <id>... Move cleanup candidates to the Trash (dry run unless --yes)
+      help [cmd]    Show help for a command
 
-Options:
-  --help, -h    Show this help
-  --version     Print the version
+    Options:
+      --help, -h    Show this help
+      --version     Print the version
 
-Run 'fil help <command>' for details.
-"""
+    Run 'fil help <command>' for details.
+    """
 
 let scanHelp = """
-Usage: fil scan [DIR] [-j N] [--private] [--full] [--top N] [--naive] [--porcelain] [--tolerant-hardlinks]
-           [-q] [-v] [--no-color]
+    Usage: fil scan [DIR] [-j N] [--private] [--full] [--top N] [--naive] [--porcelain] [--tolerant-hardlinks]
+               [-q] [-v] [--no-color]
 
-  DIR                   directory to scan (default: home folder)
-  -j N                  worker threads
-  --private             size in private (non-shared) bytes
-  --full                ignore the snapshot and scan from scratch
-  --top N               list the N largest directories (0 = none, default 15)
-  --naive               time a plain FileManager walk instead
-  --porcelain           one machine-readable line
-  --tolerant-hardlinks  count unknown hard links and report them as uncertain
-  -q, --quiet           no warning about folders that could not be read
-  -v, --verbose         show timing details and skipped-entry counts
-  --no-color            plain output (also when NO_COLOR is set or stdout is not a terminal)
+      DIR                   directory to scan (default: home folder)
+      -j N                  worker threads
+      --private             size in private (non-shared) bytes
+      --full                ignore the snapshot and scan from scratch
+      --top N               list the N largest directories (0 = none, default 15)
+      --naive               time a plain FileManager walk instead
+      --porcelain           one machine-readable line
+      --tolerant-hardlinks  count unknown hard links and report them as uncertain
+      -q, --quiet           no warning about folders that could not be read
+      -v, --verbose         show timing details and skipped-entry counts
+      --no-color            plain output (also when NO_COLOR is set or stdout is not a terminal)
 
-Sizes are on-disk bytes with each APFS clone family counted once; a scan of / counts each firmlinked
-directory once (see docs/design/02-size-accounting.md). Output is styled only on a terminal. --porcelain fields
-are only ever appended: alloc= stays du-compatible, cloneaware= is the clone-aware size and shared= the
-bytes du counts again for clones (not with --private); unreadable= is the number of folders that
-could not be read (permission denied). If some were privacy-protected, scan points to `fil doctor` (Full Disk
-Access for the terminal app).
-"""
+    Sizes are on-disk bytes with each APFS clone family counted once; a scan of / counts each firmlinked
+    directory once (see docs/design/02-size-accounting.md). Output is styled only on a terminal. --porcelain fields
+    are only ever appended: alloc= stays du-compatible, cloneaware= is the clone-aware size and shared= the
+    bytes du counts again for clones (not with --private); unreadable= is the number of folders that
+    could not be read (permission denied). If some were privacy-protected, scan points to `fil doctor` (Full Disk
+    Access for the terminal app).
+    """
 
 let listHelp = """
-Usage: fil list [--home DIR] [--json] [--no-color]
+    Usage: fil list [--home DIR] [--json] [--no-color]
 
-  --home DIR   use DIR instead of the home folder
-  --json       machine-readable output
-  --no-color   plain output (also when NO_COLOR is set or stdout is not a terminal)
-"""
+      --home DIR   use DIR instead of the home folder
+      --json       machine-readable output
+      --no-color   plain output (also when NO_COLOR is set or stdout is not a terminal)
+    """
 
 let cleanHelp = """
-Usage: fil clean <candidate-id|rule-id>... [--home DIR] [--yes] [--no-color]
+    Usage: fil clean <candidate-id|rule-id>... [--home DIR] [--yes] [--no-color]
 
-  --home DIR   use DIR instead of the home folder
-  --yes        actually move the items to the Trash (default: dry run)
-  --no-color   plain output (also when NO_COLOR is set or stdout is not a terminal)
-"""
+      --home DIR   use DIR instead of the home folder
+      --yes        actually move the items to the Trash (default: dry run)
+      --no-color   plain output (also when NO_COLOR is set or stdout is not a terminal)
+    """
 
 func helpText(for command: String) -> String? {
     switch command {
@@ -83,7 +83,8 @@ func errorMessage(_ error: Error, path: String? = nil) -> String {
     if let e = error as? POSIXError {
         text = String(cString: strerror(e.code.rawValue))
     } else if !(error is CocoaError), !(type(of: error) is NSError.Type),
-              let e = error as Any as? CustomStringConvertible {
+        let e = error as Any as? CustomStringConvertible
+    {
         text = e.description
     } else {
         let ns = error as NSError
@@ -91,7 +92,9 @@ func errorMessage(_ error: Error, path: String? = nil) -> String {
             text = String(cString: strerror(Int32(under.code)))
             path = path ?? ns.userInfo[NSFilePathErrorKey] as? String
         } else {
-            text = ns.localizedDescription.hasSuffix(".") ? String(ns.localizedDescription.dropLast())
+            text =
+                ns.localizedDescription.hasSuffix(".")
+                ? String(ns.localizedDescription.dropLast())
                 : ns.localizedDescription
         }
     }

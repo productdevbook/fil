@@ -45,11 +45,17 @@ public struct FirmlinkTable: Sendable, Equatable {
     public static let system = load()
 
     /// Reads `file`; empty when it is missing or `dataRoot` is not a mount point (no volume group).
-    public static func load(file: String = "/usr/share/firmlinks", dataRoot: String = "/System/Volumes/Data") -> FirmlinkTable {
+    public static func load(file: String = "/usr/share/firmlinks", dataRoot: String = "/System/Volumes/Data")
+        -> FirmlinkTable
+    {
         var fs = statfs()
         guard statfs(dataRoot, &fs) == 0 else { return .empty }
-        let mountPoint = withUnsafeBytes(of: fs.f_mntonname) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
-        guard mountPoint == dataRoot, let text = try? String(contentsOfFile: file, encoding: .utf8) else { return .empty }
+        let mountPoint = withUnsafeBytes(of: fs.f_mntonname) {
+            String(cString: $0.bindMemory(to: CChar.self).baseAddress!)
+        }
+        guard mountPoint == dataRoot, let text = try? String(contentsOfFile: file, encoding: .utf8) else {
+            return .empty
+        }
         return parse(text, dataRoot: dataRoot)
     }
 
@@ -75,7 +81,9 @@ public struct FirmlinkTable: Sendable, Equatable {
         let root = Self.normalize(root)
         return links.compactMap { l in
             let dataPath = dataRoot + "/" + l.target
-            guard Self.isInside(l.source, root, orEqual: true), Self.isInside(dataPath, root, orEqual: false) else { return nil }
+            guard Self.isInside(l.source, root, orEqual: true), Self.isInside(dataPath, root, orEqual: false) else {
+                return nil
+            }
             return Alias(dataPath: dataPath, source: l.source)
         }
         .sorted { $0.dataPath < $1.dataPath }
@@ -86,7 +94,8 @@ public struct FirmlinkTable: Sendable, Equatable {
     public func dataVolumePath(_ path: String) -> String? {
         guard !dataRoot.isEmpty else { return nil }
         var best: Link?
-        for l in links where Self.isInside(path, l.source, orEqual: true) && l.source.count > (best?.source.count ?? 0) {
+        for l in links where Self.isInside(path, l.source, orEqual: true) && l.source.count > (best?.source.count ?? 0)
+        {
             best = l
         }
         guard let l = best else { return nil }

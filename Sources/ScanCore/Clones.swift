@@ -141,7 +141,8 @@ final class CloneRegistry: @unchecked Sendable {
         while i != table.endIndex {
             if table.values[i].owner < 0 {
                 let original = table.values[i].original
-                let next = original >= 0 && table.values[i].others.contains(original) ? original : table.values[i].others.first
+                let next =
+                    original >= 0 && table.values[i].others.contains(original) ? original : table.values[i].others.first
                 if let next {
                     table.values[i].others.removeAll { $0 == next }
                     table.values[i].owner = next
@@ -191,7 +192,9 @@ final class CloneRegistry: @unchecked Sendable {
                 let original = table.values[i].original
                 table.values[i].original = original >= 0 ? map[Int(original)] : -1
                 if !table.values[i].others.isEmpty {
-                    table.values[i].others = table.values[i].others.compactMap { map[Int($0)] >= 0 ? map[Int($0)] : nil }
+                    table.values[i].others = table.values[i].others.compactMap {
+                        map[Int($0)] >= 0 ? map[Int($0)] : nil
+                    }
                 }
             }
             table.formIndex(after: &i)

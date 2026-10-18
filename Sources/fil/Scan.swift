@@ -43,8 +43,10 @@ func runScan(_ arguments: [String]) throws {
         let start = ContinuousClock.now
         var total: Int64 = 0, files = 0
         let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .isDirectoryKey]
-        if let e = FileManager.default.enumerator(at: URL(fileURLWithPath: path), includingPropertiesForKeys: keys,
-                                                  options: [], errorHandler: { _, _ in true }) {
+        if let e = FileManager.default.enumerator(
+            at: URL(fileURLWithPath: path), includingPropertiesForKeys: keys,
+            options: [], errorHandler: { _, _ in true })
+        {
             for case let url as URL in e {
                 if let v = try? url.resourceValues(forKeys: Set(keys)), v.isDirectory != true {
                     total += Int64(v.totalFileAllocatedSize ?? 0)
@@ -91,9 +93,12 @@ func runScan(_ arguments: [String]) throws {
                 // unmount (no event) does.
                 unchanged = !report.treeChanged
                 let changes = report.events + report.mountChanges
-                summary = unchanged ? "up to date from snapshot"
+                summary =
+                    unchanged
+                    ? "up to date from snapshot"
                     : "updated from snapshot, \(count(Int64(changes))) change\(changes == 1 ? "" : "s")"
-                mode = "incremental: load \(ms(loadTime)), \(report.events) events in \(ms(report.historyTime)), "
+                mode =
+                    "incremental: load \(ms(loadTime)), \(report.events) events in \(ms(report.historyTime)), "
                     + (report.mountChanges > 0 ? "\(report.mountChanges) mount changes, " : "")
                     + "apply \(ms(report.applyTime)) (\(report.dirsRead) dirs re-read, "
                     + "\(report.subtreesScanned) subtrees walked, \(report.dirsRemoved) removed)"
@@ -131,11 +136,12 @@ func runScan(_ arguments: [String]) throws {
 
     if porcelain {
         // New fields are only ever appended, so existing parsers keep working.
-        print("mode=\(usedIncremental ? "incremental" : "full") alloc=\(r.totalAlloc) logical=\(r.totalLogical) "
-            + "files=\(r.totalFiles) dirs=\(r.totalDirs + 1)"
-            + (options.strictHardlinks ? "" : " uncertain=\(scanned.uncertainBytes)")
-            + " cloneaware=\(r.totalCloneAware)" + (options.privateSize ? "" : " shared=\(shared)")
-            + " unreadable=\(unreadableCount)")
+        print(
+            "mode=\(usedIncremental ? "incremental" : "full") alloc=\(r.totalAlloc) logical=\(r.totalLogical) "
+                + "files=\(r.totalFiles) dirs=\(r.totalDirs + 1)"
+                + (options.strictHardlinks ? "" : " uncertain=\(scanned.uncertainBytes)")
+                + " cloneaware=\(r.totalCloneAware)" + (options.privateSize ? "" : " shared=\(shared)")
+                + " unreadable=\(unreadableCount)")
         return
     }
 
@@ -143,21 +149,28 @@ func runScan(_ arguments: [String]) throws {
     // Ranked and shown by real usage: clone-aware bytes, or private bytes with --private.
     let size: (DirNode) -> Int64 = options.privateSize ? { $0.totalAlloc } : { $0.totalCloneAware }
     let total = size(r)
-    print(UI.bold(UI.tilde(scanned.rootPath)) + "  " + UI.bold(human(total)) + UI.dim(options.privateSize ? " private" : " on disk"))
-    print(UI.dim("\(human(r.totalLogical)) logical · \(count(r.totalFiles)) files · \(count(r.totalDirs + 1)) folders · "
-        + "\(humanDuration(scanTime)) · \(summary)"))
+    print(
+        UI.bold(UI.tilde(scanned.rootPath)) + "  " + UI.bold(human(total))
+            + UI.dim(options.privateSize ? " private" : " on disk"))
+    print(
+        UI.dim(
+            "\(human(r.totalLogical)) logical · \(count(r.totalFiles)) files · \(count(r.totalDirs + 1)) folders · "
+                + "\(humanDuration(scanTime)) · \(summary)"))
     if shared > 0 {
-        print(UI.dim("\(human(shared)) shared by clones, counted once (du without clone dedupe: \(human(r.totalAlloc)))"))
+        print(
+            UI.dim("\(human(shared)) shared by clones, counted once (du without clone dedupe: \(human(r.totalAlloc)))"))
     }
     if scanned.uncertainBytes > 0 {
         print(UI.yellow("\(human(scanned.uncertainBytes)) uncertain (hard links that may be counted twice)"))
     }
     if verbose {
-        print(UI.dim("""
+        print(
+            UI.dim(
+                """
 
-        timing   \(ms(scanTime)) [\(mode)]
-                 snapshot saved in \(ms(saveTime))
-        """))
+                timing   \(ms(scanTime)) [\(mode)]
+                         snapshot saved in \(ms(saveTime))
+                """))
         // `denied` is current in both modes: unreadable folders that still exist (one deleted during the scan is not
         // denied; one read only in part is not denied either). The other counters are the last full scan's; after an
         // update they are labelled as such (chapter 03 §9), and a snapshot without them shows none.
@@ -166,7 +179,8 @@ func runScan(_ arguments: [String]) throws {
             var st = stat()
             return lstat(item.path, &st) == 0
         }.count
-        let counters = "errors \(s.entryErrors) · hardlinks \(s.hardlinkDupes) · mounts \(s.mountsSkipped) · "
+        let counters =
+            "errors \(s.entryErrors) · hardlinks \(s.hardlinkDupes) · mounts \(s.mountsSkipped) · "
             + "cloud-dirs \(s.datalessDirs) (cloud files \(human(s.datalessLogical)))"
         let known = !usedIncremental || scanned.fullScanStart != nil
         if !usedIncremental {
@@ -177,7 +191,9 @@ func runScan(_ arguments: [String]) throws {
             print(UI.dim("skipped  denied \(denied)"))
         }
         if known {
-            print(UI.dim("         firmlinked data dirs \(s.firmlinksSkipped) · clone files counted once \(s.cloneDupes)"))
+            print(
+                UI.dim("         firmlinked data dirs \(s.firmlinksSkipped) · clone files counted once \(s.cloneDupes)")
+            )
         }
     }
 
@@ -231,8 +247,9 @@ private func printTree(_ ids: [Int], nodes: [DirNode], total: Int64, size: (DirN
         let budget = max(8, termWidth - fixed - guide.count)
         let name = UI.truncate(label[id] ?? nodes[id].name, budget)
         let pct = frac < 0.005 ? "<1%" : String(format: "%.0f%%", locale: nil, frac * 100)
-        print(UI.share(UI.lpad(human(bytes), 9), frac) + "  " + UI.share(UI.bar(frac), frac) + "  "
-            + UI.lpad(pct, 4) + "  " + UI.dim(guide) + name)
+        print(
+            UI.share(UI.lpad(human(bytes), 9), frac) + "  " + UI.share(UI.bar(frac), frac) + "  "
+                + UI.lpad(pct, 4) + "  " + UI.dim(guide) + name)
         let kids = children[id] ?? []
         let childPrefix = depth == 0 ? "" : prefix + (last ? "   " : "│  ")
         for (i, k) in kids.enumerated() { walk(k, prefix: childPrefix, last: i == kids.count - 1, depth: depth + 1) }

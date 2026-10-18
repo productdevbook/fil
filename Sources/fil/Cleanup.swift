@@ -33,7 +33,12 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     let clock = ContinuousClock()
     let start = clock.now
     func phase(_ name: String, _ since: ContinuousClock.Instant, _ extra: String = "") {
-        if timings { FileHandle.standardError.write(Data("  \(name.padding(toLength: 22, withPad: " ", startingAt: 0))\(ms(clock.now - since))\(extra)\n".utf8)) }
+        if timings {
+            FileHandle.standardError.write(
+                Data(
+                    "  \(name.padding(toLength: 22, withPad: " ", startingAt: 0))\(ms(clock.now - since))\(extra)\n"
+                        .utf8))
+        }
     }
     // Tolerant hard links (see docs/design/04-cleanup.md): an unknown old hard link is counted and reported as uncertain.
     let options = ScanOptions(strictHardlinks: false)
@@ -53,8 +58,10 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         case .success(let report):
             tree = cached
             unchanged = !report.treeChanged
-            phase("incremental update", t, "  (\(report.events) events"
-                + (report.uncertainBytes > 0 ? ", \(report.uncertainBytes) uncertain bytes" : "") + ")")
+            phase(
+                "incremental update", t,
+                "  (\(report.events) events"
+                    + (report.uncertainBytes > 0 ? ", \(report.uncertainBytes) uncertain bytes" : "") + ")")
         case .failure(let why):
             phase("incremental update", t, "  (not usable: \(why); full scan)")
         }
@@ -68,7 +75,16 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     t = clock.now
     let scan = await Cleanup.scan(home: home, tree: scanned, simulators: simulators)
     phase("rules total", t)
-    if timings { for r in scan.ruleTimes { FileHandle.standardError.write(Data(String(format: "    %@ %.1f ms\n", r.rule.padding(toLength: 24, withPad: " ", startingAt: 0), r.seconds * 1000).utf8)) } }
+    if timings {
+        for r in scan.ruleTimes {
+            FileHandle.standardError.write(
+                Data(
+                    String(
+                        format: "    %@ %.1f ms\n", r.rule.padding(toLength: 24, withPad: " ", startingAt: 0),
+                        r.seconds * 1000
+                    ).utf8))
+        }
+    }
     let elapsed = clock.now - start
     phase("total", start)
 
@@ -83,11 +99,14 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     if command == "list" {
         if json {
             let items: [[String: Any]] = scan.candidates.map {
-                ["id": $0.id, "rule": $0.ruleId, "path": $0.path, "bytes": $0.bytes, "safety": $0.safety.rawValue,
-                 "note": $0.note?.description as Any? ?? NSNull(), "removal": removalText($0.removal)]
+                [
+                    "id": $0.id, "rule": $0.ruleId, "path": $0.path, "bytes": $0.bytes, "safety": $0.safety.rawValue,
+                    "note": $0.note?.description as Any? ?? NSNull(), "removal": removalText($0.removal),
+                ]
             }
-            let data = try JSONSerialization.data(withJSONObject: ["home": scan.home, "candidates": items],
-                                                  options: [.prettyPrinted, .sortedKeys])
+            let data = try JSONSerialization.data(
+                withJSONObject: ["home": scan.home, "candidates": items],
+                options: [.prettyPrinted, .sortedKeys])
             print(String(decoding: data, as: UTF8.self))
             return
         }
@@ -100,9 +119,14 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
             let items = scan.candidates.filter { $0.ruleId == rule.id }
             guard !items.isEmpty else { continue }
             let total = items.reduce(Int64(0)) { $0 + $1.bytes }
-            print("\n" + UI.bold(rule.title) + "  " + UI.bold(human(total)) + UI.dim("  \(items.count) item\(items.count == 1 ? "" : "s") · \(rule.id)"))
+            print(
+                "\n" + UI.bold(rule.title) + "  " + UI.bold(human(total))
+                    + UI.dim("  \(items.count) item\(items.count == 1 ? "" : "s") · \(rule.id)"))
             print(UI.dim("  " + rule.explanation))
-            for c in items { print(row(c)); print(UI.dim("  " + String(repeating: " ", count: 9) + "  id \(c.id) -> \(removalText(c.removal))")) }
+            for c in items {
+                print(row(c));
+                print(UI.dim("  " + String(repeating: " ", count: 9) + "  id \(c.id) -> \(removalText(c.removal))"))
+            }
         }
         for s in scan.skippedCommands { print("\n" + UI.yellow("Skipped: \(s)")) }
         let total = scan.candidates.filter { $0.removal.isInfoOnly == false }.reduce(Int64(0)) { $0 + $1.bytes }
@@ -126,11 +150,13 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
             case .command(let argv): target = "would run: " + argv.joined(separator: " ")
             case .none: target = "info only"
             }
-            print("  " + UI.lpad(human(c.bytes), 9) + "  " + UI.safety(c.safety) + "  " + c.id + UI.dim("  -> \(target)"))
+            print(
+                "  " + UI.lpad(human(c.bytes), 9) + "  " + UI.safety(c.safety) + "  " + c.id + UI.dim("  -> \(target)"))
         }
         for c in leftOut where !chosen.contains(where: { $0.id == c.id }) {
-            print("  " + UI.lpad(human(c.bytes), 9) + "  " + UI.safety(c.safety) + "  " + c.id
-                + UI.dim("  not selected, name its id to remove"))
+            print(
+                "  " + UI.lpad(human(c.bytes), 9) + "  " + UI.safety(c.safety) + "  " + c.id
+                    + UI.dim("  not selected, name its id to remove"))
         }
         var trashBytes: Int64 = 0, commandBytes: Int64 = 0
         var trashCount = 0, commandCount = 0
@@ -143,10 +169,14 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         }
         print("")
         if trashCount > 0 {
-            print(UI.bold("Would move \(human(trashBytes)) to the Trash") + "; space is freed once the Trash is emptied.")
+            print(
+                UI.bold("Would move \(human(trashBytes)) to the Trash") + "; space is freed once the Trash is emptied.")
         }
         if commandCount > 0 {
-            print(UI.yellow("Would remove \(human(commandBytes)) permanently with the tools' own commands; this cannot be undone from the Trash."))
+            print(
+                UI.yellow(
+                    "Would remove \(human(commandBytes)) permanently with the tools' own commands; this cannot be undone from the Trash."
+                ))
         }
         if trashCount == 0 && commandCount == 0 { print("Nothing to clean among the selected items.") }
         print(UI.yellow("Dry run, nothing changed; add --yes to do it."))
@@ -183,30 +213,44 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
             handled += 1
             let argv: String
             if case .command(let a) = c.removal { argv = a.joined(separator: " ") } else { argv = "command" }
-            print("  " + UI.green("✓") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)" + UI.dim("  ran: \(argv) (permanent)"))
+            print(
+                "  " + UI.green("✓") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)"
+                    + UI.dim("  ran: \(argv) (permanent)"))
         case .commandShared:
             removed += c.bytes
             removedCount += 1
             handled += 1
-            print("  " + UI.green("✓") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)" + UI.dim("  done by the same command"))
+            print(
+                "  " + UI.green("✓") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)"
+                    + UI.dim("  done by the same command"))
         case .nothingToDo:
-            print("  " + UI.dim("-") + " " + UI.lpad("", 9) + "  \(c.id)" + UI.dim("  nothing to do\(c.note.map { " (\($0))" } ?? "")"))
+            print(
+                "  " + UI.dim("-") + " " + UI.lpad("", 9) + "  \(c.id)"
+                    + UI.dim("  nothing to do\(c.note.map { " (\($0))" } ?? "")"))
         case .failed(let why):
             failures += 1
-            print("  " + UI.red("✗") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)" + UI.red("  failed: \(why.description)"))
+            print(
+                "  " + UI.red("✗") + " " + UI.lpad(human(c.bytes), 9) + "  \(c.id)"
+                    + UI.red("  failed: \(why.description)"))
         }
     }
     let skippedCareful = leftOut.filter { c in !chosen.contains(where: { $0.id == c.id }) }
     if handled == 0 {
-        print(chosen.isEmpty ? "Nothing was cleaned: no safe or review items matched."
-                             : "Nothing was cleaned.")
+        print(
+            chosen.isEmpty
+                ? "Nothing was cleaned: no safe or review items matched."
+                : "Nothing was cleaned.")
     } else {
         print("")
         if movedCount > 0 {
-            print(UI.bold("Moved \(human(moved)) to the Trash") + " (\(movedCount) item\(movedCount == 1 ? "" : "s")). Space is freed when you empty the Trash.")
+            print(
+                UI.bold("Moved \(human(moved)) to the Trash")
+                    + " (\(movedCount) item\(movedCount == 1 ? "" : "s")). Space is freed when you empty the Trash.")
         }
         if removedCount > 0 {
-            print(UI.bold("Removed \(human(removed)) permanently") + " with the tools' own commands (\(removedCount) item\(removedCount == 1 ? "" : "s")).")
+            print(
+                UI.bold("Removed \(human(removed)) permanently")
+                    + " with the tools' own commands (\(removedCount) item\(removedCount == 1 ? "" : "s")).")
         }
     }
     if !skippedCareful.isEmpty {
@@ -231,7 +275,9 @@ private final class TaskCanceller: @unchecked Sendable {
     private var requested = false
 
     func attach(_ t: Task<(results: [(Candidate, Cleanup.Outcome)], stoppedEarly: Bool), Never>) {
-        let now = lock.withLock { () -> Bool in task = t; return requested }
+        let now = lock.withLock { () -> Bool in
+            task = t; return requested
+        }
         if now { t.cancel() }
     }
 

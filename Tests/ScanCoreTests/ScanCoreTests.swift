@@ -57,7 +57,7 @@ struct FullScanTests {
             for i in 0..<200 { try f.mk("many/f\(i)", bytes: (i * 37) % 9000 + 1) }
             let tree = try Scanner.scan(f.root)
             #expect(tree.root.totalAlloc == f.duBytes())
-            #expect(tree.root.totalFiles == 3 + 1 + 200)   // one, two, three, many/f, many/f0...f199
+            #expect(tree.root.totalFiles == 3 + 1 + 200)  // one, two, three, many/f, many/f0...f199
         }
     }
 
@@ -131,7 +131,8 @@ struct FullScanTests {
                 try Snapshot.save(try Scanner.scan(f.root, options: ScanOptions(crossDevices: true)), in: dir)
                 #expect(Snapshot.load(rootPath: f.root, options: ScanOptions(), in: dir).tree == nil)
                 #expect(Snapshot.load(rootPath: f.root, privateSize: true, crossDevices: true, in: dir).tree == nil)
-                let crossing = try #require(Snapshot.load(rootPath: f.root, options: ScanOptions(crossDevices: true), in: dir).tree)
+                let crossing = try #require(
+                    Snapshot.load(rootPath: f.root, options: ScanOptions(crossDevices: true), in: dir).tree)
                 #expect(crossing.crossDevices)
 
                 try Snapshot.save(try Scanner.scan(f.root), in: dir)
@@ -157,13 +158,16 @@ struct FullScanTests {
         try withSnapshotDir { dir in
             try Fixture.with { f in
                 try f.mk("a/b", bytes: 4096)
-                let modes: [ScanOptions] = [ScanOptions(), ScanOptions(privateSize: true),
-                                            ScanOptions(crossDevices: true),
-                                            ScanOptions(privateSize: true, crossDevices: true)]
-                let names = Set(modes.map {
-                    Snapshot.url(for: f.root, privateSize: $0.privateSize, crossDevices: $0.crossDevices, in: dir)
-                        .lastPathComponent
-                })
+                let modes: [ScanOptions] = [
+                    ScanOptions(), ScanOptions(privateSize: true),
+                    ScanOptions(crossDevices: true),
+                    ScanOptions(privateSize: true, crossDevices: true),
+                ]
+                let names = Set(
+                    modes.map {
+                        Snapshot.url(for: f.root, privateSize: $0.privateSize, crossDevices: $0.crossDevices, in: dir)
+                            .lastPathComponent
+                    })
                 #expect(names.count == 4)
                 // FNV-1a 64 of "/", NUL, mode byte 0: fixed so that the name never changes by accident.
                 #expect(Snapshot.url(for: "/", in: dir).lastPathComponent == "ef6d1917e79753ae.bin")
@@ -261,7 +265,9 @@ struct FullScanTests {
                 #expect(bare.stats.openErrors == 0 && bare.stats.hardlinkDupes == 0)
                 // Saved again, it still has none: no counters are made up.
                 try Snapshot.save(bare, in: dir)
-                #expect(try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree).fullScanStart == nil)
+                #expect(
+                    try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree).fullScanStart == nil
+                )
             }
         }
     }

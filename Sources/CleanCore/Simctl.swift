@@ -41,7 +41,8 @@ enum Simctl {
     /// `simctl list devices -j`: UDIDs of unavailable devices and every runtime identifier a device uses.
     static func parseDevices(_ json: String) -> (unavailable: [String], usedRuntimes: Set<String>)? {
         guard let obj = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
-              let devices = obj["devices"] as? [String: [[String: Any]]] else { return nil }
+            let devices = obj["devices"] as? [String: [[String: Any]]]
+        else { return nil }
         var unavailable: [String] = []
         var used: Set<String> = []
         for (runtime, list) in devices {
@@ -59,13 +60,18 @@ enum Simctl {
         guard let obj = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else { return nil }
         return obj.compactMap { key, value -> SimRuntime? in
             guard let r = value as? [String: Any], (r["deletable"] as? Bool) != false,
-                  let rid = r["runtimeIdentifier"] as? String,
-                  let size = (r["sizeBytes"] as? NSNumber)?.int64Value, size > 0 else { return nil }
-            return SimRuntime(identifier: r["identifier"] as? String ?? key, runtimeIdentifier: rid,
-                              version: r["version"] as? String ?? "?", build: r["build"] as? String ?? "?",
-                              sizeBytes: size, path: r["path"] as? String ?? "")
-        }.sorted { $0.runtimeIdentifier == $1.runtimeIdentifier ? $0.build < $1.build
-                                                                 : $0.runtimeIdentifier < $1.runtimeIdentifier }
+                let rid = r["runtimeIdentifier"] as? String,
+                let size = (r["sizeBytes"] as? NSNumber)?.int64Value, size > 0
+            else { return nil }
+            return SimRuntime(
+                identifier: r["identifier"] as? String ?? key, runtimeIdentifier: rid,
+                version: r["version"] as? String ?? "?", build: r["build"] as? String ?? "?",
+                sizeBytes: size, path: r["path"] as? String ?? "")
+        }.sorted {
+            $0.runtimeIdentifier == $1.runtimeIdentifier
+                ? $0.build < $1.build
+                : $0.runtimeIdentifier < $1.runtimeIdentifier
+        }
     }
 
     static func unused(_ runtimes: [SimRuntime], used: Set<String>) -> [SimRuntime] {

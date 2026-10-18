@@ -64,8 +64,10 @@ public struct Candidate: Sendable {
     /// never moved.
     public let fileID: FileID?
 
-    public init(id: String, ruleId: String, path: String, bytes: Int64, safety: Safety, note: CandidateNote? = nil,
-                removal: Removal = .trash, fileID: FileID? = nil) {
+    public init(
+        id: String, ruleId: String, path: String, bytes: Int64, safety: Safety, note: CandidateNote? = nil,
+        removal: Removal = .trash, fileID: FileID? = nil
+    ) {
         self.id = id
         self.ruleId = ruleId
         self.path = path
@@ -152,8 +154,10 @@ public final class RuleContext: @unchecked Sendable {
     }
 
     /// Validates and claims a directory node as a candidate. Nil when it must not be reported.
-    func make(rule: String, node id: Int, safety: Safety, note: CandidateNote? = nil, removal: Removal = .trash,
-              minBytes: Int64 = 1 << 20) -> Candidate? {
+    func make(
+        rule: String, node id: Int, safety: Safety, note: CandidateNote? = nil, removal: Removal = .trash,
+        minBytes: Int64 = 1 << 20
+    ) -> Candidate? {
         let path = tree.path(of: id)
         let bytes = tree.nodes[id].totalAlloc
         guard bytes >= minBytes, path.hasPrefix(home + "/"), !isClaimed(path) else { return nil }
@@ -163,17 +167,23 @@ public final class RuleContext: @unchecked Sendable {
         guard lstat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR, st.st_dev == homeDev else { return nil }
         claimed.insert(path)
         var p = (path as NSString).deletingLastPathComponent
-        while p.count > home.count, claimedAncestors.insert(p).inserted { p = (p as NSString).deletingLastPathComponent }
-        return Candidate(id: "\(rule):\(relative(path))", ruleId: rule, path: path, bytes: bytes,
-                         safety: safety, note: note, removal: removal, fileID: FileID(dev: st.st_dev, ino: st.st_ino))
+        while p.count > home.count, claimedAncestors.insert(p).inserted {
+            p = (p as NSString).deletingLastPathComponent
+        }
+        return Candidate(
+            id: "\(rule):\(relative(path))", ruleId: rule, path: path, bytes: bytes,
+            safety: safety, note: note, removal: removal, fileID: FileID(dev: st.st_dev, ino: st.st_ino))
     }
 
     /// A candidate whose data lives outside the tree (simulator runtimes, Docker): `bytes` comes from the tool,
     /// removal is the tool's own command. Nil under 1 MB.
-    func makeExternal(rule: String, key: String, path: String, bytes: Int64, safety: Safety, note: CandidateNote?,
-                      removal: Removal) -> Candidate? {
+    func makeExternal(
+        rule: String, key: String, path: String, bytes: Int64, safety: Safety, note: CandidateNote?,
+        removal: Removal
+    ) -> Candidate? {
         guard bytes >= 1 << 20 else { return nil }
-        return Candidate(id: "\(rule):\(key)", ruleId: rule, path: path, bytes: bytes, safety: safety, note: note,
-                         removal: removal)
+        return Candidate(
+            id: "\(rule):\(key)", ruleId: rule, path: path, bytes: bytes, safety: safety, note: note,
+            removal: removal)
     }
 }

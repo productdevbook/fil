@@ -40,15 +40,18 @@ struct SnapshotCLITests {
         // A snapshot that exists but cannot be read says so, with the reason.
         #expect(chmod(snap + "/" + files[0], 0o000) == 0)
         let denied = try cli.run(args, snapshotDir: snap)
-        #expect(denied.stdout.contains("[full scan (snapshot not used: unreadable (Permission denied))]"),
-                "\(denied.stdout)")
+        #expect(
+            denied.stdout.contains("[full scan (snapshot not used: unreadable (Permission denied))]"),
+            "\(denied.stdout)")
         // --full does not look at the snapshot.
         let full = try cli.run(args + ["--full"], snapshotDir: snap)
         #expect(full.stdout.contains("[full scan]"), "\(full.stdout)")
 
         let list = try cli.run(["list", "--home", root, "--timings"], snapshotDir: snap + "-list")
-        #expect(list.stderr.range(of: #"snapshot load\s+\d+ ms  \(not used: missing; full scan\)"#,
-                                  options: .regularExpression) != nil, "\(list.stderr)")
+        #expect(
+            list.stderr.range(
+                of: #"snapshot load\s+\d+ ms  \(not used: missing; full scan\)"#,
+                options: .regularExpression) != nil, "\(list.stderr)")
     }
 
     @Test func incrementalRunShowsFullScanStatsLabelled() throws {
@@ -68,8 +71,10 @@ struct SnapshotCLITests {
         let incremental = try cli.run(args, snapshotDir: snap)
         #expect(incremental.stdout.contains("[incremental: "), "\(incremental.stdout)")
         // `denied` is current and outside the label; the other counters are labelled with the full scan's time.
-        #expect(incremental.stdout.range(of: #"\nskipped  denied 1 · as of full scan at \d\d:\d\d: errors 0 · "#,
-                                         options: .regularExpression) != nil, "\(incremental.stdout)")
+        #expect(
+            incremental.stdout.range(
+                of: #"\nskipped  denied 1 · as of full scan at \d\d:\d\d: errors 0 · "#,
+                options: .regularExpression) != nil, "\(incremental.stdout)")
         #expect(incremental.stdout.contains("         firmlinked data dirs "), "\(incremental.stdout)")
         // Same definition in both modes: a forced full scan of the unchanged disk shows the same value.
         let again = try cli.run(args + ["--full"], snapshotDir: snap)

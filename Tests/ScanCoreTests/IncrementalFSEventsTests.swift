@@ -23,8 +23,10 @@ struct Scenario: Sendable, CustomTestStringConvertible {
 
     func same(_ a: Totals, _ b: Totals) -> Bool { rootOnly ? a.sameRoot(as: b) : a == b }
 
-    init(_ name: String, mayFallBack: Bool = false, setup: @escaping @Sendable (Fixture) throws -> Void,
-         change: @escaping @Sendable (Fixture) throws -> Void) {
+    init(
+        _ name: String, mayFallBack: Bool = false, setup: @escaping @Sendable (Fixture) throws -> Void,
+        change: @escaping @Sendable (Fixture) throws -> Void
+    ) {
         self.name = name
         self.mayFallBack = mayFallBack
         self.setup = setup
@@ -33,90 +35,142 @@ struct Scenario: Sendable, CustomTestStringConvertible {
 }
 
 let scenarios: [Scenario] = [
-    Scenario("add files", setup: { f in
-        try f.mk("base/a.bin", bytes: 5000); try f.mk("base/b.bin", bytes: 100)
-    }, change: { f in
-        try f.mk("base/c.bin", bytes: 70000); try f.mk("new/d.bin", bytes: 1); try f.mk("new/e.bin", bytes: 4096)
-    }),
-    Scenario("delete dir tree", setup: { f in
-        for i in 1...5 { try f.mk("tree/sub\(i)/f", bytes: 9000) }
-        try f.mk("tree/top", bytes: 2000); try f.mk("keep/k", bytes: 3000)
-    }, change: { f in try f.remove("tree") }),
-    Scenario("new nested dirs with files", setup: { f in try f.mk("root/x", bytes: 1000) }, change: { f in
-        try f.mk("root/p/q/r/deep.bin", bytes: 12345); try f.mk("root/p/q/side", bytes: 7)
-        try f.mk("root/p/q/r/s/t/u/v", bytes: 1); try f.mkdir("root/empty/inner")
-    }),
-    Scenario("grow existing file", setup: { f in
-        try f.mk("g/file", bytes: 1000); try f.mk("g/other", bytes: 500)
-    }, change: { f in try f.append("g/file", bytes: 1 << 20) }),
-    Scenario("rename dir", setup: { f in
-        try f.mk("old/a", bytes: 5000); try f.mk("old/sub/b", bytes: 3000)
-    }, change: { f in try f.move("old", to: "renamed") }),
+    Scenario(
+        "add files",
+        setup: { f in
+            try f.mk("base/a.bin", bytes: 5000); try f.mk("base/b.bin", bytes: 100)
+        },
+        change: { f in
+            try f.mk("base/c.bin", bytes: 70000); try f.mk("new/d.bin", bytes: 1); try f.mk("new/e.bin", bytes: 4096)
+        }),
+    Scenario(
+        "delete dir tree",
+        setup: { f in
+            for i in 1...5 { try f.mk("tree/sub\(i)/f", bytes: 9000) }
+            try f.mk("tree/top", bytes: 2000); try f.mk("keep/k", bytes: 3000)
+        }, change: { f in try f.remove("tree") }),
+    Scenario(
+        "new nested dirs with files", setup: { f in try f.mk("root/x", bytes: 1000) },
+        change: { f in
+            try f.mk("root/p/q/r/deep.bin", bytes: 12345); try f.mk("root/p/q/side", bytes: 7)
+            try f.mk("root/p/q/r/s/t/u/v", bytes: 1); try f.mkdir("root/empty/inner")
+        }),
+    Scenario(
+        "grow existing file",
+        setup: { f in
+            try f.mk("g/file", bytes: 1000); try f.mk("g/other", bytes: 500)
+        }, change: { f in try f.append("g/file", bytes: 1 << 20) }),
+    Scenario(
+        "rename dir",
+        setup: { f in
+            try f.mk("old/a", bytes: 5000); try f.mk("old/sub/b", bytes: 3000)
+        }, change: { f in try f.move("old", to: "renamed") }),
     // Names that differ only in case or in Unicode form: the volume keeps the new spelling, the tree must too.
-    Scenario("rename dir: case only", setup: { f in
-        try f.mk("Photos/a", bytes: 5000); try f.mk("Photos/Sub/b", bytes: 3000); try f.mk("other/c", bytes: 10)
-    }, change: { f in try f.rename("Photos", to: "photos") }),
-    Scenario("rename file: case only", setup: { f in
-        try f.mk("d/Report.TXT", bytes: 5000); try f.mk("d/keep", bytes: 10)
-    }, change: { f in try f.rename("d/Report.TXT", to: "d/report.txt") }),
-    Scenario("rename dir: non-ASCII", setup: { f in
-        try f.mk("caf\u{E9}/a", bytes: 5000); try f.mk("caf\u{E9}/\u{65E5}\u{672C}/b", bytes: 3000)
-    }, change: { f in try f.rename("caf\u{E9}", to: "\u{43A}\u{430}\u{444}\u{435}-\u{1F4C1}") }),
-    Scenario("rename dir: NFC to NFD", setup: { f in
-        try f.mk("\u{E9}t\u{E9}/a", bytes: 5000); try f.mk("z/c", bytes: 10)
-    }, change: { f in try f.rename("\u{E9}t\u{E9}", to: "e\u{301}te\u{301}") }),
-    Scenario("move file between dirs", setup: { f in
-        try f.mk("src/m", bytes: 20000); try f.mk("dst/x", bytes: 10)
-    }, change: { f in try f.move("src/m", to: "dst/m") }),
-    Scenario("delete 1 of 1000 files", setup: { f in
-        for i in 1...1000 { try f.mk("many/f\(i)", bytes: (i * 37) % 9000 + 1) }
-    }, change: { f in try f.remove("many/f500") }),
-    Scenario("hardlink: new link, old file", mayFallBack: true, setup: { f in
-        try f.mk("orig/file", bytes: 40000); try f.mkdir("other")
-    }, change: { f in try f.link("orig/file", to: "other/link") }),
-    Scenario("hardlink: delete owner link", setup: { f in
-        try f.mk("own/file", bytes: 40000); try f.link("own/file", to: "peer/alias")
-    }, change: { f in try f.remove("own/file") }),
-    Scenario("hardlink: delete peer link", setup: { f in
-        try f.mk("own/file", bytes: 40000); try f.link("own/file", to: "peer/alias")
-    }, change: { f in try f.remove("peer/alias") }),
-    Scenario("hardlink: new file, 2 links", setup: { f in try f.mk("base/x", bytes: 100) }, change: { f in
-        try f.mk("fresh/h1", bytes: 50000); try f.link("fresh/h1", to: "fresh/h2")
-    }),
-    Scenario("rapid changes, no pause", setup: { f in
-        try f.mk("a/keep", bytes: 100); try f.mk("b/gone", bytes: 200); try f.mk("d/grow", bytes: 1000)
-    }, change: { f in
-        try f.mk("a/added", bytes: 300); try f.remove("b/gone"); try f.mk("c/new/file", bytes: 5000)
-        try f.append("d/grow", bytes: 1 << 20)
-    }),
-    Scenario("hardlink: grow via link A", setup: { f in
-        try f.mk("own/file", bytes: 40000); try f.link("own/file", to: "peer/alias")
-    }, change: { f in try f.append("own/file", bytes: 1 << 20) }),
-    Scenario("hardlink: grow via link B", setup: { f in
-        try f.mk("own/file", bytes: 40000); try f.link("own/file", to: "peer/alias")
-    }, change: { f in try f.append("peer/alias", bytes: 1 << 20) }),
+    Scenario(
+        "rename dir: case only",
+        setup: { f in
+            try f.mk("Photos/a", bytes: 5000); try f.mk("Photos/Sub/b", bytes: 3000); try f.mk("other/c", bytes: 10)
+        }, change: { f in try f.rename("Photos", to: "photos") }),
+    Scenario(
+        "rename file: case only",
+        setup: { f in
+            try f.mk("d/Report.TXT", bytes: 5000); try f.mk("d/keep", bytes: 10)
+        }, change: { f in try f.rename("d/Report.TXT", to: "d/report.txt") }),
+    Scenario(
+        "rename dir: non-ASCII",
+        setup: { f in
+            try f.mk("caf\u{E9}/a", bytes: 5000); try f.mk("caf\u{E9}/\u{65E5}\u{672C}/b", bytes: 3000)
+        }, change: { f in try f.rename("caf\u{E9}", to: "\u{43A}\u{430}\u{444}\u{435}-\u{1F4C1}") }),
+    Scenario(
+        "rename dir: NFC to NFD",
+        setup: { f in
+            try f.mk("\u{E9}t\u{E9}/a", bytes: 5000); try f.mk("z/c", bytes: 10)
+        }, change: { f in try f.rename("\u{E9}t\u{E9}", to: "e\u{301}te\u{301}") }),
+    Scenario(
+        "move file between dirs",
+        setup: { f in
+            try f.mk("src/m", bytes: 20000); try f.mk("dst/x", bytes: 10)
+        }, change: { f in try f.move("src/m", to: "dst/m") }),
+    Scenario(
+        "delete 1 of 1000 files",
+        setup: { f in
+            for i in 1...1000 { try f.mk("many/f\(i)", bytes: (i * 37) % 9000 + 1) }
+        }, change: { f in try f.remove("many/f500") }),
+    Scenario(
+        "hardlink: new link, old file", mayFallBack: true,
+        setup: { f in
+            try f.mk("orig/file", bytes: 40000); try f.mkdir("other")
+        }, change: { f in try f.link("orig/file", to: "other/link") }),
+    Scenario(
+        "hardlink: delete owner link",
+        setup: { f in
+            try f.mk("own/file", bytes: 40000); try f.link("own/file", to: "peer/alias")
+        }, change: { f in try f.remove("own/file") }),
+    Scenario(
+        "hardlink: delete peer link",
+        setup: { f in
+            try f.mk("own/file", bytes: 40000); try f.link("own/file", to: "peer/alias")
+        }, change: { f in try f.remove("peer/alias") }),
+    Scenario(
+        "hardlink: new file, 2 links", setup: { f in try f.mk("base/x", bytes: 100) },
+        change: { f in
+            try f.mk("fresh/h1", bytes: 50000); try f.link("fresh/h1", to: "fresh/h2")
+        }),
+    Scenario(
+        "rapid changes, no pause",
+        setup: { f in
+            try f.mk("a/keep", bytes: 100); try f.mk("b/gone", bytes: 200); try f.mk("d/grow", bytes: 1000)
+        },
+        change: { f in
+            try f.mk("a/added", bytes: 300); try f.remove("b/gone"); try f.mk("c/new/file", bytes: 5000)
+            try f.append("d/grow", bytes: 1 << 20)
+        }),
+    Scenario(
+        "hardlink: grow via link A",
+        setup: { f in
+            try f.mk("own/file", bytes: 40000); try f.link("own/file", to: "peer/alias")
+        }, change: { f in try f.append("own/file", bytes: 1 << 20) }),
+    Scenario(
+        "hardlink: grow via link B",
+        setup: { f in
+            try f.mk("own/file", bytes: 40000); try f.link("own/file", to: "peer/alias")
+        }, change: { f in try f.append("peer/alias", bytes: 1 << 20) }),
     // APFS full clones: each family is counted once in the clone-aware size, whatever the update touched.
-    Scenario("clone: new file and its clone", setup: { f in try f.mk("base/x", bytes: 100) }, change: { f in
-        try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b")
-    }),
-    Scenario("clone: old file cloned into a new dir", setup: { f in try f.mk("x/a", bytes: 300_000) }, change: { f in
-        try f.clone("x/a", to: "y/b")
-    }),
-    Scenario("clone: old file cloned into an old dir", setup: { f in
-        try f.mk("x/a", bytes: 300_000); try f.mk("y/other", bytes: 10)
-    }, change: { f in try f.clone("x/a", to: "y/b") }),
-    Scenario("clone: delete the original", setup: { f in
-        try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b"); try f.clone("x/a", to: "z/c")
-    }, change: { f in try f.remove("x/a") }),
-    Scenario("clone: delete a clone", setup: { f in
-        try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b")
-    }, change: { f in try f.remove("y/b") }),
-    Scenario("clone: grow a clone", setup: { f in
-        try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b")
-    }, change: { f in try f.append("y/b", bytes: 1 << 20) }),
-    Scenario("clone: move the original", setup: { f in
-        try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b"); try f.mkdir("w")
-    }, change: { f in try f.move("x/a", to: "w/a") }),
+    Scenario(
+        "clone: new file and its clone", setup: { f in try f.mk("base/x", bytes: 100) },
+        change: { f in
+            try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b")
+        }),
+    Scenario(
+        "clone: old file cloned into a new dir", setup: { f in try f.mk("x/a", bytes: 300_000) },
+        change: { f in
+            try f.clone("x/a", to: "y/b")
+        }),
+    Scenario(
+        "clone: old file cloned into an old dir",
+        setup: { f in
+            try f.mk("x/a", bytes: 300_000); try f.mk("y/other", bytes: 10)
+        }, change: { f in try f.clone("x/a", to: "y/b") }),
+    Scenario(
+        "clone: delete the original",
+        setup: { f in
+            try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b"); try f.clone("x/a", to: "z/c")
+        }, change: { f in try f.remove("x/a") }),
+    Scenario(
+        "clone: delete a clone",
+        setup: { f in
+            try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b")
+        }, change: { f in try f.remove("y/b") }),
+    Scenario(
+        "clone: grow a clone",
+        setup: { f in
+            try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b")
+        }, change: { f in try f.append("y/b", bytes: 1 << 20) }),
+    Scenario(
+        "clone: move the original",
+        setup: { f in
+            try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b"); try f.mkdir("w")
+        }, change: { f in try f.move("x/a", to: "w/a") }),
 ]
 
 extension Fixture {
@@ -130,8 +184,10 @@ extension Fixture {
 enum UpdateOutcome { case incremental(DiskTree, UpdateReport), fellBack(UpdateFailure) }
 
 /// Saves a snapshot of `f`, applies `change`, loads the snapshot and replays the history, like `fil scan` does.
-func scanChangeUpdate(_ f: Fixture, dir: URL, options: ScanOptions,
-                      change: () throws -> Void) throws -> (outcome: UpdateOutcome, full: DiskTree) {
+func scanChangeUpdate(
+    _ f: Fixture, dir: URL, options: ScanOptions,
+    change: () throws -> Void
+) throws -> (outcome: UpdateOutcome, full: DiskTree) {
     let baseline = try Scanner.scan(f.root, options: options)
     try Snapshot.save(baseline, in: dir)
     try change()
@@ -154,7 +210,9 @@ struct IncrementalFSEventsTests {
                 let (outcome, full) = try scanChangeUpdate(f, dir: dir, options: ScanOptions()) { try s.change(f) }
                 switch outcome {
                 case .incremental(let tree, _):
-                    #expect(s.same(Totals(tree), Totals(full)), "\(s.name): incremental \(Totals(tree)) full \(Totals(full))")
+                    #expect(
+                        s.same(Totals(tree), Totals(full)),
+                        "\(s.name): incremental \(Totals(tree)) full \(Totals(full))")
                 case .fellBack(let why):
                     // Allowed only where the strict hard-link rule asks for a full scan.
                     #expect(s.mayFallBack, "\(s.name): update failed: \(why)")
@@ -165,8 +223,9 @@ struct IncrementalFSEventsTests {
         }
     }
 
-    @Test("tolerant hard links give the same answers; an unknown old link is reported as uncertain",
-          arguments: scenarios)
+    @Test(
+        "tolerant hard links give the same answers; an unknown old link is reported as uncertain",
+        arguments: scenarios)
     func tolerantHardLinks(_ s: Scenario) throws {
         try withSnapshotDir { dir in
             try Fixture.with { f in
@@ -186,7 +245,9 @@ struct IncrementalFSEventsTests {
                     #expect(tree.root.totalAlloc - full.root.totalAlloc <= report.uncertainBytes)
                 } else {
                     #expect(report.uncertainBytes == 0)
-                    #expect(s.same(Totals(tree), Totals(full)), "\(s.name): incremental \(Totals(tree)) full \(Totals(full))")
+                    #expect(
+                        s.same(Totals(tree), Totals(full)),
+                        "\(s.name): incremental \(Totals(tree)) full \(Totals(full))")
                 }
             }
         }
@@ -331,81 +392,89 @@ struct IncrementalFSEventsTests {
         }
     }
 
-    @Test("a disk image mounted inside the root is left out; the folder it covered is counted again after an unmount",
-          .enabled(if: DiskImage.isAvailable, "hdiutil is not available"),
-          arguments: [false, true])
+    @Test(
+        "a disk image mounted inside the root is left out; the folder it covered is counted again after an unmount",
+        .enabled(if: DiskImage.isAvailable, "hdiutil is not available"),
+        arguments: [false, true])
     func mountAndUnmount(fullScanWhileMounted: Bool) throws {
         try withSnapshotDir { dir in
-            try Fixture.with("mount") { f in try withImage { image in
-                try f.mk("data/a", bytes: 300_000)
-                try f.mk("mnt/under", bytes: 100_000)
-                try f.mk("mnt/deep/x", bytes: 50_000)
-                try Snapshot.save(try Scanner.scan(f.root), in: dir)
+            try Fixture.with("mount") { f in
+                try withImage { image in
+                    try f.mk("data/a", bytes: 300_000)
+                    try f.mk("mnt/under", bytes: 100_000)
+                    try f.mk("mnt/deep/x", bytes: 50_000)
+                    try Snapshot.save(try Scanner.scan(f.root), in: dir)
 
-                // FSEvents keeps no Mount event in its history: the update finds the mount in the mount table.
-                guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
-                let mounted = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
-                guard case .success = Incremental.update(mounted) else {
-                    Issue.record("update after mount failed")
-                    return
-                }
-                let full = try Scanner.scan(f.root)
-                #expect(Totals(mounted) == Totals(full), "mounted: incremental \(Totals(mounted)) full \(Totals(full))")
-                // A file at the root of the image must not be counted either: listings report a mount point with the
-                // attributes of the directory underneath it.
-                #expect(full.root.totalAlloc == f.duBytes(), "mounted: full scan vs du")
-                #expect(full.stats.mountsSkipped == 1)
-                #expect(mounted.node(at: f.path("mnt")) == nil)
-                // Recorded by the update (the folder became a mount point) and by a full scan (its listing).
-                #expect(mounted.mountPoints == [MountPoint(parent: 0, name: "mnt")])
-                #expect(full.mountPoints == [MountPoint(parent: 0, name: "mnt")])
-                try Snapshot.save(fullScanWhileMounted ? full : mounted, in: dir)
+                    // FSEvents keeps no Mount event in its history: the update finds the mount in the mount table.
+                    guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
+                    let mounted = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
+                    guard case .success = Incremental.update(mounted) else {
+                        Issue.record("update after mount failed")
+                        return
+                    }
+                    let full = try Scanner.scan(f.root)
+                    #expect(
+                        Totals(mounted) == Totals(full), "mounted: incremental \(Totals(mounted)) full \(Totals(full))")
+                    // A file at the root of the image must not be counted either: listings report a mount point with the
+                    // attributes of the directory underneath it.
+                    #expect(full.root.totalAlloc == f.duBytes(), "mounted: full scan vs du")
+                    #expect(full.stats.mountsSkipped == 1)
+                    #expect(mounted.node(at: f.path("mnt")) == nil)
+                    // Recorded by the update (the folder became a mount point) and by a full scan (its listing).
+                    #expect(mounted.mountPoints == [MountPoint(parent: 0, name: "mnt")])
+                    #expect(full.mountPoints == [MountPoint(parent: 0, name: "mnt")])
+                    try Snapshot.save(fullScanWhileMounted ? full : mounted, in: dir)
 
-                // No event marks an unmount either: the recorded mount point is missing from the mount table.
-                image.detach()
-                let unmounted = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
-                #expect(unmounted.mountPoints == [MountPoint(parent: 0, name: "mnt")])
-                guard case .success = Incremental.update(unmounted) else {
-                    Issue.record("update after unmount failed")
-                    return
+                    // No event marks an unmount either: the recorded mount point is missing from the mount table.
+                    image.detach()
+                    let unmounted = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
+                    #expect(unmounted.mountPoints == [MountPoint(parent: 0, name: "mnt")])
+                    guard case .success = Incremental.update(unmounted) else {
+                        Issue.record("update after unmount failed")
+                        return
+                    }
+                    let fullAfter = try Scanner.scan(f.root)
+                    let (a, b) = (Totals(unmounted), Totals(fullAfter))
+                    #expect(a == b, "unmounted: incremental \(a) full \(b)")
+                    #expect(fullAfter.root.totalAlloc == f.duBytes(), "unmounted: full scan vs du")
+                    #expect(unmounted.node(at: f.path("mnt/deep")) != nil)
+                    #expect(unmounted.mountPoints.isEmpty)
+                    // The update changed the tree without an event: the snapshot is rewritten, not advanced.
+                    #expect(!Snapshot.advance(unmounted, in: dir))
                 }
-                let fullAfter = try Scanner.scan(f.root)
-                let (a, b) = (Totals(unmounted), Totals(fullAfter))
-                #expect(a == b, "unmounted: incremental \(a) full \(b)")
-                #expect(fullAfter.root.totalAlloc == f.duBytes(), "unmounted: full scan vs du")
-                #expect(unmounted.node(at: f.path("mnt/deep")) != nil)
-                #expect(unmounted.mountPoints.isEmpty)
-                // The update changed the tree without an event: the snapshot is rewritten, not advanced.
-                #expect(!Snapshot.advance(unmounted, in: dir))
-            } }
+            }
         }
     }
 
-    @Test("a folder a volume is mounted over no longer counts what it held",
-          .enabled(if: DiskImage.isAvailable, "hdiutil is not available"))
+    @Test(
+        "a folder a volume is mounted over no longer counts what it held",
+        .enabled(if: DiskImage.isAvailable, "hdiutil is not available"))
     func mountHidesContents() throws {
         try withSnapshotDir { dir in
-            try Fixture.with("mount") { f in try withImage { image in
-                try f.mk("data/a", bytes: 300_000)
-                try f.mk("mnt/under", bytes: 100_000)
-                try f.mk("mnt/deep/x", bytes: 50_000)
-                let (outcome, full) = try scanChangeUpdate(f, dir: dir, options: ScanOptions()) {
-                    guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
+            try Fixture.with("mount") { f in
+                try withImage { image in
+                    try f.mk("data/a", bytes: 300_000)
+                    try f.mk("mnt/under", bytes: 100_000)
+                    try f.mk("mnt/deep/x", bytes: 50_000)
+                    let (outcome, full) = try scanChangeUpdate(f, dir: dir, options: ScanOptions()) {
+                        guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
+                    }
+                    guard case .incremental(let tree, let report) = outcome else {
+                        Issue.record("update failed: \(outcome)")
+                        return
+                    }
+                    #expect(Totals(tree) == Totals(full), "incremental \(Totals(tree)) full \(Totals(full))")
+                    #expect(full.root.totalAlloc == f.duBytes())
+                    #expect(tree.node(at: f.path("mnt")) == nil)
+                    #expect(report.dirsRemoved == 2, "\(report)")
                 }
-                guard case .incremental(let tree, let report) = outcome else {
-                    Issue.record("update failed: \(outcome)")
-                    return
-                }
-                #expect(Totals(tree) == Totals(full), "incremental \(Totals(tree)) full \(Totals(full))")
-                #expect(full.root.totalAlloc == f.duBytes())
-                #expect(tree.node(at: f.path("mnt")) == nil)
-                #expect(report.dirsRemoved == 2, "\(report)")
-            } }
+            }
         }
     }
 
-    @Test("a root given by its data-volume path sees the changes fseventsd reports under the firmlink path",
-          .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))
+    @Test(
+        "a root given by its data-volume path sees the changes fseventsd reports under the firmlink path",
+        .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))
     func dataVolumeRootEvents() throws {
         try withSnapshotDir { dir in
             try Fixture.with { f in
@@ -434,8 +503,12 @@ struct IncrementalFSEventsTests {
                 try f.mk("usr/bin/c", bytes: 10_000)
                 try f.mk("other/d", bytes: 10_000)
                 // The fixture plays the data volume: changes under a target would come under its firmlink path.
-                let table = FirmlinkTable(dataRoot: f.root, links: [.init(source: "/Users", target: "Users"),
-                                                                    .init(source: "/usr/local", target: "usr/local")])
+                let table = FirmlinkTable(
+                    dataRoot: f.root,
+                    links: [
+                        .init(source: "/Users", target: "Users"),
+                        .init(source: "/usr/local", target: "usr/local"),
+                    ])
                 let options = ScanOptions(firmlinks: table)
                 func update(_ relative: String) throws -> Result<UpdateReport, UpdateFailure> {
                     let root = f.path(relative)
@@ -454,16 +527,18 @@ struct IncrementalFSEventsTests {
                 for relative in ["usr/local", "Users", "other", "usr/bin"] {
                     if case .failure(.dataVolumeRoot) = try update(relative) { Issue.record("\(relative): refused") }
                 }
-                #expect(UpdateFailure.dataVolumeRoot.description
-                    == "incremental updates are not supported for a data-volume root that holds firmlinked folders")
+                #expect(
+                    UpdateFailure.dataVolumeRoot.description
+                        == "incremental updates are not supported for a data-volume root that holds firmlinked folders")
                 #expect(!FirmlinkTable.system.holdsFirmlinkTargets("/Users/code"))
                 #expect(!table.holdsFirmlinkTargets("/"))
             }
         }
     }
 
-    @Test("a root given by its data-volume path that is replaced is not updated in place",
-          .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))
+    @Test(
+        "a root given by its data-volume path that is replaced is not updated in place",
+        .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))
     func dataVolumeRootReplaced() throws {
         try withSnapshotDir { dir in
             try Fixture.with { f in
@@ -485,75 +560,82 @@ struct IncrementalFSEventsTests {
         }
     }
 
-    @Test("a root given by its data-volume path finds mounts the mount table names by the firmlink path",
-          .enabled(if: DiskImage.isAvailable, "hdiutil is not available"),
-          .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))
+    @Test(
+        "a root given by its data-volume path finds mounts the mount table names by the firmlink path",
+        .enabled(if: DiskImage.isAvailable, "hdiutil is not available"),
+        .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))
     func mountUnderDataVolumePath() throws {
         try withSnapshotDir { dir in
-            try Fixture.with("mount") { f in try withImage { image in
-                try f.mk("data/a", bytes: 300_000)
-                try f.mk("mnt/under", bytes: 100_000)
-                let root = FirmlinkTable.system.dataRoot + f.root
-                try #require(FirmlinkTable.system.dataVolumePath(f.root) == root)
-                try Snapshot.save(try Scanner.scan(root), in: dir)
+            try Fixture.with("mount") { f in
+                try withImage { image in
+                    try f.mk("data/a", bytes: 300_000)
+                    try f.mk("mnt/under", bytes: 100_000)
+                    let root = FirmlinkTable.system.dataRoot + f.root
+                    try #require(FirmlinkTable.system.dataVolumePath(f.root) == root)
+                    try Snapshot.save(try Scanner.scan(root), in: dir)
 
-                guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
-                let mounted = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir).tree)
-                guard case .success(let report) = Incremental.update(mounted) else {
-                    Issue.record("update after mount failed")
-                    return
-                }
-                let full = try Scanner.scan(root)
-                #expect(report.mountChanges == 1)
-                #expect(Totals(mounted) == Totals(full), "mounted: incremental \(Totals(mounted)) full \(Totals(full))")
-                #expect(full.root.totalAlloc == f.duBytes())
-                #expect(mounted.mountPoints == [MountPoint(parent: 0, name: "mnt")])
-                try Snapshot.save(mounted, in: dir)
+                    guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
+                    let mounted = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir).tree)
+                    guard case .success(let report) = Incremental.update(mounted) else {
+                        Issue.record("update after mount failed")
+                        return
+                    }
+                    let full = try Scanner.scan(root)
+                    #expect(report.mountChanges == 1)
+                    #expect(
+                        Totals(mounted) == Totals(full), "mounted: incremental \(Totals(mounted)) full \(Totals(full))")
+                    #expect(full.root.totalAlloc == f.duBytes())
+                    #expect(mounted.mountPoints == [MountPoint(parent: 0, name: "mnt")])
+                    try Snapshot.save(mounted, in: dir)
 
-                // Still mounted: the record matches, nothing is re-read.
-                let again = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir).tree)
-                guard case .success(let idle) = Incremental.update(again) else {
-                    Issue.record("second update failed")
-                    return
-                }
-                #expect(idle.mountChanges == 0, "\(idle)")
+                    // Still mounted: the record matches, nothing is re-read.
+                    let again = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir).tree)
+                    guard case .success(let idle) = Incremental.update(again) else {
+                        Issue.record("second update failed")
+                        return
+                    }
+                    #expect(idle.mountChanges == 0, "\(idle)")
 
-                image.detach()
-                guard case .success(let after) = Incremental.update(again) else {
-                    Issue.record("update after unmount failed")
-                    return
+                    image.detach()
+                    guard case .success(let after) = Incremental.update(again) else {
+                        Issue.record("update after unmount failed")
+                        return
+                    }
+                    #expect(after.mountChanges == 1)
+                    #expect(Totals(again) == Totals(try Scanner.scan(root)))
                 }
-                #expect(after.mountChanges == 1)
-                #expect(Totals(again) == Totals(try Scanner.scan(root)))
-            } }
+            }
         }
     }
 
-    @Test("a recorded mount point the mount table names otherwise is not taken for unmounted",
-          .enabled(if: DiskImage.isAvailable, "hdiutil is not available"),
-          .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))
+    @Test(
+        "a recorded mount point the mount table names otherwise is not taken for unmounted",
+        .enabled(if: DiskImage.isAvailable, "hdiutil is not available"),
+        .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))
     func mountNamedOtherwise() throws {
         try withSnapshotDir { dir in
-            try Fixture.with("mount") { f in try withImage { image in
-                try f.mk("mnt/under", bytes: 100_000)
-                try f.mk("keep", bytes: 20_000)
-                guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
-                // Without the firmlink table the data-volume root cannot match the table's firmlink name: the
-                // recorded mount point is checked on disk instead (as after a rename the table has not followed).
-                let options = ScanOptions(firmlinks: .empty)
-                let root = FirmlinkTable.system.dataRoot + f.root
-                let full = try Scanner.scan(root, options: options)
-                #expect(full.mountPoints == [MountPoint(parent: 0, name: "mnt")])
-                try Snapshot.save(full, in: dir)
-                let tree = try #require(Snapshot.load(rootPath: root, options: options, in: dir).tree)
-                guard case .success(let report) = Incremental.update(tree, options: options) else {
-                    Issue.record("update failed")
-                    return
+            try Fixture.with("mount") { f in
+                try withImage { image in
+                    try f.mk("mnt/under", bytes: 100_000)
+                    try f.mk("keep", bytes: 20_000)
+                    guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
+                    // Without the firmlink table the data-volume root cannot match the table's firmlink name: the
+                    // recorded mount point is checked on disk instead (as after a rename the table has not followed).
+                    let options = ScanOptions(firmlinks: .empty)
+                    let root = FirmlinkTable.system.dataRoot + f.root
+                    let full = try Scanner.scan(root, options: options)
+                    #expect(full.mountPoints == [MountPoint(parent: 0, name: "mnt")])
+                    try Snapshot.save(full, in: dir)
+                    let tree = try #require(Snapshot.load(rootPath: root, options: options, in: dir).tree)
+                    guard case .success(let report) = Incremental.update(tree, options: options) else {
+                        Issue.record("update failed")
+                        return
+                    }
+                    #expect(report.mountChanges == 0, "\(report)")
+                    #expect(tree.mountPoints == [MountPoint(parent: 0, name: "mnt")])
+                    #expect(Totals(tree) == Totals(full))
                 }
-                #expect(report.mountChanges == 0, "\(report)")
-                #expect(tree.mountPoints == [MountPoint(parent: 0, name: "mnt")])
-                #expect(Totals(tree) == Totals(full))
-            } }
+            }
         }
     }
 

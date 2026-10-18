@@ -40,7 +40,9 @@ final class CancellingTrasher: Trasher, @unchecked Sendable {
 
     func trash(_ url: URL) throws -> URL? {
         let r = try inner.trash(url)
-        let n = lock.withLock { count += 1; return count }
+        let n = lock.withLock {
+            count += 1; return count
+        }
         if n == after { withUnsafeCurrentTask { $0?.cancel() } }
         return r
     }
@@ -78,8 +80,9 @@ struct RemovalCommandTests {
     func usesRunner() async throws {
         try await Fixture.withAsync { f in
             let runner = FakeRunner(["/fake/tool prune": .success("")])
-            let results = await Cleanup.execute([command("a", ["/fake/tool", "prune"], home: f.root)], home: f.root,
-                                                runner: runner, removalTimeout: .seconds(7))
+            let results = await Cleanup.execute(
+                [command("a", ["/fake/tool", "prune"], home: f.root)], home: f.root,
+                runner: runner, removalTimeout: .seconds(7))
             guard case .commandRan = results[0].1 else { Issue.record("expected commandRan"); return }
             #expect(runner.calls == ["/fake/tool prune"])
         }
@@ -98,7 +101,8 @@ struct RemovalCommandTests {
             let results = await work.value
             #expect(results.count == 1)
             guard case .failed = results[0].1 else { Issue.record("expected a failure"); return }
-            let stillAlive = try running("sleep 29.9792"); #expect(stillAlive == false, "the command is still running after cancel")
+            let stillAlive = try running("sleep 29.9792");
+            #expect(stillAlive == false, "the command is still running after cancel")
         }
     }
 
@@ -120,7 +124,9 @@ struct RemovalCommandTests {
         defer { f.remove(); outside.remove(); trash.remove() }
         try makeHome(f, outside: outside)
         let scan = try await scanCandidates(f)
-        let items = scan.candidates.filter { if case .trash = $0.removal { return $0.safety != .careful } else { return false } }
+        let items = scan.candidates.filter {
+            if case .trash = $0.removal { return $0.safety != .careful } else { return false }
+        }
         #expect(items.count >= 3)
         let three = Array(items.prefix(3))
         let trasher = CancellingTrasher(inner: FakeTrasher(trashDir: trash.path("t")), after: 1)
@@ -139,7 +145,10 @@ struct RemovalCommandTests {
         defer { f.remove(); outside.remove(); trash.remove() }
         try makeHome(f, outside: outside)
         let scan = try await scanCandidates(f)
-        let one = Array(scan.candidates.filter { if case .trash = $0.removal { return $0.safety != .careful } else { return false } }.prefix(1))
+        let one = Array(
+            scan.candidates.filter {
+                if case .trash = $0.removal { return $0.safety != .careful } else { return false }
+            }.prefix(1))
         let trasher = CancellingTrasher(inner: FakeTrasher(trashDir: trash.path("t")), after: 1)
         let home = scan.home
         let work = Task { await Cleanup.executeReporting(one, home: home, trasher: trasher) }
@@ -152,8 +161,9 @@ struct RemovalCommandTests {
     func trappedTermTimesOut() async throws {
         for (status, sleepFor) in [(3, "21.111"), (0, "21.222")] {
             let runner = SystemCommandRunner(gracePeriod: .seconds(1))
-            let r = await runner.run(["/bin/sh", "-c", "trap 'exit \(status)' TERM; /bin/sleep \(sleepFor)"],
-                                     timeout: .milliseconds(400))
+            let r = await runner.run(
+                ["/bin/sh", "-c", "trap 'exit \(status)' TERM; /bin/sleep \(sleepFor)"],
+                timeout: .milliseconds(400))
             #expect(r == .timedOut, "exit \(status) after TERM")
         }
     }
@@ -162,7 +172,8 @@ struct RemovalCommandTests {
     func trappedTermIsInterrupted() async throws {
         for (status, sleepFor) in [(3, "22.111"), (0, "22.222")] {
             try await Fixture.withAsync { f in
-                let item = command("trap", ["/bin/sh", "-c", "trap 'exit \(status)' TERM; /bin/sleep \(sleepFor)"], home: f.root)
+                let item = command(
+                    "trap", ["/bin/sh", "-c", "trap 'exit \(status)' TERM; /bin/sleep \(sleepFor)"], home: f.root)
                 let home = f.root
                 let work = Task { await Cleanup.executeReporting([item], home: home) }
                 let started = try await waitUntilRunning("sleep \(sleepFor)")
@@ -170,7 +181,9 @@ struct RemovalCommandTests {
                 work.cancel()
                 let (results, stopped) = await work.value
                 #expect(stopped, "exit \(status) after TERM")
-                guard case .failed(let why) = results[0].1 else { Issue.record("exit \(status): expected a failure"); return }
+                guard case .failed(let why) = results[0].1 else {
+                    Issue.record("exit \(status): expected a failure"); return
+                }
                 #expect(why == .system("interrupted; the command was stopped"))
             }
         }

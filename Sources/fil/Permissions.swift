@@ -22,8 +22,10 @@ enum Permissions {
 
     /// `ownerUID` is the folder's owner when known. A folder in a TCC-protected place counts as privacy-protected
     /// whoever owns it, except another user's home, which never matches `home`.
-    static func classify(_ path: String, ownerUID: uid_t?, home: String = NSHomeDirectory(),
-                         myUID: uid_t = getuid()) -> UnreadableKind {
+    static func classify(
+        _ path: String, ownerUID: uid_t?, home: String = NSHomeDirectory(),
+        myUID: uid_t = getuid()
+    ) -> UnreadableKind {
         func under(_ prefix: String) -> Bool { path == prefix || path.hasPrefix(prefix + "/") }
         if protectedSystemPrefixes.contains(where: under) { return .privacyProtected }
         if protectedHomeFolders.contains(where: { under(home + "/" + $0) }) { return .privacyProtected }
@@ -33,9 +35,12 @@ enum Permissions {
 
     /// The unreadable and incomplete folders of a scan with their kind, privacy-protected first, incomplete last, then
     /// shallow before deep.
-    static func unreadable(in tree: DiskTree, home: String = NSHomeDirectory()) -> [(path: String, kind: UnreadableKind)] {
+    static func unreadable(in tree: DiskTree, home: String = NSHomeDirectory()) -> [(
+        path: String, kind: UnreadableKind
+    )] {
         var out: [(path: String, kind: UnreadableKind)] = []
-        for i in tree.nodes.indices where (tree.nodes[i].unreadable || tree.nodes[i].incomplete) && !tree.nodes[i].isDead {
+        for i in tree.nodes.indices
+        where (tree.nodes[i].unreadable || tree.nodes[i].incomplete) && !tree.nodes[i].isDead {
             let path = tree.path(of: i)
             if !tree.nodes[i].unreadable {
                 out.append((path, .incomplete))
@@ -62,13 +67,20 @@ enum Permissions {
     }
 
     /// The warning block for `fil scan`: empty when nothing was unreadable.
-    static func warningLines(_ items: [(path: String, kind: UnreadableKind)], terminalName: String?,
-                             shown: Int = 5) -> [String] {
+    static func warningLines(
+        _ items: [(path: String, kind: UnreadableKind)], terminalName: String?,
+        shown: Int = 5
+    ) -> [String] {
         guard !items.isEmpty else { return [] }
         let n = items.count
-        var lines = items.contains(where: { $0.kind == .incomplete })
-            ? ["\(n) folder\(n == 1 ? "" : "s") could not be read fully; sizes below \(n == 1 ? "it are" : "them are") too low."]
-            : ["\(n) folder\(n == 1 ? "" : "s") could not be read (permission denied); sizes below \(n == 1 ? "it are" : "them are") missing."]
+        var lines =
+            items.contains(where: { $0.kind == .incomplete })
+            ? [
+                "\(n) folder\(n == 1 ? "" : "s") could not be read fully; sizes below \(n == 1 ? "it are" : "them are") too low."
+            ]
+            : [
+                "\(n) folder\(n == 1 ? "" : "s") could not be read (permission denied); sizes below \(n == 1 ? "it are" : "them are") missing."
+            ]
         for item in items.prefix(shown) {
             let note: String
             switch item.kind {
@@ -84,7 +96,9 @@ enum Permissions {
             lines.append("Give \(terminalName ?? "your terminal app") Full Disk Access: run `fil doctor`")
         }
         if items.contains(where: { $0.kind == .otherUser }) {
-            lines.append("Folders owned by another user cannot be read without their permission; Full Disk Access does not change that.")
+            lines.append(
+                "Folders owned by another user cannot be read without their permission; Full Disk Access does not change that."
+            )
         }
         return lines
     }
@@ -159,18 +173,18 @@ enum FullDiskAccess {
 let fdaSettingsURL = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles"
 
 let doctorHelp = """
-Usage: fil doctor [--no-open] [--no-color]
+    Usage: fil doctor [--no-open] [--no-color]
 
-Checks whether the terminal app running fil has Full Disk Access. Without it, folders such as
-~/Library/Mail, ~/Library/Containers/*, ~/Pictures/Photos Library and /private/var/db cannot be read and
-scan sizes come out too low. A command-line tool cannot request the permission itself and `sudo` does not
-help: macOS grants it to the terminal app (Terminal, iTerm2, Ghostty, Warp, VS Code, ...).
+    Checks whether the terminal app running fil has Full Disk Access. Without it, folders such as
+    ~/Library/Mail, ~/Library/Containers/*, ~/Pictures/Photos Library and /private/var/db cannot be read and
+    scan sizes come out too low. A command-line tool cannot request the permission itself and `sudo` does not
+    help: macOS grants it to the terminal app (Terminal, iTerm2, Ghostty, Warp, VS Code, ...).
 
-  --no-open    only print; do not open System Settings
-  --no-color   plain output
+      --no-open    only print; do not open System Settings
+      --no-color   plain output
 
-Exit status 0 when Full Disk Access is granted, 1 otherwise.
-"""
+    Exit status 0 when Full Disk Access is granted, 1 otherwise.
+    """
 
 func runDoctor(_ arguments: [String]) async -> Never {
     var open = true
@@ -194,15 +208,16 @@ func runDoctor(_ arguments: [String]) async -> Never {
         exit(1)
     case .denied:
         print(UI.red("✗") + " \(name) does not have Full Disk Access.")
-        print("""
+        print(
+            """
 
-        Without it, protected folders (~/Library/Mail, ~/Library/Containers, Photos Library, /private/var/db)
-        are skipped and scan sizes are too low. `sudo` does not help.
+            Without it, protected folders (~/Library/Mail, ~/Library/Containers, Photos Library, /private/var/db)
+            are skipped and scan sizes are too low. `sudo` does not help.
 
-        1. Open System Settings → Privacy & Security → Full Disk Access.
-        2. Turn on \(name) (use + to add it if it is not listed).
-        3. Quit and reopen \(name), then run `fil doctor` again.
-        """)
+            1. Open System Settings → Privacy & Security → Full Disk Access.
+            2. Turn on \(name) (use + to add it if it is not listed).
+            3. Quit and reopen \(name), then run `fil doctor` again.
+            """)
         if open {
             print("\nOpening System Settings…")
             let r = await SystemCommandRunner().run(["/usr/bin/open", fdaSettingsURL], timeout: .seconds(10))

@@ -31,8 +31,12 @@ enum UI {
         return 80
     }
 
-    static func pad(_ s: String, _ n: Int) -> String { s.count >= n ? s : s + String(repeating: " ", count: n - s.count) }
-    static func lpad(_ s: String, _ n: Int) -> String { s.count >= n ? s : String(repeating: " ", count: n - s.count) + s }
+    static func pad(_ s: String, _ n: Int) -> String {
+        s.count >= n ? s : s + String(repeating: " ", count: n - s.count)
+    }
+    static func lpad(_ s: String, _ n: Int) -> String {
+        s.count >= n ? s : String(repeating: " ", count: n - s.count) + s
+    }
 
     /// Shortens `s` to `n` characters with "…" in the middle.
     static func truncate(_ s: String, _ n: Int) -> String {

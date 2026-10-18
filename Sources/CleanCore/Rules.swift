@@ -4,80 +4,112 @@ import ScanCore
 
 public enum Rules {
     public static let all: [Rule] = [
-        Rule(id: "xcode-derived", title: "Xcode build data",
-             explanation: "Temporary files Xcode creates while building apps; it recreates them when needed.") { ctx in
+        Rule(
+            id: "xcode-derived", title: "Xcode build data",
+            explanation: "Temporary files Xcode creates while building apps; it recreates them when needed."
+        ) { ctx in
             childrenOf(ctx, "Library/Developer/Xcode/DerivedData").compactMap {
                 ctx.make(rule: "xcode-derived", node: $0, safety: .safe)
             }
         },
-        Rule(id: "xcode-device-support", title: "Xcode device support files",
-             explanation: "Debug data Xcode copied from iPhones and Watches; it downloads again on next connection.") { ctx in
+        Rule(
+            id: "xcode-device-support", title: "Xcode device support files",
+            explanation: "Debug data Xcode copied from iPhones and Watches; it downloads again on next connection."
+        ) { ctx in
             guard let xcode = ctx.node("Library/Developer/Xcode") else { return [] }
             return ctx.children(of: xcode).filter { ctx.name(of: $0).hasSuffix("DeviceSupport") }
                 .flatMap { ctx.children(of: $0) }
                 .compactMap { ctx.make(rule: "xcode-device-support", node: $0, safety: .review) }
         },
-        Rule(id: "simulators-unavailable", title: "Unavailable simulators",
-             explanation: "Simulated iPhones and iPads whose system version is no longer installed.") { ctx in
+        Rule(
+            id: "simulators-unavailable", title: "Unavailable simulators",
+            explanation: "Simulated iPhones and iPads whose system version is no longer installed."
+        ) { ctx in
             await unavailableSimulators(ctx)
         },
-        Rule(id: "simulator-runtimes", title: "Unused simulator runtimes",
-             explanation: "System versions for simulated devices that no simulator uses any more; Xcode downloads them again when needed.") { ctx in
+        Rule(
+            id: "simulator-runtimes", title: "Unused simulator runtimes",
+            explanation:
+                "System versions for simulated devices that no simulator uses any more; Xcode downloads them again when needed."
+        ) { ctx in
             await unusedRuntimes(ctx)
         },
-        Rule(id: "xcode-archives", title: "Xcode archives",
-             explanation: "Saved app builds; they may be the only copy needed to debug or re-submit a released app.") { ctx in
+        Rule(
+            id: "xcode-archives", title: "Xcode archives",
+            explanation: "Saved app builds; they may be the only copy needed to debug or re-submit a released app."
+        ) { ctx in
             childrenOf(ctx, "Library/Developer/Xcode/Archives").compactMap {
                 ctx.make(rule: "xcode-archives", node: $0, safety: .careful)
             }
         },
-        Rule(id: "homebrew-cache", title: "Homebrew downloads",
-             explanation: "Installer files Homebrew downloaded earlier; they download again if needed.") { ctx in
+        Rule(
+            id: "homebrew-cache", title: "Homebrew downloads",
+            explanation: "Installer files Homebrew downloaded earlier; they download again if needed."
+        ) { ctx in
             await cacheLocations(ctx, [CacheTools.brew]).compactMap { loc in
                 ctx.node(absolute: loc.path).flatMap {
                     ctx.make(rule: "homebrew-cache", node: $0, safety: loc.custom ? .careful : .safe, note: loc.note)
                 }
             }
         },
-        Rule(id: "pkg-caches", title: "Developer package caches",
-             explanation: "Downloaded libraries kept by package managers (npm, pnpm, Yarn, Go, pip, uv, Cargo, Gradle, CocoaPods); they download again when a project needs them.") { ctx in
+        Rule(
+            id: "pkg-caches", title: "Developer package caches",
+            explanation:
+                "Downloaded libraries kept by package managers (npm, pnpm, Yarn, Go, pip, uv, Cargo, Gradle, CocoaPods); they download again when a project needs them."
+        ) { ctx in
             let fixed = [".cargo/registry/cache", ".gradle/caches", "Library/Caches/CocoaPods"].map {
                 CacheLocation(path: ctx.home + "/" + $0, removal: .trash)
             }
             return (await cacheLocations(ctx, CacheTools.packageManagers) + fixed).compactMap { loc in
                 ctx.node(absolute: loc.path).flatMap {
-                    ctx.make(rule: "pkg-caches", node: $0, safety: loc.custom ? .careful : .review, note: loc.note,
-                             removal: loc.removal)
+                    ctx.make(
+                        rule: "pkg-caches", node: $0, safety: loc.custom ? .careful : .review, note: loc.note,
+                        removal: loc.removal)
                 }
             }
         },
-        Rule(id: "project-artifacts", title: "Project build output and dependencies",
-             explanation: "Files inside your coding projects that the project's tools can rebuild or download again.") { ctx in
+        Rule(
+            id: "project-artifacts", title: "Project build output and dependencies",
+            explanation: "Files inside your coding projects that the project's tools can rebuild or download again."
+        ) { ctx in
             projectArtifacts(ctx)
         },
-        Rule(id: "app-caches", title: "App caches",
-             explanation: "Temporary files that apps keep to start faster; they recreate them when needed.") { ctx in
+        Rule(
+            id: "app-caches", title: "App caches",
+            explanation: "Temporary files that apps keep to start faster; they recreate them when needed."
+        ) { ctx in
             childrenOf(ctx, "Library/Caches").compactMap { id in
                 let name = ctx.name(of: id)
                 let running = ctx.runningBundleIds.contains(name)
                 let apple = name.hasPrefix("com.apple.")
-                return ctx.make(rule: "app-caches", node: id, safety: running || apple ? .review : .safe,
-                                note: running ? .appRunning : apple ? .macOSComponent : nil)
+                return ctx.make(
+                    rule: "app-caches", node: id, safety: running || apple ? .review : .safe,
+                    note: running ? .appRunning : apple ? .macOSComponent : nil)
             }
         },
-        Rule(id: "logs", title: "Logs",
-             explanation: "Diagnostic text files that apps and the system write; they are only useful for troubleshooting.") { ctx in
+        Rule(
+            id: "logs", title: "Logs",
+            explanation:
+                "Diagnostic text files that apps and the system write; they are only useful for troubleshooting."
+        ) { ctx in
             childrenOf(ctx, "Library/Logs").compactMap { ctx.make(rule: "logs", node: $0, safety: .safe) }
         },
-        Rule(id: "docker", title: "Docker build cache and dangling images",
-             explanation: "Leftovers from building container images; Docker rebuilds them when needed. Volumes and containers are never touched.") { ctx in
+        Rule(
+            id: "docker", title: "Docker build cache and dangling images",
+            explanation:
+                "Leftovers from building container images; Docker rebuilds them when needed. Volumes and containers are never touched."
+        ) { ctx in
             await dockerCandidates(ctx)
         },
-        Rule(id: "trash", title: "Trash",
-             explanation: "Items you already deleted that still take space until the Trash is emptied.") { ctx in
+        Rule(
+            id: "trash", title: "Trash",
+            explanation: "Items you already deleted that still take space until the Trash is emptied."
+        ) { ctx in
             guard let id = ctx.node(".Trash") else { return [] }
-            return ctx.make(rule: "trash", node: id, safety: .review, note: .emptyTrashInFinder,
-                            removal: .none).map { [$0] } ?? []
+            return ctx.make(
+                rule: "trash", node: id, safety: .review, note: .emptyTrashInFinder,
+                removal: .none
+            ).map { [$0] } ?? []
         },
     ]
 
@@ -89,9 +121,11 @@ public enum Rules {
         let tree = ctx.tree
         let nodes = tree.nodes
         // Manifest that must sit next to (or, for virtualenvs, inside) the directory.
-        let manifests: [String: String] = ["node_modules": "../package.json", "target": "../Cargo.toml",
-                                           ".build": "../Package.swift", "Pods": "../Podfile",
-                                           ".venv": "pyvenv.cfg", "venv": "pyvenv.cfg"]
+        let manifests: [String: String] = [
+            "node_modules": "../package.json", "target": "../Cargo.toml",
+            ".build": "../Package.swift", "Pods": "../Podfile",
+            ".venv": "pyvenv.cfg", "venv": "pyvenv.cfg",
+        ]
         var inside = [Bool](repeating: false, count: nodes.count)
         var out: [Candidate] = []
         let now = Date().timeIntervalSince1970
@@ -103,7 +137,8 @@ public enum Rules {
             let dir = tree.path(of: i)
             // Projects already in the Trash are reported once, by the info-only `trash` candidate (chapter 04 §6.8).
             if dir.hasPrefix(trashPrefix) { continue }
-            let mpath = manifest.hasPrefix("../")
+            let mpath =
+                manifest.hasPrefix("../")
                 ? (dir as NSString).deletingLastPathComponent + "/" + manifest.dropFirst(3)
                 : dir + "/" + manifest
             var st = stat()
@@ -111,8 +146,10 @@ public enum Rules {
             inside[i] = true
             let days = max(0, Int((now - Double(st.st_mtimespec.tv_sec)) / 86400))
             let kind = nodes[i].name
-            if let c = ctx.make(rule: "project-artifacts", node: i, safety: .review,
-                                note: .projectArtifact(kind: kind, daysSinceManifest: days)) {
+            if let c = ctx.make(
+                rule: "project-artifacts", node: i, safety: .review,
+                note: .projectArtifact(kind: kind, daysSinceManifest: days))
+            {
                 out.append(c)
             }
         }
@@ -171,13 +208,20 @@ public enum Rules {
             let defaults = CacheTools.defaults(tool, home: resolvedPath(ctx.home))
             var verdicts: [LocationVerdict] = []
             for (i, p) in paths.enumerated() {
-                verdicts.append(seen.insert(p).inserted ? verdict(p, tool: tool, defaultPath: defaults[i], ctx)
-                                                        : .duplicate)
+                verdicts.append(
+                    seen.insert(p).inserted
+                        ? verdict(p, tool: tool, defaultPath: defaults[i], ctx)
+                        : .duplicate)
             }
             // `go clean` removes the whole directory Go names: if either Go path is refused, report neither.
-            if tool.name == "go", verdicts.contains(where: {
-                switch $0 { case .accepted: false; case .duplicate, .shared, .notCache: true }
-            }) {
+            if tool.name == "go",
+                verdicts.contains(where: {
+                    switch $0 {
+                    case .accepted: false;
+                    case .duplicate, .shared, .notCache: true
+                    }
+                })
+            {
                 for case .notCache(let r) in verdicts { ctx.noteSkippedCommand(notCacheLine(tool, r)) }
                 continue
             }
@@ -186,8 +230,10 @@ public enum Rules {
                 case .duplicate, .shared: break
                 case .notCache(let r): ctx.noteSkippedCommand(notCacheLine(tool, r))
                 case .accepted(let custom):
-                    out.append(CacheLocation(path: paths[i], removal: removals[i], custom: custom,
-                                             note: custom ? .customCacheLocation(tool: tool.name) : nil))
+                    out.append(
+                        CacheLocation(
+                            path: paths[i], removal: removals[i], custom: custom,
+                            note: custom ? .customCacheLocation(tool: tool.name) : nil))
                 }
             }
         }
@@ -200,7 +246,8 @@ public enum Rules {
 
     /// Chapter 04 §6.7.2 and §6.7.3 for one reported path, on the `realpath` of path, home and default.
     private static func verdict(_ path: String, tool: CacheTool, defaultPath: String, _ ctx: RuleContext)
-        -> LocationVerdict {
+        -> LocationVerdict
+    {
         if isSharedLocation(path, ctx) { return .shared }
         let home = resolvedPath(ctx.home), real = resolvedPath(path)
         guard real.hasPrefix(home + "/") else { return .shared }
@@ -237,8 +284,10 @@ public enum Rules {
         var out: [Candidate] = []
         for udid in report.unavailableUDIDs {
             guard let id = ctx.node("Library/Developer/CoreSimulator/Devices/\(udid)"),
-                  let c = ctx.make(rule: "simulators-unavailable", node: id, safety: .safe,
-                                   removal: .command(argv: [report.xcrun, "simctl", "delete", udid])) else { continue }
+                let c = ctx.make(
+                    rule: "simulators-unavailable", node: id, safety: .safe,
+                    removal: .command(argv: [report.xcrun, "simctl", "delete", udid]))
+            else { continue }
             out.append(c)
         }
         return out
@@ -247,21 +296,24 @@ public enum Rules {
     static func unusedRuntimes(_ ctx: RuleContext) async -> [Candidate] {
         let report = await ctx.tools.simulators.value.value
         return report.unusedRuntimes.compactMap { r in
-            ctx.makeExternal(rule: "simulator-runtimes", key: r.slug, path: r.path.isEmpty ? r.identifier : r.path,
-                             bytes: r.sizeBytes, safety: .review, note: .simulatorRuntime(name: r.displayName),
-                             removal: .command(argv: [report.xcrun, "simctl", "runtime", "delete", r.identifier]))
+            ctx.makeExternal(
+                rule: "simulator-runtimes", key: r.slug, path: r.path.isEmpty ? r.identifier : r.path,
+                bytes: r.sizeBytes, safety: .review, note: .simulatorRuntime(name: r.displayName),
+                removal: .command(argv: [report.xcrun, "simctl", "runtime", "delete", r.identifier]))
         }
     }
 
     static func dockerCandidates(_ ctx: RuleContext) async -> [Candidate] {
         guard let d = await ctx.tools.docker.value.value else { return [] }
         return [
-            ctx.makeExternal(rule: "docker", key: "build-cache", path: "docker:build-cache", bytes: d.buildCacheBytes,
-                             safety: .review, note: .dockerEstimate,
-                             removal: .command(argv: [d.docker, "builder", "prune", "-f"])),
-            ctx.makeExternal(rule: "docker", key: "dangling-images", path: "docker:dangling-images",
-                             bytes: d.danglingImageBytes, safety: .review, note: .dockerEstimate,
-                             removal: .command(argv: [d.docker, "image", "prune", "-f"])),
+            ctx.makeExternal(
+                rule: "docker", key: "build-cache", path: "docker:build-cache", bytes: d.buildCacheBytes,
+                safety: .review, note: .dockerEstimate,
+                removal: .command(argv: [d.docker, "builder", "prune", "-f"])),
+            ctx.makeExternal(
+                rule: "docker", key: "dangling-images", path: "docker:dangling-images",
+                bytes: d.danglingImageBytes, safety: .review, note: .dockerEstimate,
+                removal: .command(argv: [d.docker, "image", "prune", "-f"])),
         ].compactMap { $0 }
     }
 }

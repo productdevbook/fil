@@ -32,7 +32,7 @@ struct RawNameTests {
             let q = at.lowerBound - 14 + 28
             #expect(data[q] == UInt8(ascii: "q") && data[q + 1] == 0)
             data[q] = 0x00
-            data[q + 1] = 0xD8   // U+D800, a lone high surrogate
+            data[q + 1] = 0xD8  // U+D800, a lone high surrogate
             try data.write(to: URL(fileURLWithPath: image.path))
             guard image.attach(at: box.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
 
@@ -102,8 +102,10 @@ struct RawNameTests {
             tree.syncLinks()
             #expect(rawChildren(tree).count == 1)
             var report = UpdateReport()
-            #expect(Incremental.applyTracked([EventHistory.Event(path: box.path("mnt"), mustScanSubDirs: false)],
-                                             to: tree, options: ScanOptions(), report: &report) == nil)
+            #expect(
+                Incremental.applyTracked(
+                    [EventHistory.Event(path: box.path("mnt"), mustScanSubDirs: false)],
+                    to: tree, options: ScanOptions(), report: &report) == nil)
             #expect(rawChildren(tree) == both)
             #expect(report.dirsRemoved == 0)
         }
@@ -124,8 +126,10 @@ struct RawNameTests {
             #expect(tree.nodes[id].name.utf8.elementsEqual(nfd.utf8))
             tree.nodes[id].name = nfc
             var report = UpdateReport()
-            #expect(Incremental.applyTracked([EventHistory.Event(path: f.path("x"), mustScanSubDirs: false)],
-                                             to: tree, options: ScanOptions(), report: &report) == nil)
+            #expect(
+                Incremental.applyTracked(
+                    [EventHistory.Event(path: f.path("x"), mustScanSubDirs: false)],
+                    to: tree, options: ScanOptions(), report: &report) == nil)
             let x = try #require(tree.node(at: f.path("x")))
             var names: [String] = []
             tree.forEachChild(of: Int32(x)) { names.append(tree.nodes[Int($0)].name) }
@@ -146,8 +150,10 @@ struct RawNameTests {
                 tree.nodes[id].name = badDisplay
                 tree.rawNames[Int32(id)] = Array("no such name".utf8)
                 var report = UpdateReport()
-                #expect(Incremental.applyTracked([EventHistory.Event(path: f.path(badDisplay), mustScanSubDirs: subtree)],
-                                                 to: tree, options: ScanOptions(), report: &report) == nil)
+                #expect(
+                    Incremental.applyTracked(
+                        [EventHistory.Event(path: f.path(badDisplay), mustScanSubDirs: subtree)],
+                        to: tree, options: ScanOptions(), report: &report) == nil)
                 let kept = try #require(tree.node(at: f.path(badDisplay)), "subtree \(subtree)")
                 #expect(tree.nodes[kept].unreadable, "subtree \(subtree)")
                 #expect(report.dirsRemoved == 0, "subtree \(subtree)")
@@ -182,7 +188,7 @@ struct RawNameTests {
                 let good = try Data(contentsOf: url)
                 var bad = good
                 let tag = try #require(bad.range(of: Data([0x06, 0x00, 0x00, 0x80])))
-                let idAt = tag.upperBound + 8 + 4   // after size u64 and count u32
+                let idAt = tag.upperBound + 8 + 4  // after size u64 and count u32
                 bad.replaceSubrange(idAt..<idAt + 4, with: [0, 0, 0, 0])
                 try bad.write(to: url)
                 guard case .failure(.corrupt) = Snapshot.load(rootPath: f.root, privateSize: false, in: dir) else {
@@ -195,10 +201,11 @@ struct RawNameTests {
                 try f.mk("real/d", bytes: 70_000)
                 try f.mk("real/inner/e", bytes: 90_000)
                 var report = UpdateReport()
-                let failure = Incremental.applyTracked([
-                    EventHistory.Event(path: f.path(badDisplay), mustScanSubDirs: false),
-                    EventHistory.Event(path: f.path(badDisplay + "/inner"), mustScanSubDirs: true),
-                ], to: loaded, options: ScanOptions(), report: &report)
+                let failure = Incremental.applyTracked(
+                    [
+                        EventHistory.Event(path: f.path(badDisplay), mustScanSubDirs: false),
+                        EventHistory.Event(path: f.path(badDisplay + "/inner"), mustScanSubDirs: true),
+                    ], to: loaded, options: ScanOptions(), report: &report)
                 #expect(failure == nil)
                 #expect(loaded.stats.openErrors == 0)
                 let full = Totals(try Scanner.scan(f.root))
@@ -254,7 +261,8 @@ struct IncompleteTests {
             #expect(!retried.nodes.contains { $0.incomplete })
             #expect(retried.stats.entryErrors == 0)
             #expect(retried.root.totalAlloc == f.duBytes())
-            let givenUp = try Scanner.scan(f.root, options: faulty { $0.bulk[f.path("x")] = [EINTR, EINTR, EINTR, EINTR] })
+            let givenUp = try Scanner.scan(
+                f.root, options: faulty { $0.bulk[f.path("x")] = [EINTR, EINTR, EINTR, EINTR] })
             let x = try #require(givenUp.node(at: f.path("x")))
             #expect(givenUp.nodes[x].incomplete && givenUp.stats.entryErrors == 1)
         }
@@ -287,8 +295,10 @@ struct IncompleteTests {
                 let tree = try Scanner.scan(f.root)
                 try f.mk("x/c3/file", bytes: 300_000)
                 var report = UpdateReport()
-                #expect(Incremental.applyTracked([EventHistory.Event(path: f.path("x"), mustScanSubDirs: false)],
-                                                 to: tree, options: options(f), report: &report) == nil)
+                #expect(
+                    Incremental.applyTracked(
+                        [EventHistory.Event(path: f.path("x"), mustScanSubDirs: false)],
+                        to: tree, options: options(f), report: &report) == nil)
                 let x = try #require(tree.node(at: f.path("x")))
                 #expect(tree.nodes[x].incomplete, "\(label)")
                 #expect(report.dirsRemoved == 0, "\(label)")
@@ -318,8 +328,10 @@ struct IncompleteTests {
                 let tree = try Scanner.scan(f.root)
                 try f.move("x/b", to: "x/d")
                 var report = UpdateReport()
-                #expect(Incremental.applyTracked([EventHistory.Event(path: f.path("x"), mustScanSubDirs: false)],
-                                                 to: tree, options: options(f), report: &report) == nil)
+                #expect(
+                    Incremental.applyTracked(
+                        [EventHistory.Event(path: f.path("x"), mustScanSubDirs: false)],
+                        to: tree, options: options(f), report: &report) == nil)
                 #expect(tree.node(at: f.path("x/b")) == nil, "\(label)")
                 #expect(tree.node(at: f.path("x/keep")) != nil, "\(label)")
                 #expect(tree.root.totalAlloc <= f.duBytes(), "\(label)")
@@ -350,9 +362,11 @@ struct IncompleteTests {
     func parentLostRetried() throws {
         try Fixture.with { f in
             try f.mk("x/p/c/file", bytes: 100_000)
-            let tree = try Scanner.scan(f.root, options: faulty {
-                $0.renameBeforeOpen[f.path("x/p/c")] = [f.path("x/p"), f.path("x/q")]
-            })
+            let tree = try Scanner.scan(
+                f.root,
+                options: faulty {
+                    $0.renameBeforeOpen[f.path("x/p/c")] = [f.path("x/p"), f.path("x/q")]
+                })
             #expect(tree.nodes[try #require(tree.node(at: f.path("x/p")))].incomplete)
             var report = UpdateReport()
             #expect(Incremental.applyTracked([], to: tree, options: ScanOptions(), report: &report) == nil)
@@ -377,14 +391,20 @@ struct IncompleteTests {
 
                 var report = UpdateReport()
                 // A re-read that fails again keeps it; a complete one clears it.
-                #expect(Incremental.applyTracked([EventHistory.Event(path: f.path("y"), mustScanSubDirs: false)],
-                                                 to: tree, options: faulty { $0.bulk[f.path("y")] = [EIO] },
-                                                 report: &report) == nil)
+                #expect(
+                    Incremental.applyTracked(
+                        [EventHistory.Event(path: f.path("y"), mustScanSubDirs: false)],
+                        to: tree, options: faulty { $0.bulk[f.path("y")] = [EIO] },
+                        report: &report) == nil)
                 let y = try #require(tree.node(at: f.path("y")))
                 #expect(tree.nodes[y].incomplete)
-                #expect(Incremental.applyTracked([EventHistory.Event(path: f.path("x"), mustScanSubDirs: false),
-                                                  EventHistory.Event(path: f.path("y"), mustScanSubDirs: true)],
-                                                 to: tree, options: ScanOptions(), report: &report) == nil)
+                #expect(
+                    Incremental.applyTracked(
+                        [
+                            EventHistory.Event(path: f.path("x"), mustScanSubDirs: false),
+                            EventHistory.Event(path: f.path("y"), mustScanSubDirs: true),
+                        ],
+                        to: tree, options: ScanOptions(), report: &report) == nil)
                 #expect(!tree.nodes.contains { !$0.isDead && $0.incomplete })
                 #expect(Totals(tree) == Totals(try Scanner.scan(f.root)))
             }
@@ -416,10 +436,12 @@ struct GoneDuringScanTests {
         try Fixture.with { f in
             try f.mk("x/p/c/file", bytes: 100_000)
             try f.mk("x/p/d/file", bytes: 100_000)
-            let tree = try Scanner.scan(f.root, options: faulty {
-                $0.renameBeforeOpen[f.path("x/p/c")] = [f.path("x/p"), f.path("x/q")]
-                $0.renameBeforeOpen[f.path("x/p/d")] = [f.path("x/p"), f.path("x/q")]
-            })
+            let tree = try Scanner.scan(
+                f.root,
+                options: faulty {
+                    $0.renameBeforeOpen[f.path("x/p/c")] = [f.path("x/p"), f.path("x/q")]
+                    $0.renameBeforeOpen[f.path("x/p/d")] = [f.path("x/p"), f.path("x/q")]
+                })
             #expect(f.exists("x/q/c") && !f.exists("x/p"))
             let p = try #require(tree.node(at: f.path("x/p")))
             #expect(tree.nodes[p].incomplete)
@@ -438,9 +460,11 @@ struct GoneDuringScanTests {
                 try f.mk("x/new/kept", bytes: 3000)
                 let tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 var report = UpdateReport()
-                #expect(Incremental.applyTracked([EventHistory.Event(path: f.path("x"), mustScanSubDirs: false)],
-                                                 to: tree, options: faulty { $0.removeBeforeOpen.insert(f.path("x/new/gone")) },
-                                                 report: &report) == nil)
+                #expect(
+                    Incremental.applyTracked(
+                        [EventHistory.Event(path: f.path("x"), mustScanSubDirs: false)],
+                        to: tree, options: faulty { $0.removeBeforeOpen.insert(f.path("x/new/gone")) },
+                        report: &report) == nil)
                 #expect(tree.node(at: f.path("x/new/gone")) == nil)
                 #expect(!tree.nodes.contains { !$0.isDead && $0.unreadable })
                 #expect(Totals(tree) == Totals(try Scanner.scan(f.root)))

@@ -9,8 +9,9 @@ struct RuleBranchTests {
     /// Runs one rule against a fixture home with a chosen set of running bundle ids (no real app list).
     func candidates(_ ruleId: String, in f: Fixture, running: Set<String> = []) async throws -> [Candidate] {
         let tree = try Scanner.scan(f.root, options: ScanOptions(strictHardlinks: false))
-        let ctx = RuleContext(home: f.root, tree: tree, runningBundleIds: running, isRealHome: false,
-                              tools: Cleanup.startToolQueries(home: f.root))
+        let ctx = RuleContext(
+            home: f.root, tree: tree, runningBundleIds: running, isRealHome: false,
+            tools: Cleanup.startToolQueries(home: f.root))
         let rule = try #require(Rules.all.first { $0.id == ruleId })
         return await rule.candidates(ctx)
     }
@@ -68,10 +69,11 @@ struct RuleBranchTests {
             try f.mk("novenv/venv/lib/f", bytes: 3_000_000)
 
             let list = try await candidates("project-artifacts", in: f)
-            #expect(list.map(\.id).sorted() == [
-                "project-artifacts:ios/Pods", "project-artifacts:pkg/.build",
-                "project-artifacts:py/.venv", "project-artifacts:py/venv",
-            ])
+            #expect(
+                list.map(\.id).sorted() == [
+                    "project-artifacts:ios/Pods", "project-artifacts:pkg/.build",
+                    "project-artifacts:py/.venv", "project-artifacts:py/venv",
+                ])
             #expect(list.allSatisfy { $0.safety == .review })
             let pods = try #require(list.first { $0.id.hasSuffix("ios/Pods") })
             #expect(pods.note?.description == "Pods, manifest untouched 0 days")

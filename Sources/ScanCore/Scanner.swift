@@ -23,8 +23,10 @@ public final class ScanProgress: Sendable {
 
 public enum Scanner {
     /// Full parallel scan of `path`. `progress`, when given, is updated live while the scan runs.
-    public static func scan(_ path: String, options: ScanOptions = ScanOptions(),
-                            progress: ScanProgress? = nil) throws -> DiskTree {
+    public static func scan(
+        _ path: String, options: ScanOptions = ScanOptions(),
+        progress: ScanProgress? = nil
+    ) throws -> DiskTree {
         preventCloudDownloads()
         var st = stat()
         guard lstat(path, &st) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
@@ -32,10 +34,11 @@ public enum Scanner {
         let scanStart = nowNanoseconds()
         // Taken before walking: anything that changes during the scan is replayed next time.
         let eventId = FSEventsGetCurrentEventId()
-        let tree = DiskTree(rootPath: path, rootDev: st.st_dev, privateSize: options.privateSize,
-                            crossDevices: options.crossDevices, nodes: [DirNode(parent: -1, name: path)], eventId: eventId,
-                            volumeUUID: volumeUUID(st.st_dev), scanStart: scanStart, hardlinks: HardlinkRegistry(),
-                            clones: CloneRegistry(), aliases: options.firmlinks.aliases(for: path))
+        let tree = DiskTree(
+            rootPath: path, rootDev: st.st_dev, privateSize: options.privateSize,
+            crossDevices: options.crossDevices, nodes: [DirNode(parent: -1, name: path)], eventId: eventId,
+            volumeUUID: volumeUUID(st.st_dev), scanStart: scanStart, hardlinks: HardlinkRegistry(),
+            clones: CloneRegistry(), aliases: options.firmlinks.aliases(for: path))
         _ = rescanSubtrees([0], in: tree, options: options, progress: progress)
         // Folders that vanished during the walk are dead nodes; nothing else may see them.
         tree.compact()
@@ -64,13 +67,16 @@ public enum Scanner {
     /// its parent's listing and its own `open` (`isGone`) is appended dead: it is not unreadable, just no longer there.
     /// `checkRootDevice` (updates): each of `ids` is opened by path and may have become another volume's mount point
     /// since the snapshot; it is then gone with `EXDEV`. A full scan leaves it off: there the root defines the device.
-    static func rescanSubtrees(_ ids: [Int32], in tree: DiskTree, options: ScanOptions, checkRootDevice: Bool = false,
-                               progress: ScanProgress? = nil) -> [Int32: Int32] {
+    static func rescanSubtrees(
+        _ ids: [Int32], in tree: DiskTree, options: ScanOptions, checkRootDevice: Bool = false,
+        progress: ScanProgress? = nil
+    ) -> [Int32: Int32] {
         guard !ids.isEmpty else { return [:] }
-        let job = ParallelScan(roots: ids.map { ($0, tree.path(of: Int($0)), tree.cPath(of: Int($0))) },
-                               rootDev: tree.rootDev, options: options, exclusions: tree.exclusions, hardlinks: tree.hardlinks,
-                               clones: tree.clones, idBase: Int32(tree.nodes.count), checkRootDevice: checkRootDevice,
-                               progress: progress)
+        let job = ParallelScan(
+            roots: ids.map { ($0, tree.path(of: Int($0)), tree.cPath(of: Int($0))) },
+            rootDev: tree.rootDev, options: options, exclusions: tree.exclusions, hardlinks: tree.hardlinks,
+            clones: tree.clones, idBase: Int32(tree.nodes.count), checkRootDevice: checkRootDevice,
+            progress: progress)
         job.run()
         let rootCount = Int32(ids.count)
         for (i, id) in ids.enumerated() {
@@ -83,12 +89,13 @@ public enum Scanner {
         }
         let base = Int32(tree.nodes.count)
         // One bulk append: grows geometrically, unlike an exact reserveCapacity on every update.
-        tree.nodes.append(contentsOf: job.nodes.dropFirst(ids.count).lazy.map { n in
-            var n = n
-            if n.isDead { return n }
-            n.parent = n.parent < rootCount ? ids[Int(n.parent)] : base + n.parent - rootCount
-            return n
-        })
+        tree.nodes.append(
+            contentsOf: job.nodes.dropFirst(ids.count).lazy.map { n in
+                var n = n
+                if n.isDead { return n }
+                n.parent = n.parent < rootCount ? ids[Int(n.parent)] : base + n.parent - rootCount
+                return n
+            })
         for (local, bytes) in job.rawNames { tree.rawNames[base + local - rootCount] = bytes }
         tree.stats.merge(job.stats)
         tree.mountPoints += job.mountPoints
@@ -97,8 +104,9 @@ public enum Scanner {
 
     static func preventCloudDownloads() {
         // Touching iCloud/Dropbox placeholders must not trigger a File Provider download.
-        setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_PROCESS,
-                       IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
+        setiopolicy_np(
+            IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_PROCESS,
+            IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
     }
 
     static func nowNanoseconds() -> Int64 {
@@ -165,9 +173,12 @@ private final class ParallelScan: @unchecked Sendable {
     var rawNames: [Int32: [UInt8]] = [:]
 
     /// Local ids 0..<roots.count are the roots; everything found below them is appended after.
-    init(roots: [(id: Int32, path: String, cPath: [CChar]?)], rootDev: dev_t, options: ScanOptions,
-         exclusions: [String: Set<String>], hardlinks: HardlinkRegistry, clones: CloneRegistry, idBase: Int32, checkRootDevice: Bool,
-         progress: ScanProgress?) {
+    init(
+        roots: [(id: Int32, path: String, cPath: [CChar]?)], rootDev: dev_t, options: ScanOptions,
+        exclusions: [String: Set<String>], hardlinks: HardlinkRegistry, clones: CloneRegistry, idBase: Int32,
+        checkRootDevice: Bool,
+        progress: ScanProgress?
+    ) {
         self.options = options
         self.checkRootDevice = checkRootDevice
         self.progress = progress
@@ -220,7 +231,9 @@ private final class ParallelScan: @unchecked Sendable {
             cond.unlock()
 
             let gid = globalId(item.id)
-            var out = reader.read(item.path, cPath: item.cPath, checkOwnDevice: checkRootDevice && item.id < rootIds.count) {
+            var out = reader.read(
+                item.path, cPath: item.cPath, checkOwnDevice: checkRootDevice && item.id < rootIds.count
+            ) {
                 inode, alloc, logical, cloneAware, name in
                 self.hardlinks.vet(inode, alloc: alloc, dirPath: item.path, name: name)
                 return self.hardlinks.claim(inode, by: gid, alloc: alloc, logical: logical, cloneAware: cloneAware)
@@ -269,8 +282,10 @@ private final class ParallelScan: @unchecked Sendable {
                     nodes.append(DirNode(parent: item.id, name: name))
                     if let r = raw[k] { rawNames[id] = r }
                     let bytes = parentBytes + [UInt8(ascii: "/")] + (raw[k] ?? Array(name.utf8)) + [0]
-                    queue.append(WorkItem(id: id, path: base + "/" + name, cPath: bytes.map { CChar(bitPattern: $0) },
-                                          rawName: raw[k] != nil))
+                    queue.append(
+                        WorkItem(
+                            id: id, path: base + "/" + name, cPath: bytes.map { CChar(bitPattern: $0) },
+                            rawName: raw[k] != nil))
                 }
             }
             active -= 1
@@ -333,20 +348,22 @@ struct DirReader {
         /// update opens on their own: a listing checks its children, but nothing has checked these since the snapshot,
         /// and one may now be a mount point. One syscall per directory, none per file.
         var checkOwnDevice = false
-#if DEBUG
-        let faults: DirFaults
-#endif
+        #if DEBUG
+            let faults: DirFaults
+        #endif
 
-        init(rootDev: dev_t, options: ScanOptions, userAccess: Bool = false, exclusions: [String: Set<String>] = [:],
-             checkOwnDevice: Bool = false) {
+        init(
+            rootDev: dev_t, options: ScanOptions, userAccess: Bool = false, exclusions: [String: Set<String>] = [:],
+            checkOwnDevice: Bool = false
+        ) {
             self.rootDev = rootDev
             self.options = options
             self.userAccess = userAccess
             self.exclusions = exclusions
             self.checkOwnDevice = checkOwnDevice
-#if DEBUG
-            faults = options.faults
-#endif
+            #if DEBUG
+                faults = options.faults
+            #endif
         }
     }
 
@@ -364,13 +381,15 @@ struct DirReader {
     /// `claim(inode, alloc, logical, cloneAware, name)` decides whether a multiply-linked inode is counted here;
     /// returning nil defers it. `checkOwnDevice` overrides `Config.checkOwnDevice` for this directory.
     /// `cPath`, when set, is what is opened (NUL-terminated bytes; `path` is then only a display form).
-    func read(_ path: String, cPath: [CChar]? = nil, checkOwnDevice: Bool? = nil,
-              claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?) -> DirOutcome {
+    func read(
+        _ path: String, cPath: [CChar]? = nil, checkOwnDevice: Bool? = nil,
+        claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?
+    ) -> DirOutcome {
         var out = DirOutcome()
-#if DEBUG
-        if config.faults.removeBeforeOpen.contains(path) { try? FileManager.default.removeItem(atPath: path) }
-        if let move = config.faults.renameBeforeOpen[path], move.count == 2 { rename(move[0], move[1]) }
-#endif
+        #if DEBUG
+            if config.faults.removeBeforeOpen.contains(path) { try? FileManager.default.removeItem(atPath: path) }
+            if let move = config.faults.renameBeforeOpen[path], move.count == 2 { rename(move[0], move[1]) }
+        #endif
         let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
         let fd = cPath.map { open($0, flags) } ?? open(path, flags)
         guard fd >= 0 else {
@@ -392,10 +411,12 @@ struct DirReader {
 
         var al = attrlist()
         al.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
-        al.commonattr = attrgroup_t(ATTR_CMN_RETURNED_ATTRS) | attrgroup_t(ATTR_CMN_ERROR)
+        al.commonattr =
+            attrgroup_t(ATTR_CMN_RETURNED_ATTRS) | attrgroup_t(ATTR_CMN_ERROR)
             | attrgroup_t(ATTR_CMN_NAME) | attrgroup_t(ATTR_CMN_DEVID) | attrgroup_t(ATTR_CMN_OBJTYPE)
             | attrgroup_t(ATTR_CMN_FLAGS) | attrgroup_t(ATTR_CMN_FILEID)
-        al.fileattr = attrgroup_t(ATTR_FILE_LINKCOUNT) | attrgroup_t(ATTR_FILE_ALLOCSIZE)
+        al.fileattr =
+            attrgroup_t(ATTR_FILE_LINKCOUNT) | attrgroup_t(ATTR_FILE_ALLOCSIZE)
             | attrgroup_t(ATTR_FILE_DATALENGTH)
         if config.userAccess { al.commonattr |= attrgroup_t(ATTR_CMN_USERACCESS) }
         // Directories only: a mount point is listed with the attributes of the directory underneath it.
@@ -406,25 +427,25 @@ struct DirReader {
         let opts = UInt64(FSOPT_NOFOLLOW) | UInt64(FSOPT_ATTR_CMN_EXTENDED)
         let skip = config.exclusions.isEmpty ? nil : config.exclusions[path]
 
-#if DEBUG
-        var faultCall = 0
-        let bulkFaults = config.faults.bulk[path] ?? []
-        var entryFault = config.faults.entryError.contains(path)
-#endif
+        #if DEBUG
+            var faultCall = 0
+            let bulkFaults = config.faults.bulk[path] ?? []
+            var entryFault = config.faults.entryError.contains(path)
+        #endif
         var interrupted = 0
         while true {
             let count: Int32
-#if DEBUG
-            if faultCall < bulkFaults.count && bulkFaults[faultCall] != 0 {
-                count = -1
-                errno = bulkFaults[faultCall]
-            } else {
+            #if DEBUG
+                if faultCall < bulkFaults.count && bulkFaults[faultCall] != 0 {
+                    count = -1
+                    errno = bulkFaults[faultCall]
+                } else {
+                    count = getattrlistbulk(fd, &al, buf, DirReader.bufSize, opts)
+                }
+                faultCall += 1
+            #else
                 count = getattrlistbulk(fd, &al, buf, DirReader.bufSize, opts)
-            }
-            faultCall += 1
-#else
-            count = getattrlistbulk(fd, &al, buf, DirReader.bufSize, opts)
-#endif
+            #endif
             if count == 0 { break }
             if count < 0 {
                 // Entries already parsed stay; an interrupted call is made again, up to 3 times in a row.
@@ -437,12 +458,12 @@ struct DirReader {
                 break
             }
             interrupted = 0
-#if DEBUG
-            if entryFault {
-                entryFault = false
-                Self.injectEntryError(buf)
-            }
-#endif
+            #if DEBUG
+                if entryFault {
+                    entryFault = false
+                    Self.injectEntryError(buf)
+                }
+            #endif
             var entry = UnsafeRawPointer(buf)
             for _ in 0..<count {
                 let length = Int(entry.loadUnaligned(as: UInt32.self))
@@ -456,7 +477,8 @@ struct DirReader {
     /// `st_dev` of the volume mounted on `dirPath/name`, from `lstat` (as `du -x` sees it). Built from bytes, so a name
     /// that is not valid UTF-8 is found too.
     private static func mountedDevice(_ dirPath: String, _ dirCPath: [CChar]?, _ name: UnsafeRawPointer) -> dev_t? {
-        var path = dirCPath.map { Array($0.dropLast()) }
+        var path =
+            dirCPath.map { Array($0.dropLast()) }
             ?? (dirPath == "/" ? [] : dirPath.utf8.map { CChar(bitPattern: $0) })
         path.append(CChar(UInt8(ascii: "/")))
         let cName = name.assumingMemoryBound(to: CChar.self)
@@ -468,9 +490,11 @@ struct DirReader {
 
     // Fields are packed in sys/attr.h bit order (common, directory, file, fork); ERROR comes right after RETURNED_ATTRS.
     @inline(__always)
-    private func parseEntry(_ start: UnsafeRawPointer, into out: inout DirOutcome, dirPath: String, dirCPath: [CChar]?,
-                            skip: Set<String>?,
-                            claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?) {
+    private func parseEntry(
+        _ start: UnsafeRawPointer, into out: inout DirOutcome, dirPath: String, dirCPath: [CChar]?,
+        skip: Set<String>?,
+        claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?
+    ) {
         var f = start
         let returned = f.loadUnaligned(as: attribute_set_t.self)
         f += MemoryLayout<attribute_set_t>.size
@@ -506,13 +530,14 @@ struct DirReader {
             flags = f.loadUnaligned(as: UInt32.self)
             f += 4
         }
-#if DEBUG
-        // chflags(2) cannot set SF_DATALESS (the kernel ignores it), so tests name the entries to report as placeholders.
-        if !config.faults.dataless.isEmpty, let namePtr,
-           config.faults.dataless.contains(String(cString: namePtr.assumingMemoryBound(to: CChar.self))) {
-            flags |= UInt32(SF_DATALESS)
-        }
-#endif
+        #if DEBUG
+            // chflags(2) cannot set SF_DATALESS (the kernel ignores it), so tests name the entries to report as placeholders.
+            if !config.faults.dataless.isEmpty, let namePtr,
+                config.faults.dataless.contains(String(cString: namePtr.assumingMemoryBound(to: CChar.self)))
+            {
+                flags |= UInt32(SF_DATALESS)
+            }
+        #endif
         var access = UInt32(R_OK | X_OK)
         if common & attrgroup_t(ATTR_CMN_USERACCESS) != 0 {
             access = f.loadUnaligned(as: UInt32.self)
@@ -550,11 +575,16 @@ struct DirReader {
                 let valid = String(validatingCString: cName)
                 let name = valid ?? String(cString: cName)
                 if let skip, skip.contains(name) { out.stats.firmlinksSkipped += 1; return }
-                if access & UInt32(R_OK | X_OK) != UInt32(R_OK | X_OK) { out.deniedChildDirs.append(out.childDirs.count) }
+                if access & UInt32(R_OK | X_OK) != UInt32(R_OK | X_OK) {
+                    out.deniedChildDirs.append(out.childDirs.count)
+                }
                 if valid == nil {
                     // Not UTF-8: `name` (with U+FFFD) is for display; the walk opens the raw bytes.
-                    out.rawChildDirs.append((out.childDirs.count,
-                                             Array(UnsafeRawBufferPointer(start: namePtr, count: strlen(cName)))))
+                    out.rawChildDirs.append(
+                        (
+                            out.childDirs.count,
+                            Array(UnsafeRawBufferPointer(start: namePtr, count: strlen(cName)))
+                        ))
                 }
                 out.childDirs.append(name)
             }
@@ -625,65 +655,65 @@ struct DirReader {
 }
 
 #if DEBUG
-/// Test-only faults for `DirReader.read`, keyed by the directory's path as the reader gets it. Compiled out of release
-/// builds, so the release hot path has no trace of them.
-struct DirFaults: Sendable {
-    /// errno for successive `getattrlistbulk` calls of a directory instead of calling it; 0 makes the real call.
-    var bulk: [String: [Int32]] = [:]
-    /// Directories whose first listed entry is reported with `ATTR_CMN_ERROR` = `EIO`.
-    var entryError: Set<String> = []
-    /// Directories removed, with their contents, right before they are opened (gone between listing and opening).
-    var removeBeforeOpen: Set<String> = []
-    /// Right before the key path is opened, the first path of the value is renamed to the second.
-    var renameBeforeOpen: [String: [String]] = [:]
-    /// Names of entries (in any directory) reported with `SF_DATALESS` set, as a cloud placeholder is.
-    var dataless: Set<String> = []
-    /// Faults for `EventHistory.fetch`; see `HistoryFaults`.
-    var history = HistoryFaults()
+    /// Test-only faults for `DirReader.read`, keyed by the directory's path as the reader gets it. Compiled out of release
+    /// builds, so the release hot path has no trace of them.
+    struct DirFaults: Sendable {
+        /// errno for successive `getattrlistbulk` calls of a directory instead of calling it; 0 makes the real call.
+        var bulk: [String: [Int32]] = [:]
+        /// Directories whose first listed entry is reported with `ATTR_CMN_ERROR` = `EIO`.
+        var entryError: Set<String> = []
+        /// Directories removed, with their contents, right before they are opened (gone between listing and opening).
+        var removeBeforeOpen: Set<String> = []
+        /// Right before the key path is opened, the first path of the value is renamed to the second.
+        var renameBeforeOpen: [String: [String]] = [:]
+        /// Names of entries (in any directory) reported with `SF_DATALESS` set, as a cloud placeholder is.
+        var dataless: Set<String> = []
+        /// Faults for `EventHistory.fetch`; see `HistoryFaults`.
+        var history = HistoryFaults()
 
-    /// From `FIL_TEST_FAULTS` (debug builds only, for tests of the `fil` binary): one fault per line,
-    /// `bulk <errno>[,<errno>...] <path>`, `entry <path>` or `remove <path>`.
-    static let environment: DirFaults = {
-        var f = DirFaults()
-        guard let spec = ProcessInfo.processInfo.environment["FIL_TEST_FAULTS"] else { return f }
-        for line in spec.split(separator: "\n") {
-            let parts = line.split(separator: " ", maxSplits: 1)
-            guard parts.count == 2 else { continue }
-            switch parts[0] {
-            case "bulk":
-                let rest = parts[1].split(separator: " ", maxSplits: 1)
-                guard rest.count == 2 else { continue }
-                f.bulk[String(rest[1])] = rest[0].split(separator: ",").compactMap { Int32($0) }
-            case "entry": f.entryError.insert(String(parts[1]))
-            case "remove": f.removeBeforeOpen.insert(String(parts[1]))
-            default: continue
+        /// From `FIL_TEST_FAULTS` (debug builds only, for tests of the `fil` binary): one fault per line,
+        /// `bulk <errno>[,<errno>...] <path>`, `entry <path>` or `remove <path>`.
+        static let environment: DirFaults = {
+            var f = DirFaults()
+            guard let spec = ProcessInfo.processInfo.environment["FIL_TEST_FAULTS"] else { return f }
+            for line in spec.split(separator: "\n") {
+                let parts = line.split(separator: " ", maxSplits: 1)
+                guard parts.count == 2 else { continue }
+                switch parts[0] {
+                case "bulk":
+                    let rest = parts[1].split(separator: " ", maxSplits: 1)
+                    guard rest.count == 2 else { continue }
+                    f.bulk[String(rest[1])] = rest[0].split(separator: ",").compactMap { Int32($0) }
+                case "entry": f.entryError.insert(String(parts[1]))
+                case "remove": f.removeBeforeOpen.insert(String(parts[1]))
+                default: continue
+                }
             }
-        }
-        return f
-    }()
-}
-
-/// Test-only faults for the FSEvents replay of an incremental update. Compiled out of release builds.
-struct HistoryFaults: Sendable {
-    /// Seconds to wait for HistoryDone and for the barrier event instead of the real limits (30 and 2).
-    var historyLimit: Int?
-    var barrierLimit: Int?
-    /// HistoryDone is never seen, so the replay times out.
-    var dropHistoryDone = false
-    /// The barrier event is never recognised, so the wait for it times out.
-    var dropBarrier = false
-    /// OR-ed into the flags of every event of the replay (a `kFSEventStreamEventFlag...` lost-history flag).
-    var extraFlags: FSEventStreamEventFlags = 0
-}
-
-extension DirReader {
-    /// Turns the first record in `buf` into an error record (`ATTR_CMN_ERROR` = `EIO`, nothing else returned), as the
-    /// kernel reports an entry it cannot return. The record keeps its length; the rest of it is never read.
-    static func injectEntryError(_ buf: UnsafeMutableRawPointer) {
-        var returned = attribute_set_t()
-        returned.commonattr = attrgroup_t(ATTR_CMN_RETURNED_ATTRS) | attrgroup_t(ATTR_CMN_ERROR)
-        (buf + 4).storeBytes(of: returned, as: attribute_set_t.self)
-        (buf + 4 + MemoryLayout<attribute_set_t>.size).storeBytes(of: UInt32(EIO), as: UInt32.self)
+            return f
+        }()
     }
-}
+
+    /// Test-only faults for the FSEvents replay of an incremental update. Compiled out of release builds.
+    struct HistoryFaults: Sendable {
+        /// Seconds to wait for HistoryDone and for the barrier event instead of the real limits (30 and 2).
+        var historyLimit: Int?
+        var barrierLimit: Int?
+        /// HistoryDone is never seen, so the replay times out.
+        var dropHistoryDone = false
+        /// The barrier event is never recognised, so the wait for it times out.
+        var dropBarrier = false
+        /// OR-ed into the flags of every event of the replay (a `kFSEventStreamEventFlag...` lost-history flag).
+        var extraFlags: FSEventStreamEventFlags = 0
+    }
+
+    extension DirReader {
+        /// Turns the first record in `buf` into an error record (`ATTR_CMN_ERROR` = `EIO`, nothing else returned), as the
+        /// kernel reports an entry it cannot return. The record keeps its length; the rest of it is never read.
+        static func injectEntryError(_ buf: UnsafeMutableRawPointer) {
+            var returned = attribute_set_t()
+            returned.commonattr = attrgroup_t(ATTR_CMN_RETURNED_ATTRS) | attrgroup_t(ATTR_CMN_ERROR)
+            (buf + 4).storeBytes(of: returned, as: attribute_set_t.self)
+            (buf + 4 + MemoryLayout<attribute_set_t>.size).storeBytes(of: UInt32(EIO), as: UInt32.self)
+        }
+    }
 #endif

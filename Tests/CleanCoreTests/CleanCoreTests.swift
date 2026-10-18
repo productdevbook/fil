@@ -20,7 +20,8 @@ final class FakeTrasher: Trasher, @unchecked Sendable {
 
     func trash(_ url: URL) throws -> URL? {
         if let failWith { throw failWith }
-        let target = URL(fileURLWithPath: trashDir).appendingPathComponent(UUID().uuidString + "-" + url.lastPathComponent)
+        let target = URL(fileURLWithPath: trashDir).appendingPathComponent(
+            UUID().uuidString + "-" + url.lastPathComponent)
         try FileManager.default.createDirectory(atPath: trashDir, withIntermediateDirectories: true)
         try FileManager.default.moveItem(at: url, to: target)
         lock.withLock { moved.append(target) }
@@ -247,7 +248,9 @@ struct ExecuteTests {
         let results = await Cleanup.execute(r.chosen, home: scan.home, trasher: fake)
         #expect(results.count == 2)
         for (_, outcome) in results {
-            guard case .failed(.system(let why)) = outcome else { Issue.record("expected a failure: \(outcome)"); continue }
+            guard case .failed(.system(let why)) = outcome else {
+                Issue.record("expected a failure: \(outcome)"); continue
+            }
             #expect(why.contains("Trash is full"))
         }
         #expect(f.exists("Library/Logs/foo/f"))
@@ -305,12 +308,15 @@ struct ExecuteTests {
         try f.move("Library/Developer/Xcode/DerivedData/a", to: "Library/Developer/Xcode/DerivedData/a.old")
         try f.mk("Library/Developer/Xcode/DerivedData/a/f", bytes: 10)
         // 3. the recorded device is not the home volume's
-        let otherDev = Candidate(id: cache.id, ruleId: cache.ruleId, path: cache.path, bytes: cache.bytes,
-                                 safety: cache.safety, fileID: FileID(dev: cache.fileID!.dev &+ 1, ino: cache.fileID!.ino))
+        let otherDev = Candidate(
+            id: cache.id, ruleId: cache.ruleId, path: cache.path, bytes: cache.bytes,
+            safety: cache.safety, fileID: FileID(dev: cache.fileID!.dev &+ 1, ino: cache.fileID!.ino))
         // 4. no identity recorded; and a path that climbs out with ".."
-        let noID = Candidate(id: apple.id, ruleId: apple.ruleId, path: apple.path, bytes: apple.bytes, safety: apple.safety)
-        let dots = Candidate(id: "d", ruleId: "r", path: f.root + "/Library/Caches/../Logs.orig/foo", bytes: 1,
-                             safety: .safe, fileID: logs.fileID)
+        let noID = Candidate(
+            id: apple.id, ruleId: apple.ruleId, path: apple.path, bytes: apple.bytes, safety: apple.safety)
+        let dots = Candidate(
+            id: "d", ruleId: "r", path: f.root + "/Library/Caches/../Logs.orig/foo", bytes: 1,
+            safety: .safe, fileID: logs.fileID)
         let fake = FakeTrasher(trashDir: trash.path("t"))
         let results = await Cleanup.execute([logs, derived, otherDev, noID, dots], home: scan.home, trasher: fake)
         for (c, outcome) in results {
@@ -333,8 +339,9 @@ struct ExecuteTests {
         let results = await Cleanup.execute([logs], home: scan.home, trasher: t)
         guard case .failed(.movedOtherItem(let url))? = results.first?.1 else { Issue.record("\(results)"); return }
         #expect(url.path == trash.path("t/wrong"))
-        #expect(Cleanup.Failure.movedOtherItem(url).description
-            == "a different item was moved to the Trash at \(url.path); put it back")
+        #expect(
+            Cleanup.Failure.movedOtherItem(url).description
+                == "a different item was moved to the Trash at \(url.path); put it back")
     }
 
     @Test("a move whose destination the system does not report is not called a mix-up")
@@ -349,25 +356,32 @@ struct ExecuteTests {
         let logs = try #require(scan.candidates.first { $0.id == "logs:Library/Logs/foo" })
         let results = await Cleanup.execute([logs], home: scan.home, trasher: SilentTrasher())
         guard case .failed(.movedUnverified)? = results.first?.1 else { Issue.record("\(results)"); return }
-        #expect(Cleanup.Failure.movedUnverified.description
-            == "moved to the Trash, but the system did not say where; check the Trash")
+        #expect(
+            Cleanup.Failure.movedUnverified.description
+                == "moved to the Trash, but the system did not say where; check the Trash")
     }
 
     @Test("info-only items do nothing; a command runs once for candidates that share it")
     func commandsAndInfoOnly() async throws {
         try await Fixture.withAsync { f in
-            let info = Candidate(id: "trash:.Trash", ruleId: "trash", path: f.path(".Trash"), bytes: 1, safety: .review,
-                                 removal: .none)
-            let a = Candidate(id: "a", ruleId: "r", path: f.path("a"), bytes: 1, safety: .safe,
-                              removal: .command(argv: ["/usr/bin/true"]))
-            let b = Candidate(id: "b", ruleId: "r", path: f.path("b"), bytes: 1, safety: .safe,
-                              removal: .command(argv: ["/usr/bin/true"]))
-            let bad = Candidate(id: "c", ruleId: "r", path: f.path("c"), bytes: 1, safety: .safe,
-                                removal: .command(argv: ["/usr/bin/false"]))
-            let bad2 = Candidate(id: "d", ruleId: "r", path: f.path("d"), bytes: 1, safety: .safe,
-                                 removal: .command(argv: ["/usr/bin/false"]))
-            let results = await Cleanup.execute([info, a, b, bad, bad2], home: f.root,
-                                                trasher: FakeTrasher(trashDir: f.path("t")))
+            let info = Candidate(
+                id: "trash:.Trash", ruleId: "trash", path: f.path(".Trash"), bytes: 1, safety: .review,
+                removal: .none)
+            let a = Candidate(
+                id: "a", ruleId: "r", path: f.path("a"), bytes: 1, safety: .safe,
+                removal: .command(argv: ["/usr/bin/true"]))
+            let b = Candidate(
+                id: "b", ruleId: "r", path: f.path("b"), bytes: 1, safety: .safe,
+                removal: .command(argv: ["/usr/bin/true"]))
+            let bad = Candidate(
+                id: "c", ruleId: "r", path: f.path("c"), bytes: 1, safety: .safe,
+                removal: .command(argv: ["/usr/bin/false"]))
+            let bad2 = Candidate(
+                id: "d", ruleId: "r", path: f.path("d"), bytes: 1, safety: .safe,
+                removal: .command(argv: ["/usr/bin/false"]))
+            let results = await Cleanup.execute(
+                [info, a, b, bad, bad2], home: f.root,
+                trasher: FakeTrasher(trashDir: f.path("t")))
             func kind(_ o: Cleanup.Outcome) -> String {
                 switch o {
                 case .nothingToDo: "nothing"

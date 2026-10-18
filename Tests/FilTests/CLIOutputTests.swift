@@ -124,7 +124,10 @@ import Testing
         let snap = root + "/snap"
         let cases: [([String], String)] = [
             (["list", "--bogus"], "fil: unknown option --bogus for 'fil list'\nRun 'fil help list' for usage.\n"),
-            (["clean", "logs", "--bogus"], "fil: unknown option --bogus for 'fil clean'\nRun 'fil help clean' for usage.\n"),
+            (
+                ["clean", "logs", "--bogus"],
+                "fil: unknown option --bogus for 'fil clean'\nRun 'fil help clean' for usage.\n"
+            ),
             (["scan", "--top"], "fil: --top needs a value\nRun 'fil help scan' for usage.\n"),
             (["scan", "-j"], "fil: -j needs a value\nRun 'fil help scan' for usage.\n"),
         ]

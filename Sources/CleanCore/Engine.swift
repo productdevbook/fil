@@ -42,8 +42,10 @@ public enum Cleanup {
     /// is being loaded or updated. Nothing runs when `home` is not the real home. `environment` replaces the
     /// real tools (tests).
     /// `writesPathCache: false` (a dry run) still reads `tool-paths.json` but never writes it.
-    public static func startToolQueries(home: String, environment: ToolEnvironment? = nil,
-                                        writesPathCache: Bool = true) -> ToolQueries {
+    public static func startToolQueries(
+        home: String, environment: ToolEnvironment? = nil,
+        writesPathCache: Bool = true
+    ) -> ToolQueries {
         if let environment { return .start(environment) }
         guard isRealHome(home) else { return .start(nil) }
         var env = ToolEnvironment.system(home: home)
@@ -62,8 +64,9 @@ public enum Cleanup {
     /// Runs every rule in order against the tree of `home`.
     public static func scan(home: String, tree: DiskTree, tools: ToolQueries) async -> Scan {
         let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
-        let ctx = RuleContext(home: tree.rootPath, tree: tree, runningBundleIds: running, isRealHome: isRealHome(home),
-                              tools: tools)
+        let ctx = RuleContext(
+            home: tree.rootPath, tree: tree, runningBundleIds: running, isRealHome: isRealHome(home),
+            tools: tools)
         if let why = tools.skippedReason { ctx.noteSkippedCommand(why) }
         var all: [Candidate] = []
         var times: [(String, Double)] = []
@@ -74,16 +77,18 @@ public enum Cleanup {
             let (s, a) = (clock.now - t).components
             times.append((rule.id, Double(s) + Double(a) / 1e18))
         }
-        ctx.noteSkippedCommands(await tools.cachePaths.value.notes + tools.simulators.value.notes
-            + tools.docker.value.notes)
-        return Scan(home: ctx.home, candidates: all.sorted { $0.bytes > $1.bytes },
-                    skippedCommands: ctx.skippedCommands, ruleTimes: times)
+        ctx.noteSkippedCommands(
+            await tools.cachePaths.value.notes + tools.simulators.value.notes
+                + tools.docker.value.notes)
+        return Scan(
+            home: ctx.home, candidates: all.sorted { $0.bytes > $1.bytes },
+            skippedCommands: ctx.skippedCommands, ruleTimes: times)
     }
 
     public enum Outcome: Sendable {
         case trashed(URL)
         case commandRan
-        case commandShared      // same command already ran for another candidate
+        case commandShared  // same command already ran for another candidate
         case nothingToDo
         case failed(Failure)
     }
@@ -147,24 +152,33 @@ public enum Cleanup {
     /// `runner` (default: the system runner in `home`, own session, SIGTERM then SIGKILL after 5 s) and are
     /// stopped after `removalTimeout`. When the calling task is cancelled the running command is stopped, it is
     /// reported as failed ("interrupted") and no further item runs.
-    public static func execute(_ items: [Candidate], home: String, trasher: any Trasher = SystemTrasher(),
-                               runner: (any CommandRunner)? = nil,
-                               removalTimeout: Duration = .seconds(600)) async -> [(Candidate, Outcome)] {
-        await executeReporting(items, home: home, trasher: trasher, runner: runner,
-                               removalTimeout: removalTimeout).results
+    public static func execute(
+        _ items: [Candidate], home: String, trasher: any Trasher = SystemTrasher(),
+        runner: (any CommandRunner)? = nil,
+        removalTimeout: Duration = .seconds(600)
+    ) async -> [(Candidate, Outcome)] {
+        await executeReporting(
+            items, home: home, trasher: trasher, runner: runner,
+            removalTimeout: removalTimeout
+        ).results
     }
 
     /// `execute`, also telling whether a cancellation cut it short: an item was left untouched or a running
     /// command was stopped. A cancellation after the last item finished is not "stopped early".
-    public static func executeReporting(_ items: [Candidate], home: String, trasher: any Trasher = SystemTrasher(),
-                                        runner: (any CommandRunner)? = nil,
-                                        removalTimeout: Duration = .seconds(600))
-        async -> (results: [(Candidate, Outcome)], stoppedEarly: Bool) {
+    public static func executeReporting(
+        _ items: [Candidate], home: String, trasher: any Trasher = SystemTrasher(),
+        runner: (any CommandRunner)? = nil,
+        removalTimeout: Duration = .seconds(600)
+    )
+        async -> (results: [(Candidate, Outcome)], stoppedEarly: Bool)
+    {
         var stoppedEarly = false
         let runner = runner ?? SystemCommandRunner(workingDirectory: home, gracePeriod: .seconds(5))
         var results: [(Candidate, Outcome)] = []
         var ran: [[String]: Outcome] = [:]
-        let homeDev: dev_t = { var st = stat(); return stat(home, &st) == 0 ? st.st_dev : 0 }()
+        let homeDev: dev_t = {
+            var st = stat(); return stat(home, &st) == 0 ? st.st_dev : 0
+        }()
         for c in items {
             // Ctrl-C: nothing more is touched, whatever the kind of the item.
             if Task.isCancelled { stoppedEarly = true; break }

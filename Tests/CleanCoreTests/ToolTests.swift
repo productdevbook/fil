@@ -25,11 +25,14 @@ final class FakeRunner: CommandRunner, @unchecked Sendable {
 }
 
 /// Tools in `/fake/bin`, only those named.
-func fakeEnvironment(_ f: Fixture, tools: Set<String>, answers: [String: CommandResult],
-                     cache: ToolPathCache? = nil, dockerMayAutostart: Bool = false) -> (ToolEnvironment, FakeRunner) {
+func fakeEnvironment(
+    _ f: Fixture, tools: Set<String>, answers: [String: CommandResult],
+    cache: ToolPathCache? = nil, dockerMayAutostart: Bool = false
+) -> (ToolEnvironment, FakeRunner) {
     let runner = FakeRunner(answers)
-    let env = ToolEnvironment(home: f.root, runner: runner, locate: { tools.contains($0) ? "/fake/bin/\($0)" : nil },
-                              timeout: .seconds(3), pathCache: cache, dockerMayAutostart: { dockerMayAutostart })
+    let env = ToolEnvironment(
+        home: f.root, runner: runner, locate: { tools.contains($0) ? "/fake/bin/\($0)" : nil },
+        timeout: .seconds(3), pathCache: cache, dockerMayAutostart: { dockerMayAutostart })
     return (env, runner)
 }
 
@@ -49,8 +52,9 @@ struct CachePathTests {
         #expect(CacheTools.parse("undefined\n", for: npm) == nil)
         #expect(CacheTools.parse("", for: npm) == nil)
         #expect(CacheTools.parse("/a\n/b\n", for: npm) == nil)
-        #expect(CacheTools.parse("/u/go/pkg/mod\n/u/Library/Caches/go-build\n", for: go)
-            == ["/u/go/pkg/mod", "/u/Library/Caches/go-build"])
+        #expect(
+            CacheTools.parse("/u/go/pkg/mod\n/u/Library/Caches/go-build\n", for: go)
+                == ["/u/go/pkg/mod", "/u/Library/Caches/go-build"])
         #expect(CacheTools.parse("/u/go/pkg/mod\n", for: go) == nil)
     }
 
@@ -58,49 +62,57 @@ struct CachePathTests {
     func discovery() async throws {
         try await Fixture.withAsync("tools") { f in
             let mb = 2_000_000
-            try f.mk("custom/homebrew/f", bytes: mb)                 // brew --cache
-            try f.mk("Library/Caches/Homebrew/f", bytes: mb)      // default, not reported: must not appear
-            try f.mk("npmcache/_cacache/f", bytes: mb)            // npm: <reported>/_cacache
-            try f.mk("npmcache/_logs/f", bytes: mb)               // npm logs are not the cache
+            try f.mk("custom/homebrew/f", bytes: mb)  // brew --cache
+            try f.mk("Library/Caches/Homebrew/f", bytes: mb)  // default, not reported: must not appear
+            try f.mk("npmcache/_cacache/f", bytes: mb)  // npm: <reported>/_cacache
+            try f.mk("npmcache/_logs/f", bytes: mb)  // npm logs are not the cache
             try f.mk("dev/gomod/f", bytes: mb)
             try f.mk("dev/go-build/f", bytes: mb)
-            try f.mk("Library/Caches/pip/f", bytes: mb)           // pip fails -> default
-            try f.mk("Library/Caches/Yarn/f", bytes: mb)          // yarn times out -> default
-            try f.mk(".cache/uv/f", bytes: mb)                    // uv prints garbage -> default
-            try f.mk("Library/pnpm/store/f", bytes: mb)           // pnpm missing -> default, silently
+            try f.mk("Library/Caches/pip/f", bytes: mb)  // pip fails -> default
+            try f.mk("Library/Caches/Yarn/f", bytes: mb)  // yarn times out -> default
+            try f.mk(".cache/uv/f", bytes: mb)  // uv prints garbage -> default
+            try f.mk("Library/pnpm/store/f", bytes: mb)  // pnpm missing -> default, silently
             let b = "/fake/bin/"
-            let (env, _) = fakeEnvironment(f, tools: ["brew", "npm", "go", "pip3", "yarn", "uv"], answers: [
-                b + "brew --cache": .success(f.path("custom/homebrew") + "\n"),
-                b + "npm config get cache": .success(f.path("npmcache") + "\n"),
-                b + "go env GOMODCACHE GOCACHE": .success(f.path("dev/gomod") + "\n" + f.path("dev/go-build") + "\n"),
-                b + "pip3 cache dir": .failed("exit 1: boom"),
-                b + "yarn cache dir": .timedOut,
-                b + "uv cache dir": .success("error: no cache\n"),
-            ])
+            let (env, _) = fakeEnvironment(
+                f, tools: ["brew", "npm", "go", "pip3", "yarn", "uv"],
+                answers: [
+                    b + "brew --cache": .success(f.path("custom/homebrew") + "\n"),
+                    b + "npm config get cache": .success(f.path("npmcache") + "\n"),
+                    b + "go env GOMODCACHE GOCACHE": .success(
+                        f.path("dev/gomod") + "\n" + f.path("dev/go-build") + "\n"),
+                    b + "pip3 cache dir": .failed("exit 1: boom"),
+                    b + "yarn cache dir": .timedOut,
+                    b + "uv cache dir": .success("error: no cache\n"),
+                ])
             let scan = try await scanWithTools(f, env)
             let ids = Set(scan.candidates.map(\.id))
-            #expect(ids == [
-                "homebrew-cache:custom/homebrew", "pkg-caches:npmcache/_cacache", "pkg-caches:dev/gomod",
-                "pkg-caches:dev/go-build",
-                "pkg-caches:Library/Caches/pip", "pkg-caches:Library/Caches/Yarn", "pkg-caches:.cache/uv",
-                "pkg-caches:Library/pnpm/store",
-                // The unreported default Homebrew folder is just another app cache now.
-                "app-caches:Library/Caches/Homebrew",
-            ])
+            #expect(
+                ids == [
+                    "homebrew-cache:custom/homebrew", "pkg-caches:npmcache/_cacache", "pkg-caches:dev/gomod",
+                    "pkg-caches:dev/go-build",
+                    "pkg-caches:Library/Caches/pip", "pkg-caches:Library/Caches/Yarn", "pkg-caches:.cache/uv",
+                    "pkg-caches:Library/pnpm/store",
+                    // The unreported default Homebrew folder is just another app cache now.
+                    "app-caches:Library/Caches/Homebrew",
+                ])
             for c in scan.candidates {
-                let want: Removal = switch c.id {
-                case "pkg-caches:dev/gomod": .command(argv: ["/fake/bin/go", "clean", "-modcache"])
-                case "pkg-caches:dev/go-build": .command(argv: ["/fake/bin/go", "clean", "-cache"])
-                default: .trash
-                }
+                let want: Removal =
+                    switch c.id {
+                    case "pkg-caches:dev/gomod": .command(argv: ["/fake/bin/go", "clean", "-modcache"])
+                    case "pkg-caches:dev/go-build": .command(argv: ["/fake/bin/go", "clean", "-cache"])
+                    default: .trash
+                    }
                 #expect(c.removal == want, "\(c.id)")
             }
             // Reported and not the default: careful with a note; defaults stay as they were.
             for c in scan.candidates {
-                let custom = ["homebrew-cache:custom/homebrew", "pkg-caches:npmcache/_cacache", "pkg-caches:dev/gomod",
-                              "pkg-caches:dev/go-build"].contains(c.id)
+                let custom = [
+                    "homebrew-cache:custom/homebrew", "pkg-caches:npmcache/_cacache", "pkg-caches:dev/gomod",
+                    "pkg-caches:dev/go-build",
+                ].contains(c.id)
                 #expect(c.safety == (custom ? .careful : c.ruleId == "pkg-caches" ? .review : .safe), "\(c.id)")
-                if custom, let note = c.note, case .customCacheLocation = note {} else if custom {
+                if custom, let note = c.note, case .customCacheLocation = note {
+                } else if custom {
                     Issue.record("\(c.id): note \(String(describing: c.note))")
                 }
             }
@@ -117,7 +129,8 @@ struct CachePathTests {
     func outsideHome() async throws {
         try await Fixture.withAsync("tools") { f in
             try f.mk("Library/Caches/Homebrew/f", bytes: 2_000_000)
-            let (env, _) = fakeEnvironment(f, tools: ["brew"], answers: ["/fake/bin/brew --cache": .success("/Volumes/X/brew\n")])
+            let (env, _) = fakeEnvironment(
+                f, tools: ["brew"], answers: ["/fake/bin/brew --cache": .success("/Volumes/X/brew\n")])
             let scan = try await scanWithTools(f, env)
             #expect(!scan.candidates.contains { $0.ruleId == "homebrew-cache" })
         }
@@ -128,7 +141,7 @@ struct CachePathTests {
         try await Fixture.withAsync("tools") { f in
             try f.mk("go/pkg/mod/m/f", bytes: 2_000_000)
             try f.mk("Library/Caches/go-build/f", bytes: 2_000_000)
-            for tools: Set<String> in [[], ["go"]] {     // go missing; go failing
+            for tools: Set<String> in [[], ["go"]] {  // go missing; go failing
                 let (env, _) = fakeEnvironment(f, tools: tools, answers: [:])
                 let scan = try await scanWithTools(f, env)
                 #expect(!scan.candidates.contains { $0.ruleId == "pkg-caches" })
@@ -139,21 +152,28 @@ struct CachePathTests {
         }
     }
 
-    @Test("a tool reporting home or a shared folder as its cache yields nothing; a parent of a reported cache is not reported again")
+    @Test(
+        "a tool reporting home or a shared folder as its cache yields nothing; a parent of a reported cache is not reported again"
+    )
     func sharedLocations() async throws {
         try await Fixture.withAsync("tools") { f in
             try f.mk("Library/Caches/com.example.app/f", bytes: 2_000_000)
             try f.mk("Library/Caches/Yarn/v6/f", bytes: 2_000_000)
             try f.mk("Library/Caches/Yarn/other/f", bytes: 2_000_000)
             let b = "/fake/bin/"
-            let (env, _) = fakeEnvironment(f, tools: ["brew", "uv", "yarn"], answers: [
-                b + "brew --cache": .success(f.path("Library/Caches") + "\n"),
-                b + "uv cache dir": .success(f.root + "\n"),
-                b + "yarn cache dir": .success(f.path("Library/Caches/Yarn/v6") + "\n"),
-            ])
+            let (env, _) = fakeEnvironment(
+                f, tools: ["brew", "uv", "yarn"],
+                answers: [
+                    b + "brew --cache": .success(f.path("Library/Caches") + "\n"),
+                    b + "uv cache dir": .success(f.root + "\n"),
+                    b + "yarn cache dir": .success(f.path("Library/Caches/Yarn/v6") + "\n"),
+                ])
             let scan = try await scanWithTools(f, env)
-            #expect(Set(scan.candidates.map(\.id)) == ["pkg-caches:Library/Caches/Yarn/v6",
-                                                        "app-caches:Library/Caches/com.example.app"])
+            #expect(
+                Set(scan.candidates.map(\.id)) == [
+                    "pkg-caches:Library/Caches/Yarn/v6",
+                    "app-caches:Library/Caches/com.example.app",
+                ])
         }
     }
 
@@ -161,50 +181,60 @@ struct CachePathTests {
     func depthAndMarker() async throws {
         try await Fixture.withAsync("tools") { f in
             let mb = 2_000_000
-            try f.mk("Projects/f", bytes: mb)                     // PIP_CACHE_DIR=~/Projects
-            try f.mk("Developer/f", bytes: mb)                    // HOMEBREW_CACHE=~/Developer
-            try f.mk("Documents/Taxes/f", bytes: mb)              // deep enough, but no marker
-            try f.mk("work/cache/f", bytes: mb)                   // generic marker
+            try f.mk("Projects/f", bytes: mb)  // PIP_CACHE_DIR=~/Projects
+            try f.mk("Developer/f", bytes: mb)  // HOMEBREW_CACHE=~/Developer
+            try f.mk("Documents/Taxes/f", bytes: mb)  // deep enough, but no marker
+            try f.mk("work/cache/f", bytes: mb)  // generic marker
             try f.mk("x/pip-cache/_cacache/f", bytes: mb)
-            try f.mk("tools/uv/f", bytes: mb)                     // exact marker
+            try f.mk("tools/uv/f", bytes: mb)  // exact marker
             let b = "/fake/bin/"
-            let (env, _) = fakeEnvironment(f, tools: ["brew", "pip3", "yarn", "pnpm", "uv", "npm"], answers: [
-                b + "pip3 cache dir": .success(f.path("Projects") + "\n"),
-                b + "brew --cache": .success(f.path("Developer") + "\n"),
-                b + "yarn cache dir": .success(f.path("Documents/Taxes") + "\n"),
-                b + "pnpm store path": .success(f.path("work/cache") + "\n"),
-                b + "uv cache dir": .success(f.path("tools/uv") + "\n"),
-                b + "npm config get cache": .success(f.path("x/pip-cache") + "\n"),
-            ])
+            let (env, _) = fakeEnvironment(
+                f, tools: ["brew", "pip3", "yarn", "pnpm", "uv", "npm"],
+                answers: [
+                    b + "pip3 cache dir": .success(f.path("Projects") + "\n"),
+                    b + "brew --cache": .success(f.path("Developer") + "\n"),
+                    b + "yarn cache dir": .success(f.path("Documents/Taxes") + "\n"),
+                    b + "pnpm store path": .success(f.path("work/cache") + "\n"),
+                    b + "uv cache dir": .success(f.path("tools/uv") + "\n"),
+                    b + "npm config get cache": .success(f.path("x/pip-cache") + "\n"),
+                ])
             let scan = try await scanWithTools(f, env)
-            let pkg = Set(scan.candidates.filter { $0.ruleId == "pkg-caches" || $0.ruleId == "homebrew-cache" }.map(\.id))
+            let pkg = Set(
+                scan.candidates.filter { $0.ruleId == "pkg-caches" || $0.ruleId == "homebrew-cache" }.map(\.id))
             #expect(pkg == ["pkg-caches:work/cache", "pkg-caches:tools/uv", "pkg-caches:x/pip-cache/_cacache"])
             for c in scan.candidates where pkg.contains(c.id) {
                 #expect(c.safety == .careful, "\(c.id)")
-                guard case .customCacheLocation? = c.note else { Issue.record("\(c.id): \(String(describing: c.note))"); continue }
+                guard case .customCacheLocation? = c.note else {
+                    Issue.record("\(c.id): \(String(describing: c.note))"); continue
+                }
             }
-            #expect(scan.candidates.first { $0.id == "pkg-caches:work/cache" }?.note?.description
-                == "pnpm keeps its cache in a non-default folder")
-            #expect(Set(scan.skippedCommands) == [
-                "pip3: reported cache ~/Projects does not look like a cache folder; ignored",
-                "brew: reported cache ~/Developer does not look like a cache folder; ignored",
-                "yarn: reported cache ~/Documents/Taxes does not look like a cache folder; ignored",
-            ])
+            #expect(
+                scan.candidates.first { $0.id == "pkg-caches:work/cache" }?.note?.description
+                    == "pnpm keeps its cache in a non-default folder")
+            #expect(
+                Set(scan.skippedCommands) == [
+                    "pip3: reported cache ~/Projects does not look like a cache folder; ignored",
+                    "brew: reported cache ~/Developer does not look like a cache folder; ignored",
+                    "yarn: reported cache ~/Documents/Taxes does not look like a cache folder; ignored",
+                ])
             // The folders themselves are never candidates of the cache rules.
             #expect(!scan.candidates.contains { $0.path.hasSuffix("/Projects") || $0.path.hasSuffix("/Developer") })
         }
     }
 
-    @Test("a custom location is careful: a rule id leaves it out, its own id selects it; versioned defaults stay default")
+    @Test(
+        "a custom location is careful: a rule id leaves it out, its own id selects it; versioned defaults stay default")
     func customIsCareful() async throws {
         try await Fixture.withAsync("tools") { f in
             try f.mk("x/pip-cache/f", bytes: 2_000_000)
             try f.mk("Library/Caches/Yarn/v6/f", bytes: 2_000_000)
             let b = "/fake/bin/"
-            let (env, _) = fakeEnvironment(f, tools: ["pip3", "yarn"], answers: [
-                b + "pip3 cache dir": .success(f.path("x/pip-cache") + "\n"),
-                b + "yarn cache dir": .success(f.path("Library/Caches/Yarn/v6") + "\n"),
-            ])
+            let (env, _) = fakeEnvironment(
+                f, tools: ["pip3", "yarn"],
+                answers: [
+                    b + "pip3 cache dir": .success(f.path("x/pip-cache") + "\n"),
+                    b + "yarn cache dir": .success(f.path("Library/Caches/Yarn/v6") + "\n"),
+                ])
             let scan = try await scanWithTools(f, env)
             let r = try Cleanup.resolve(["pkg-caches"], in: scan.candidates)
             #expect(r.chosen.map(\.id) == ["pkg-caches:Library/Caches/Yarn/v6"])
@@ -220,13 +250,20 @@ struct CachePathTests {
             try f.mk("Projects/f", bytes: 2_000_000)
             try f.mk("dev/go-build/f", bytes: 2_000_000)
             let q = "/fake/bin/go env GOMODCACHE GOCACHE"
-            let (bad, _) = fakeEnvironment(f, tools: ["go"], answers: [
-                q: .success(f.path("Projects") + "\n" + f.path("dev/go-build") + "\n")])
+            let (bad, _) = fakeEnvironment(
+                f, tools: ["go"],
+                answers: [
+                    q: .success(f.path("Projects") + "\n" + f.path("dev/go-build") + "\n")
+                ])
             let scan = try await scanWithTools(f, bad)
             #expect(!scan.candidates.contains { $0.ruleId == "pkg-caches" })
-            #expect(scan.skippedCommands == ["go: reported cache ~/Projects does not look like a cache folder; ignored"])
-            let (good, _) = fakeEnvironment(f, tools: ["go"], answers: [
-                q: .success(f.path("dev/gomod") + "\n" + f.path("dev/go-build") + "\n")])
+            #expect(
+                scan.skippedCommands == ["go: reported cache ~/Projects does not look like a cache folder; ignored"])
+            let (good, _) = fakeEnvironment(
+                f, tools: ["go"],
+                answers: [
+                    q: .success(f.path("dev/gomod") + "\n" + f.path("dev/go-build") + "\n")
+                ])
             let ok = try await scanWithTools(f, good)
             #expect(ok.candidates.count == 2)
             for c in ok.candidates { #expect(c.ruleId == "pkg-caches" && c.safety == .careful) }
@@ -242,21 +279,25 @@ struct CachePathTests {
             try f.mk("Developer/store/f", bytes: mb)
             try f.mk("dev/go-build/f", bytes: mb)
             let b = "/fake/bin/"
-            let (env, _) = fakeEnvironment(f, tools: ["go", "uv", "pnpm"], answers: [
-                b + "go env GOMODCACHE GOCACHE": .success(f.path("go/src") + "\n" + f.path("dev/go-build") + "\n"),
-                b + "uv cache dir": .success(f.path("cache-backup/Projects") + "\n"),
-                b + "pnpm store path": .success(f.path("Developer/store") + "\n"),
-            ])
+            let (env, _) = fakeEnvironment(
+                f, tools: ["go", "uv", "pnpm"],
+                answers: [
+                    b + "go env GOMODCACHE GOCACHE": .success(f.path("go/src") + "\n" + f.path("dev/go-build") + "\n"),
+                    b + "uv cache dir": .success(f.path("cache-backup/Projects") + "\n"),
+                    b + "pnpm store path": .success(f.path("Developer/store") + "\n"),
+                ])
             let scan = try await scanWithTools(f, env)
             #expect(!scan.candidates.contains { $0.ruleId == "pkg-caches" })
-            #expect(!scan.candidates.contains {
-                if case .command = $0.removal { true } else { false }
-            })
-            #expect(Set(scan.skippedCommands) == [
-                "go: reported cache ~/go/src does not look like a cache folder; ignored",
-                "uv: reported cache ~/cache-backup/Projects does not look like a cache folder; ignored",
-                "pnpm: reported cache ~/Developer/store does not look like a cache folder; ignored",
-            ])
+            #expect(
+                !scan.candidates.contains {
+                    if case .command = $0.removal { true } else { false }
+                })
+            #expect(
+                Set(scan.skippedCommands) == [
+                    "go: reported cache ~/go/src does not look like a cache folder; ignored",
+                    "uv: reported cache ~/cache-backup/Projects does not look like a cache folder; ignored",
+                    "pnpm: reported cache ~/Developer/store does not look like a cache folder; ignored",
+                ])
         }
     }
 
@@ -269,15 +310,19 @@ struct CachePathTests {
             try f.mk("go/pkg/mod/f", bytes: 2_000_000)
             try f.mk("Library/Caches/go-build/f", bytes: 2_000_000)
             let b = "/fake/bin/"
-            let (env, _) = fakeEnvironment(f, tools: ["brew", "go"], answers: [
-                b + "brew --cache": .success(f.path("Projects") + "\n"),
-                b + "go env GOMODCACHE GOCACHE": .success(f.path("go/pkg/mod") + "\n"),    // one line, two expected
-            ])
+            let (env, _) = fakeEnvironment(
+                f, tools: ["brew", "go"],
+                answers: [
+                    b + "brew --cache": .success(f.path("Projects") + "\n"),
+                    b + "go env GOMODCACHE GOCACHE": .success(f.path("go/pkg/mod") + "\n"),  // one line, two expected
+                ])
             let scan = try await scanWithTools(f, env)
             #expect(!scan.candidates.contains { $0.ruleId == "homebrew-cache" })
             #expect(!scan.candidates.contains { $0.path.hasSuffix("/Projects") })
             #expect(!scan.candidates.contains { $0.ruleId == "pkg-caches" })
-            #expect(scan.skippedCommands.contains("brew: reported cache ~/Projects does not look like a cache folder; ignored"))
+            #expect(
+                scan.skippedCommands.contains(
+                    "brew: reported cache ~/Projects does not look like a cache folder; ignored"))
         }
     }
 
@@ -287,12 +332,17 @@ struct CachePathTests {
             try f.mk("Developer/cache-server/f", bytes: 2_000_000)
             try f.mkdir("Library/Caches")
             try f.symlink(f.path("Developer/cache-server"), at: "Library/Caches/Homebrew")
-            let (env, _) = fakeEnvironment(f, tools: ["brew"], answers: [
-                "/fake/bin/brew --cache": .success(f.path("Developer/cache-server") + "\n")])
+            let (env, _) = fakeEnvironment(
+                f, tools: ["brew"],
+                answers: [
+                    "/fake/bin/brew --cache": .success(f.path("Developer/cache-server") + "\n")
+                ])
             let scan = try await scanWithTools(f, env)
             let c = try #require(scan.candidates.first { $0.ruleId == "homebrew-cache" })
             #expect(c.safety == .careful)
-            guard case .customCacheLocation(let tool)? = c.note else { Issue.record("\(String(describing: c.note))"); return }
+            guard case .customCacheLocation(let tool)? = c.note else {
+                Issue.record("\(String(describing: c.note))"); return
+            }
             #expect(tool == "brew")
         }
     }
@@ -318,7 +368,9 @@ struct CachePathTests {
         try await Fixture.withAsync("tools") { f in
             try f.mk("custom/homebrew/f", bytes: 2_000_000)
             let cache = ToolPathCache(file: URL(fileURLWithPath: f.path("state/tool-paths.json")))
-            let answers: [String: CommandResult] = ["/fake/bin/brew --cache": .success(f.path("custom/homebrew") + "\n")]
+            let answers: [String: CommandResult] = [
+                "/fake/bin/brew --cache": .success(f.path("custom/homebrew") + "\n")
+            ]
             let (env1, runner1) = fakeEnvironment(f, tools: ["brew"], answers: answers, cache: cache)
             let first = await CacheTools.discover(env1)
             #expect(runner1.calls == ["/fake/bin/brew --cache"])
@@ -341,13 +393,21 @@ struct CachePathTests {
     func locator() {
         let home = "/Users/nobody"
         #expect(ToolLocator.find("pip3", home: home, isExecutable: { $0 == "/usr/bin/pip3" }) == nil)
-        #expect(ToolLocator.find("pip3", home: home, isExecutable: {
-            $0 == "/usr/bin/pip3" || $0 == "/Library/Developer/CommandLineTools/usr/bin/pip3"
-        }) == "/usr/bin/pip3")
-        #expect(ToolLocator.find("npm", home: home, isExecutable: {
-            $0 == "/usr/local/bin/npm" || $0 == "/opt/homebrew/bin/npm"
-        }) == "/opt/homebrew/bin/npm")
-        #expect(ToolLocator.find("uv", home: home, isExecutable: { $0 == home + "/.local/bin/uv" }) == home + "/.local/bin/uv")
+        #expect(
+            ToolLocator.find(
+                "pip3", home: home,
+                isExecutable: {
+                    $0 == "/usr/bin/pip3" || $0 == "/Library/Developer/CommandLineTools/usr/bin/pip3"
+                }) == "/usr/bin/pip3")
+        #expect(
+            ToolLocator.find(
+                "npm", home: home,
+                isExecutable: {
+                    $0 == "/usr/local/bin/npm" || $0 == "/opt/homebrew/bin/npm"
+                }) == "/opt/homebrew/bin/npm")
+        #expect(
+            ToolLocator.find("uv", home: home, isExecutable: { $0 == home + "/.local/bin/uv" }) == home
+                + "/.local/bin/uv")
     }
 }
 
@@ -385,8 +445,9 @@ struct TimeoutTests {
     @Test("queries run concurrently: three hanging tools cost one timeout, not three")
     func concurrent() async throws {
         try await Fixture.withAsync("tools") { f in
-            let env = ToolEnvironment(home: f.root, runner: SystemCommandRunner(), locate: { _ in "/bin/sleep" },
-                                      timeout: .milliseconds(300))
+            let env = ToolEnvironment(
+                home: f.root, runner: SystemCommandRunner(), locate: { _ in "/bin/sleep" },
+                timeout: .milliseconds(300))
             let clock = ContinuousClock()
             let start = clock.now
             let answer = await CacheTools.discover(env)
@@ -399,46 +460,46 @@ struct TimeoutTests {
 }
 
 let runtimesJSON = """
-{
-  "8A257395-91BE-4EBE-B224-684810B04FC5" : {
-    "build" : "24A434", "deletable" : true, "identifier" : "8A257395-91BE-4EBE-B224-684810B04FC5",
-    "path" : "\\/System\\/Library\\/AssetsV2\\/ios\\/AssetData",
-    "runtimeIdentifier" : "com.apple.CoreSimulator.SimRuntime.iOS-27-0", "sizeBytes" : 8067000161,
-    "state" : "Ready", "version" : "27.0"
-  },
-  "B4C2D985-5D38-483D-8CA8-99F9423CDBD8" : {
-    "build" : "24J360", "deletable" : true, "identifier" : "B4C2D985-5D38-483D-8CA8-99F9423CDBD8",
-    "path" : "\\/System\\/Library\\/AssetsV2\\/tvos\\/AssetData",
-    "runtimeIdentifier" : "com.apple.CoreSimulator.SimRuntime.tvOS-27-0", "sizeBytes" : 3697822545,
-    "state" : "Ready", "version" : "27.0"
-  },
-  "E389B130-C868-4AB2-B084-2B0D918BFF84" : {
-    "build" : "24M362", "deletable" : true, "identifier" : "E389B130-C868-4AB2-B084-2B0D918BFF84",
-    "path" : "\\/System\\/Library\\/AssetsV2\\/xros\\/AssetData",
-    "runtimeIdentifier" : "com.apple.CoreSimulator.SimRuntime.xrOS-27-0", "sizeBytes" : 7480076129,
-    "state" : "Ready", "version" : "27.0"
-  },
-  "11111111-0000-0000-0000-000000000000" : {
-    "build" : "24R362", "deletable" : false, "identifier" : "11111111-0000-0000-0000-000000000000",
-    "runtimeIdentifier" : "com.apple.CoreSimulator.SimRuntime.watchOS-27-0", "sizeBytes" : 3814435665,
-    "version" : "27.0"
-  }
-}
-"""
+    {
+      "8A257395-91BE-4EBE-B224-684810B04FC5" : {
+        "build" : "24A434", "deletable" : true, "identifier" : "8A257395-91BE-4EBE-B224-684810B04FC5",
+        "path" : "\\/System\\/Library\\/AssetsV2\\/ios\\/AssetData",
+        "runtimeIdentifier" : "com.apple.CoreSimulator.SimRuntime.iOS-27-0", "sizeBytes" : 8067000161,
+        "state" : "Ready", "version" : "27.0"
+      },
+      "B4C2D985-5D38-483D-8CA8-99F9423CDBD8" : {
+        "build" : "24J360", "deletable" : true, "identifier" : "B4C2D985-5D38-483D-8CA8-99F9423CDBD8",
+        "path" : "\\/System\\/Library\\/AssetsV2\\/tvos\\/AssetData",
+        "runtimeIdentifier" : "com.apple.CoreSimulator.SimRuntime.tvOS-27-0", "sizeBytes" : 3697822545,
+        "state" : "Ready", "version" : "27.0"
+      },
+      "E389B130-C868-4AB2-B084-2B0D918BFF84" : {
+        "build" : "24M362", "deletable" : true, "identifier" : "E389B130-C868-4AB2-B084-2B0D918BFF84",
+        "path" : "\\/System\\/Library\\/AssetsV2\\/xros\\/AssetData",
+        "runtimeIdentifier" : "com.apple.CoreSimulator.SimRuntime.xrOS-27-0", "sizeBytes" : 7480076129,
+        "state" : "Ready", "version" : "27.0"
+      },
+      "11111111-0000-0000-0000-000000000000" : {
+        "build" : "24R362", "deletable" : false, "identifier" : "11111111-0000-0000-0000-000000000000",
+        "runtimeIdentifier" : "com.apple.CoreSimulator.SimRuntime.watchOS-27-0", "sizeBytes" : 3814435665,
+        "version" : "27.0"
+      }
+    }
+    """
 
 let devicesJSON = """
-{
-  "devices" : {
-    "com.apple.CoreSimulator.SimRuntime.iOS-27-0" : [
-      { "udid" : "EFCD106B-33B6-4324-988B-2412AA53E573", "isAvailable" : true, "name" : "iPhone" }
-    ],
-    "com.apple.CoreSimulator.SimRuntime.tvOS-27-0" : [ ],
-    "com.apple.CoreSimulator.SimRuntime.iOS-16-0" : [
-      { "udid" : "DEAD0000-0000-0000-0000-000000000001", "isAvailable" : false, "name" : "Old iPhone" }
-    ]
-  }
-}
-"""
+    {
+      "devices" : {
+        "com.apple.CoreSimulator.SimRuntime.iOS-27-0" : [
+          { "udid" : "EFCD106B-33B6-4324-988B-2412AA53E573", "isAvailable" : true, "name" : "iPhone" }
+        ],
+        "com.apple.CoreSimulator.SimRuntime.tvOS-27-0" : [ ],
+        "com.apple.CoreSimulator.SimRuntime.iOS-16-0" : [
+          { "udid" : "DEAD0000-0000-0000-0000-000000000001", "isAvailable" : false, "name" : "Old iPhone" }
+        ]
+      }
+    }
+    """
 
 @Suite("Simulator runtimes")
 struct SimulatorRuntimeTests {
@@ -450,10 +511,14 @@ struct SimulatorRuntimeTests {
         #expect(runtimes[2].displayName == "visionOS 27.0 (24M362)")
         let devices = try #require(Simctl.parseDevices(devicesJSON))
         #expect(devices.unavailable == ["DEAD0000-0000-0000-0000-000000000001"])
-        #expect(devices.usedRuntimes == ["com.apple.CoreSimulator.SimRuntime.iOS-27-0",
-                                         "com.apple.CoreSimulator.SimRuntime.iOS-16-0"])
-        #expect(Simctl.unused(runtimes, used: devices.usedRuntimes).map(\.identifier)
-            == ["B4C2D985-5D38-483D-8CA8-99F9423CDBD8", "E389B130-C868-4AB2-B084-2B0D918BFF84"])
+        #expect(
+            devices.usedRuntimes == [
+                "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                "com.apple.CoreSimulator.SimRuntime.iOS-16-0",
+            ])
+        #expect(
+            Simctl.unused(runtimes, used: devices.usedRuntimes).map(\.identifier)
+                == ["B4C2D985-5D38-483D-8CA8-99F9423CDBD8", "E389B130-C868-4AB2-B084-2B0D918BFF84"])
         #expect(Simctl.parseRuntimes("not json") == nil)
         #expect(Simctl.parseDevices("{}") == nil)
     }
@@ -461,11 +526,14 @@ struct SimulatorRuntimeTests {
     @Test("unused runtimes become review candidates sized from the JSON, removed by simctl")
     func candidates() async throws {
         try await Fixture.withAsync("tools") { f in
-            try f.mk("Library/Developer/CoreSimulator/Devices/DEAD0000-0000-0000-0000-000000000001/data/f", bytes: 2_000_000)
-            let (env, _) = fakeEnvironment(f, tools: ["xcrun"], answers: [
-                "/fake/bin/xcrun simctl list devices -j": .success(devicesJSON),
-                "/fake/bin/xcrun simctl runtime list -j": .success(runtimesJSON),
-            ])
+            try f.mk(
+                "Library/Developer/CoreSimulator/Devices/DEAD0000-0000-0000-0000-000000000001/data/f", bytes: 2_000_000)
+            let (env, _) = fakeEnvironment(
+                f, tools: ["xcrun"],
+                answers: [
+                    "/fake/bin/xcrun simctl list devices -j": .success(devicesJSON),
+                    "/fake/bin/xcrun simctl runtime list -j": .success(runtimesJSON),
+                ])
             let scan = try await scanWithTools(f, env)
             let tv = try #require(scan.candidates.first { $0.id == "simulator-runtimes:tvOS-27.0-24J360" })
             #expect(tv.bytes == 3_697_822_545)
@@ -483,10 +551,12 @@ struct SimulatorRuntimeTests {
     @Test("a failing runtime query keeps the unavailable simulators and leaves a note")
     func runtimeQueryFails() async throws {
         try await Fixture.withAsync("tools") { f in
-            let (env, _) = fakeEnvironment(f, tools: ["xcrun"], answers: [
-                "/fake/bin/xcrun simctl list devices -j": .success(devicesJSON),
-                "/fake/bin/xcrun simctl runtime list -j": .timedOut,
-            ])
+            let (env, _) = fakeEnvironment(
+                f, tools: ["xcrun"],
+                answers: [
+                    "/fake/bin/xcrun simctl list devices -j": .success(devicesJSON),
+                    "/fake/bin/xcrun simctl runtime list -j": .timedOut,
+                ])
             let answer = await Simctl.query(env)
             #expect(answer.value.unavailableUDIDs == ["DEAD0000-0000-0000-0000-000000000001"])
             #expect(answer.value.unusedRuntimes.isEmpty)
@@ -497,21 +567,21 @@ struct SimulatorRuntimeTests {
 
 // `docker system df -v --format json`, trimmed: one object.
 let dockerDFVerbose = """
-{"Images":[
- {"Containers":"1","ID":"sha256:a","Repository":"postgres","SharedSize":"0B","Size":"664MB","Tag":"17","UniqueSize":"664.3MB"},
- {"Containers":"0","ID":"sha256:b","Repository":"<none>","SharedSize":"346.3MB","Size":"1.5GB","Tag":"<none>","UniqueSize":"1.2GB"},
- {"Containers":"0","ID":"sha256:c","Repository":"<none>","SharedSize":"0B","Size":"250MB","Tag":"<none>","UniqueSize":"250MB"},
- {"Containers":"2","ID":"sha256:d","Repository":"<none>","SharedSize":"0B","Size":"900MB","Tag":"<none>","UniqueSize":"900MB"}],
- "Containers":[{"ID":"x","Size":"1.396GB","State":"exited"}],
- "Volumes":[{"Name":"pgdata","Size":"378MB","Links":"1"}],
- "BuildCache":[
- {"CacheType":"regular","ID":"1","InUse":"false","Shared":"false","Size":"7.6GB"},
- {"CacheType":"exec.cachemount","ID":"2","InUse":"false","Shared":"false","Size":"2.4GB"},
- {"CacheType":"regular","ID":"3","InUse":"false","Shared":"true","Size":"8.3GB"},
- {"CacheType":"frontend","ID":"4","InUse":"false","Shared":"false","Size":"80.2MB"},
- {"CacheType":"internal","ID":"5","InUse":"false","Shared":"false","Size":"10MB"},
- {"CacheType":"regular","ID":"6","InUse":"true","Shared":"false","Size":"1GB"}]}
-"""
+    {"Images":[
+     {"Containers":"1","ID":"sha256:a","Repository":"postgres","SharedSize":"0B","Size":"664MB","Tag":"17","UniqueSize":"664.3MB"},
+     {"Containers":"0","ID":"sha256:b","Repository":"<none>","SharedSize":"346.3MB","Size":"1.5GB","Tag":"<none>","UniqueSize":"1.2GB"},
+     {"Containers":"0","ID":"sha256:c","Repository":"<none>","SharedSize":"0B","Size":"250MB","Tag":"<none>","UniqueSize":"250MB"},
+     {"Containers":"2","ID":"sha256:d","Repository":"<none>","SharedSize":"0B","Size":"900MB","Tag":"<none>","UniqueSize":"900MB"}],
+     "Containers":[{"ID":"x","Size":"1.396GB","State":"exited"}],
+     "Volumes":[{"Name":"pgdata","Size":"378MB","Links":"1"}],
+     "BuildCache":[
+     {"CacheType":"regular","ID":"1","InUse":"false","Shared":"false","Size":"7.6GB"},
+     {"CacheType":"exec.cachemount","ID":"2","InUse":"false","Shared":"false","Size":"2.4GB"},
+     {"CacheType":"regular","ID":"3","InUse":"false","Shared":"true","Size":"8.3GB"},
+     {"CacheType":"frontend","ID":"4","InUse":"false","Shared":"false","Size":"80.2MB"},
+     {"CacheType":"internal","ID":"5","InUse":"false","Shared":"false","Size":"10MB"},
+     {"CacheType":"regular","ID":"6","InUse":"true","Shared":"false","Size":"1GB"}]}
+    """
 
 @Suite("Docker")
 struct DockerTests {
@@ -532,7 +602,9 @@ struct DockerTests {
         #expect(sizes.danglingImages == 1_450_000_000)
         #expect(DockerQuery.parseVerboseDF("Cannot connect") == nil)
         #expect(DockerQuery.parseVerboseDF("{}") == nil)
-        #expect(DockerQuery.parseVerboseDF(#"{"Images":[],"BuildCache":[]}"#).map { [$0.buildCache, $0.danglingImages] } == [0, 0])
+        #expect(
+            DockerQuery.parseVerboseDF(#"{"Images":[],"BuildCache":[]}"#).map { [$0.buildCache, $0.danglingImages] }
+                == [0, 0])
     }
 
     @Test("build cache and dangling images are review candidates with prune commands; never volumes or containers")
@@ -547,8 +619,14 @@ struct DockerTests {
                 #expect(c.note == .dockerEstimate)
             }
             let argvs = docker.compactMap { c -> [String]? in if case .command(let a) = c.removal { a } else { nil } }
-            #expect(Set(argvs) == [["/fake/bin/docker", "builder", "prune", "-f"], ["/fake/bin/docker", "image", "prune", "-f"]])
-            #expect(!argvs.joined().contains { $0.contains("volume") || $0.contains("container") || $0 == "-a" || $0 == "--all" })
+            #expect(
+                Set(argvs) == [
+                    ["/fake/bin/docker", "builder", "prune", "-f"], ["/fake/bin/docker", "image", "prune", "-f"],
+                ])
+            #expect(
+                !argvs.joined().contains {
+                    $0.contains("volume") || $0.contains("container") || $0 == "-a" || $0 == "--all"
+                })
             #expect(docker.first { $0.id == "docker:build-cache" }?.bytes == 10_000_000_000)
             #expect(docker.first { $0.id == "docker:dangling-images" }?.bytes == 1_450_000_000)
         }
@@ -572,8 +650,9 @@ struct DockerTests {
             let answer = await DockerQuery.query(env)
             #expect(answer.value == nil)
             #expect(answer.notes == ["docker system df -v --format json: timed out after 3 s"])
-            let (stopped, runner) = fakeEnvironment(f, tools: ["docker"], answers: [df: .success(dockerDFVerbose)],
-                                                    dockerMayAutostart: true)
+            let (stopped, runner) = fakeEnvironment(
+                f, tools: ["docker"], answers: [df: .success(dockerDFVerbose)],
+                dockerMayAutostart: true)
             #expect(await DockerQuery.query(stopped).value == nil)
             #expect(runner.calls.isEmpty)
         }
@@ -582,7 +661,8 @@ struct DockerTests {
     @Test("no dangling images: only the build cache")
     func noDangling() async throws {
         try await Fixture.withAsync("tools") { f in
-            let json = #"{"Images":[],"BuildCache":[{"CacheType":"regular","InUse":"false","Shared":"false","Size":"2GB"}]}"#
+            let json =
+                #"{"Images":[],"BuildCache":[{"CacheType":"regular","InUse":"false","Shared":"false","Size":"2GB"}]}"#
             let (env, _) = fakeEnvironment(f, tools: ["docker"], answers: [df: .success(json)])
             let scan = try await scanWithTools(f, env)
             #expect(scan.candidates.filter { $0.ruleId == "docker" }.map(\.id) == ["docker:build-cache"])

@@ -1,8 +1,10 @@
 import CleanCore
 import Testing
 
-private func candidate(_ id: String, rule: String = "r", _ safety: Safety, bytes: Int64 = 1 << 20,
-                       removal: Removal = .trash) -> Candidate {
+private func candidate(
+    _ id: String, rule: String = "r", _ safety: Safety, bytes: Int64 = 1 << 20,
+    removal: Removal = .trash
+) -> Candidate {
     Candidate(id: id, ruleId: rule, path: "/h/" + id, bytes: bytes, safety: safety, removal: removal)
 }
 
@@ -93,7 +95,7 @@ struct SelectionTests {
     func groupState() {
         var s = fresh()
         let group = [safeA, safeB, careful]
-        #expect(s.state(of: group) == .mixed)          // two of three
+        #expect(s.state(of: group) == .mixed)  // two of three
         s.set(careful, to: true, confirmed: true)
         #expect(s.state(of: group) == .on)
         s.set(safeA, to: false); s.set(safeB, to: false); s.set(careful, to: false)
@@ -105,7 +107,7 @@ struct SelectionTests {
     @Test("group checkbox selects the bulk items but never the careful one")
     func groupNeverSelectsCareful() {
         var s = CleanupSelection()
-        s.update(candidates: [review, careful])           // nothing starts checked
+        s.update(candidates: [review, careful])  // nothing starts checked
         s.toggleGroup([review, careful])
         #expect(s.ids == ["review"])
         #expect(s.state(of: [review, careful]) == .mixed)
@@ -114,12 +116,12 @@ struct SelectionTests {
     @Test("group checkbox: all bulk items checked clears the whole group, careful included")
     func groupClearsEverything() {
         var s = fresh()
-        s.toggleGroup([safeA, safeB])                     // both on -> off
+        s.toggleGroup([safeA, safeB])  // both on -> off
         #expect(s.ids.isEmpty)
-        s.toggleGroup([safeA, safeB])                     // off -> on
+        s.toggleGroup([safeA, safeB])  // off -> on
         #expect(s.ids == ["safeA", "safeB"])
         s.set(careful, to: true, confirmed: true)
-        s.toggleGroup([safeA, safeB, careful])            // bulk all on -> clears the careful one too
+        s.toggleGroup([safeA, safeB, careful])  // bulk all on -> clears the careful one too
         #expect(s.ids.isEmpty)
     }
 

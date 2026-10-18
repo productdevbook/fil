@@ -30,12 +30,12 @@ private let size = CGSize(width: 800, height: 600)
 
 private func sample() -> FakeTree {
     FakeTree(nodes: [
-        .init(name: "~", parent: -1, own: 1_000_000),              // 0
-        .init(name: "Library", parent: 0, own: 100),               // 1
-        .init(name: "Caches", parent: 1, own: 6_000_000, safety: .safe),   // 2
-        .init(name: "Logs", parent: 1, own: 2_000_000),            // 3
-        .init(name: "proj", parent: 0, own: 4_000_000),            // 4
-        .init(name: "node_modules", parent: 4, own: 3_000_000, safety: .review), // 5
+        .init(name: "~", parent: -1, own: 1_000_000),  // 0
+        .init(name: "Library", parent: 0, own: 100),  // 1
+        .init(name: "Caches", parent: 1, own: 6_000_000, safety: .safe),  // 2
+        .init(name: "Logs", parent: 1, own: 2_000_000),  // 3
+        .init(name: "proj", parent: 0, own: 4_000_000),  // 4
+        .init(name: "node_modules", parent: 4, own: 3_000_000, safety: .review),  // 5
     ])
 }
 
@@ -45,7 +45,7 @@ struct LayoutTests {
     func topLevelFillsFrame() {
         let layout = MapLayouter.build(sample(), node: 0, size: size)
         let top = layout.tiles.filter { $0.depth == 0 }
-        #expect(top.count == 3)                                   // Library, proj, files of ~
+        #expect(top.count == 3)  // Library, proj, files of ~
         let sum = top.reduce(0.0) { $0 + Double($1.rect.width * $1.rect.height) }
         #expect(abs(sum - Double(size.width * size.height)) < 1)
         #expect(top.map(\.bytes) == top.map(\.bytes).sorted(by: >))
@@ -58,7 +58,7 @@ struct LayoutTests {
         #expect(top[0].kind == .folder(1) && top[0].bytes == 8_000_100)
         #expect(top[1].kind == .folder(4) && top[1].bytes == 7_000_000)
         #expect(top[2].kind == .files && top[2].bytes == 1_000_000)
-        #expect(top[2].name.isEmpty)                              // the UI localizes the text
+        #expect(top[2].name.isEmpty)  // the UI localizes the text
         #expect(top[0].name == "Library")
     }
 
@@ -98,7 +98,8 @@ struct LayoutTests {
         nodes.append(.init(name: "speck", parent: 0, own: 10))
         let layout = MapLayouter.build(FakeTree(nodes: nodes), node: 0, size: CGSize(width: 300, height: 200))
         #expect(layout.tiles.filter { $0.depth == 0 }.count == 1)
-        #expect(layout.tiles.allSatisfy { $0.rect.width >= MapLayouter.minSide && $0.rect.height >= MapLayouter.minSide })
+        #expect(
+            layout.tiles.allSatisfy { $0.rect.width >= MapLayouter.minSide && $0.rect.height >= MapLayouter.minSide })
     }
 
     @Test("more than maxItems folders: the tail becomes one 'rest' tile that carries its bytes")

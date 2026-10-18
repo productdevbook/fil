@@ -29,7 +29,8 @@ private final class BundleMarker {}
         return String(cString: resolved)
     }
 
-    func run(_ args: [String], snapshotDir: String, cwd: String? = nil, env extra: [String: String] = [:]) throws -> Run {
+    func run(_ args: [String], snapshotDir: String, cwd: String? = nil, env extra: [String: String] = [:]) throws -> Run
+    {
         let p = Process()
         if let cwd { p.currentDirectoryURL = URL(fileURLWithPath: cwd) }
         p.executableURL = Self.binary
@@ -46,8 +47,9 @@ private final class BundleMarker {}
         let o = out.fileHandleForReading.readDataToEndOfFile()
         let e = err.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        return Run(status: p.terminationStatus, stdout: String(decoding: o, as: UTF8.self),
-                   stderr: String(decoding: e, as: UTF8.self))
+        return Run(
+            status: p.terminationStatus, stdout: String(decoding: o, as: UTF8.self),
+            stderr: String(decoding: e, as: UTF8.self))
     }
 
     @Test func missingRootIsOneLineAndExitOne() throws {
@@ -146,8 +148,9 @@ private final class BundleMarker {}
         try Data().write(to: URL(fileURLWithPath: dir + "/notadir"))
         let r = try run(["scan", dir + "/root", "--porcelain"], snapshotDir: dir + "/notadir/snap")
         #expect(r.status == 0)
-        #expect(r.stderr == "fil: warning: could not save the snapshot (\(dir)/notadir: Not a directory); "
-            + "the next run does a full scan\n")
+        #expect(
+            r.stderr == "fil: warning: could not save the snapshot (\(dir)/notadir: Not a directory); "
+                + "the next run does a full scan\n")
         #expect(r.stdout.hasPrefix("mode=full alloc="))
         #expect(r.stdout.split(separator: "\n").count == 1)
     }
@@ -169,10 +172,12 @@ private final class BundleMarker {}
         #expect(errorMessage(CLIError(description: "x: y")) == "x: y")
         #expect(errorMessage(Own()) == "own message")
         #expect(errorMessage(POSIXError(.ENOENT), path: "/a") == "/a: No such file or directory")
-        let wrapped = CocoaError(.fileWriteUnknown, userInfo: [
-            NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTDIR)),
-            NSFilePathErrorKey: "/b",
-        ])
+        let wrapped = CocoaError(
+            .fileWriteUnknown,
+            userInfo: [
+                NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTDIR)),
+                NSFilePathErrorKey: "/b",
+            ])
         #expect(errorMessage(wrapped) == "/b: Not a directory")
         let plain = NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "Something broke."])
         #expect(errorMessage(plain) == "Something broke")

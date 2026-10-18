@@ -47,8 +47,9 @@ struct PlaceholderAndDeviceTests {
         }
     }
 
-    @Test("a volume mounted inside the root counts mountsSkipped; crossing devices enters it",
-          .enabled(if: DiskImage.isAvailable, "hdiutil is not available"))
+    @Test(
+        "a volume mounted inside the root counts mountsSkipped; crossing devices enters it",
+        .enabled(if: DiskImage.isAvailable, "hdiutil is not available"))
     func deviceCrossing() throws {
         try Fixture.with("cross-image") { box in
             try box.mk("src/rootfile", bytes: 400_000)
@@ -135,11 +136,14 @@ struct UpdateFailureTests {
         }
     }
 
-    @Test("historyUntrusted: a lost-history flag in the replay, one case per flag",
-          arguments: [(kFSEventStreamEventFlagUserDropped, "UserDropped"),
-                      (kFSEventStreamEventFlagKernelDropped, "KernelDropped"),
-                      (kFSEventStreamEventFlagEventIdsWrapped, "EventIdsWrapped"),
-                      (kFSEventStreamEventFlagRootChanged, "RootChanged")])
+    @Test(
+        "historyUntrusted: a lost-history flag in the replay, one case per flag",
+        arguments: [
+            (kFSEventStreamEventFlagUserDropped, "UserDropped"),
+            (kFSEventStreamEventFlagKernelDropped, "KernelDropped"),
+            (kFSEventStreamEventFlagEventIdsWrapped, "EventIdsWrapped"),
+            (kFSEventStreamEventFlagRootChanged, "RootChanged"),
+        ])
     func historyUntrusted(flag: Int, name: String) throws {
         try withSnapshotDir { dir in
             try Fixture.with { f in
@@ -148,7 +152,8 @@ struct UpdateFailureTests {
                 try f.mk("a/c", bytes: 100)
                 var o = ScanOptions()
                 o.faults.history.extraFlags = FSEventStreamEventFlags(flag)
-                guard case .historyUntrusted(let flags, let path)? = failure(Incremental.update(tree, options: o)) else {
+                guard case .historyUntrusted(let flags, let path)? = failure(Incremental.update(tree, options: o))
+                else {
                     Issue.record("expected historyUntrusted")
                     return
                 }
@@ -226,7 +231,9 @@ struct SnapshotHeaderTests {
                 let good = try Data(contentsOf: url)
                 let version: UInt8 = good[4]
                 func load() -> Snapshot.LoadFailure? {
-                    if case .failure(let why) = Snapshot.load(rootPath: f.root, privateSize: false, in: dir) { return why }
+                    if case .failure(let why) = Snapshot.load(rootPath: f.root, privateSize: false, in: dir) {
+                        return why
+                    }
                     return nil
                 }
                 #expect(load() == nil)
@@ -263,9 +270,10 @@ struct ConcurrentRegistryTests {
         }
         #expect(wins.allSatisfy { $0.value == 1 })
         #expect(registry.table.count == inodes)
-        #expect(registry.table.values.allSatisfy {
-            $0.owner > 0 && $0.others.count == dirs - 1 && !$0.others.contains($0.owner)
-        })
+        #expect(
+            registry.table.values.allSatisfy {
+                $0.owner > 0 && $0.others.count == dirs - 1 && !$0.others.contains($0.owner)
+            })
     }
 
     @Test("clones: a family claimed by many directories at once is counted once, with the dupes reported")

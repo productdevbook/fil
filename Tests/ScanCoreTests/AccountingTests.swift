@@ -119,8 +119,9 @@ struct UpdateStatsTests {
                 try f.chmod("y/locked", 0o000)
                 defer { try? f.chmod("y/locked", 0o755) }
                 var report = UpdateReport()
-                let failure = Incremental.applyTracked([EventHistory.Event(path: f.path("y"), mustScanSubDirs: false)],
-                                                       to: tree, options: ScanOptions(), report: &report)
+                let failure = Incremental.applyTracked(
+                    [EventHistory.Event(path: f.path("y"), mustScanSubDirs: false)],
+                    to: tree, options: ScanOptions(), report: &report)
                 #expect(failure == nil)
                 #expect(report.stats.openErrors == 1)
                 #expect(tree.stats.openErrors == 0)
@@ -143,8 +144,9 @@ struct CloneAdoptionTests {
                 let tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 // Only y is replayed, as if FSEvents had reported nothing for the original's directory.
                 var report = UpdateReport()
-                let failure = Incremental.applyTracked([EventHistory.Event(path: f.path("y"), mustScanSubDirs: false)],
-                                                       to: tree, options: ScanOptions(), report: &report)
+                let failure = Incremental.applyTracked(
+                    [EventHistory.Event(path: f.path("y"), mustScanSubDirs: false)],
+                    to: tree, options: ScanOptions(), report: &report)
                 #expect(failure == nil)
                 let full = try Scanner.scan(f.root)
                 #expect(Totals(tree) == Totals(full), "incremental \(Totals(tree)) full \(Totals(full))")
@@ -165,8 +167,9 @@ struct CloneAdoptionTests {
                 try f.clone("x/a", to: "y/b")
                 let tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 var report = UpdateReport()
-                let failure = Incremental.applyTracked([EventHistory.Event(path: f.path("y"), mustScanSubDirs: false)],
-                                                       to: tree, options: ScanOptions(), report: &report)
+                let failure = Incremental.applyTracked(
+                    [EventHistory.Event(path: f.path("y"), mustScanSubDirs: false)],
+                    to: tree, options: ScanOptions(), report: &report)
                 #expect(failure == nil)
                 let full = try Scanner.scan(f.root)
                 #expect(Totals(tree) == Totals(full), "incremental \(Totals(tree)) full \(Totals(full))")
@@ -206,7 +209,8 @@ struct CloneRegistryTests {
 
 @Suite("Firmlinks")
 struct FirmlinkTests {
-    let table = FirmlinkTable.parse("""
+    let table = FirmlinkTable.parse(
+        """
         /Users\tUsers
         /System/Library/Caches\tSystem/Library/Caches
         /usr/local\tusr/local
@@ -222,8 +226,12 @@ struct FirmlinkTests {
 
     @Test("only a scan covering both a firmlink and its data-volume twin skips the twin")
     func aliasesPerRoot() {
-        #expect(table.aliases(for: "/").map(\.dataPath)
-            == ["/System/Volumes/Data/System/Library/Caches", "/System/Volumes/Data/Users", "/System/Volumes/Data/usr/local"])
+        #expect(
+            table.aliases(for: "/").map(\.dataPath)
+                == [
+                    "/System/Volumes/Data/System/Library/Caches", "/System/Volumes/Data/Users",
+                    "/System/Volumes/Data/usr/local",
+                ])
         #expect(table.aliases(for: "/System").map(\.dataPath) == ["/System/Volumes/Data/System/Library/Caches"])
         #expect(table.aliases(for: "/Users/code/work").isEmpty)
         #expect(table.aliases(for: "/System/Volumes/Data").isEmpty)
@@ -235,29 +243,39 @@ struct FirmlinkTests {
     @Test("events reported under the data volume map to the firmlink path")
     func eventTranslation() {
         let aliases = table.aliases(for: "/")
-        #expect(Incremental.relativeComponents("/System/Volumes/Data/Users/code/x", prefixes: [""], aliases: aliases)
-            == ["Users", "code", "x"])
-        #expect(Incremental.relativeComponents("/System/Volumes/Data/Users", prefixes: [""], aliases: aliases) == ["Users"])
+        #expect(
+            Incremental.relativeComponents("/System/Volumes/Data/Users/code/x", prefixes: [""], aliases: aliases)
+                == ["Users", "code", "x"])
+        #expect(
+            Incremental.relativeComponents("/System/Volumes/Data/Users", prefixes: [""], aliases: aliases) == ["Users"])
         // Not a firmlinked directory: stays under the data volume.
-        #expect(Incremental.relativeComponents("/System/Volumes/Data/UsersX/y", prefixes: [""], aliases: aliases)
-            == ["System", "Volumes", "Data", "UsersX", "y"])
-        #expect(Incremental.relativeComponents("/System/Volumes/Data/mnt/z", prefixes: [""], aliases: aliases)
-            == ["System", "Volumes", "Data", "mnt", "z"])
+        #expect(
+            Incremental.relativeComponents("/System/Volumes/Data/UsersX/y", prefixes: [""], aliases: aliases)
+                == ["System", "Volumes", "Data", "UsersX", "y"])
+        #expect(
+            Incremental.relativeComponents("/System/Volumes/Data/mnt/z", prefixes: [""], aliases: aliases)
+                == ["System", "Volumes", "Data", "mnt", "z"])
     }
 
     @Test("a scan of / or /System keeps data-volume events at their own path, whatever the prefix order")
     func dataVolumePrefixInsideRoot() {
-        for (root, event, want) in [("/", "/System/Volumes/Data/mnt/z", ["System", "Volumes", "Data", "mnt", "z"]),
-                                    ("/System", "/System/Volumes/Data/System/x", ["Volumes", "Data", "System", "x"])] {
+        for (root, event, want) in [
+            ("/", "/System/Volumes/Data/mnt/z", ["System", "Volumes", "Data", "mnt", "z"]),
+            ("/System", "/System/Volumes/Data/System/x", ["Volumes", "Data", "System", "x"]),
+        ] {
             let prefixes = Incremental.rootPrefixes(root)
             for order in [prefixes, prefixes.reversed()] {
-                #expect(Incremental.relativeComponents(event, prefixes: order).map { $0.map(String.init) } == want,
-                        "root \(root) prefixes \(order)")
+                #expect(
+                    Incremental.relativeComponents(event, prefixes: order).map { $0.map(String.init) } == want,
+                    "root \(root) prefixes \(order)")
             }
         }
         // A root reached through a firmlink still maps events reported under the data volume.
-        #expect(Incremental.relativeComponents("/System/Volumes/Data/Users/code/x",
-                                               prefixes: Incremental.rootPrefixes("/Users/code"))
+        #expect(
+            Incremental.relativeComponents(
+                "/System/Volumes/Data/Users/code/x",
+                prefixes: Incremental.rootPrefixes("/Users/code")
+            )
             .map { $0.map(String.init) } == ["x"])
     }
 
@@ -268,7 +286,8 @@ struct FirmlinkTests {
             try f.mk("sys/Users/u/file", bytes: 50_000)
             try f.mk("data/Users/u/file", bytes: 50_000)
             try f.mk("data/other/f", bytes: 30_000)
-            let table = FirmlinkTable(dataRoot: f.path("data"), links: [.init(source: f.path("sys/Users"), target: "Users")])
+            let table = FirmlinkTable(
+                dataRoot: f.path("data"), links: [.init(source: f.path("sys/Users"), target: "Users")])
             let options = ScanOptions(firmlinks: table)
             let tree = try Scanner.scan(f.root, options: options)
             #expect(tree.stats.firmlinksSkipped == 1)
@@ -291,11 +310,15 @@ struct FirmlinkTests {
             try Fixture.with { f in
                 try f.mk("sys/Users/file", bytes: 1000)
                 try f.mk("data/Users/file", bytes: 1000)
-                let table = FirmlinkTable(dataRoot: f.path("data"), links: [.init(source: f.path("sys/Users"), target: "Users")])
+                let table = FirmlinkTable(
+                    dataRoot: f.path("data"), links: [.init(source: f.path("sys/Users"), target: "Users")])
                 try Snapshot.save(try Scanner.scan(f.root, options: ScanOptions(firmlinks: table)), in: dir)
                 let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 #expect(loaded.aliases == table.aliases(for: f.root))
-                guard case .failure(.firmlinksChanged) = Incremental.update(loaded, options: ScanOptions(firmlinks: .empty)) else {
+                guard
+                    case .failure(.firmlinksChanged) = Incremental.update(
+                        loaded, options: ScanOptions(firmlinks: .empty))
+                else {
                     Issue.record("expected firmlinksChanged")
                     return
                 }
