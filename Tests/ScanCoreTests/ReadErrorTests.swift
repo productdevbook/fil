@@ -278,6 +278,31 @@ struct IncompleteTests {
         }
     }
 
+    @Test("an incomplete re-read drops an unlisted child that was renamed, so nothing is counted twice")
+    func incompleteRereadDropsRenamed() throws {
+        let faults: [(String, (Fixture) -> ScanOptions)] = [
+            ("mid", { f in faulty { $0.bulk[f.path("x")] = [0, EIO] } }),
+            ("entry", { f in faulty { $0.entryError.insert(f.path("x")) } }),
+        ]
+        for (label, options) in faults {
+            try Fixture.with { f in
+                try f.mk("x/b/file", bytes: 300_000)
+                try f.mk("x/keep/file", bytes: 100_000)
+                let tree = try Scanner.scan(f.root)
+                try f.move("x/b", to: "x/d")
+                var report = UpdateReport()
+                #expect(Incremental.applyTracked([EventHistory.Event(path: f.path("x"), mustScanSubDirs: false)],
+                                                 to: tree, options: options(f), report: &report) == nil)
+                #expect(tree.node(at: f.path("x/b")) == nil, "\(label)")
+                #expect(tree.node(at: f.path("x/keep")) != nil, "\(label)")
+                #expect(tree.root.totalAlloc <= f.duBytes(), "\(label)")
+                if label == "mid" {
+                    #expect(Totals(tree) == Totals(try Scanner.scan(f.root)), "\(label)")
+                }
+            }
+        }
+    }
+
     @Test("the flag survives the snapshot and an update re-read sets or clears it")
     func snapshotAndUpdate() throws {
         try withSnapshotDir { dir in

@@ -212,6 +212,11 @@ public enum Incremental {
         var pendingLinks: [(dir: Int32, inode: UInt64, alloc: Int64, logical: Int64, cloneAware: Int64)] = []
         var pendingClones: [(dir: Int32, members: [CloneMember])] = []
         var newMounts: [MountPoint] = []
+        func stillDirectory(_ c: Int32) -> Bool {
+            var st = stat()
+            let found = tree.cPath(of: Int(c)).map { lstat($0, &st) } ?? lstat(tree.path(of: Int(c)), &st)
+            return found == 0 && st.st_mode & S_IFMT == S_IFDIR && st.st_dev == tree.rootDev
+        }
         for (id, out) in zip(reread, outcomes) {
             guard out.opened else {
                 if id == 0 { return .rootUnreadable(errno: out.openError) }
@@ -253,8 +258,11 @@ public enum Incremental {
                 let key = ChildKey(name: n.name, raw: tree.rawNames.isEmpty ? nil : tree.rawNames[c])
                 known.insert(key)
                 if !onDisk.contains(key) {
-                    // An incomplete listing proves nothing about what it did not list: the child keeps its last result.
-                    if !out.incomplete { killRoots.append(c) }
+                    // An incomplete listing proves nothing about what it did not list: the child keeps its last result
+                    // if it is still there as a directory of this volume. A rename shows up only as an event on the
+                    // parent, so a child that is gone must go now, or it would be counted next to its new name.
+                    // One `lstat` per unlisted child, only on this error path.
+                    if !out.incomplete || !stillDirectory(c) { killRoots.append(c) }
                     return
                 }
                 // A permission change shows up only as an event on the parent. A child we can no longer list is
