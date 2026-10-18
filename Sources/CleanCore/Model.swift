@@ -41,6 +41,17 @@ public enum CandidateNote: Sendable, Equatable, CustomStringConvertible {
     }
 }
 
+/// Device and inode of an item as seen at scan time; the Trash re-check compares them (chapter 04 §7.2).
+public struct FileID: Sendable, Equatable {
+    public let dev: dev_t
+    public let ino: ino_t
+
+    public init(dev: dev_t, ino: ino_t) {
+        self.dev = dev
+        self.ino = ino
+    }
+}
+
 public struct Candidate: Sendable {
     public let id: String
     public let ruleId: String
@@ -49,9 +60,12 @@ public struct Candidate: Sendable {
     public let safety: Safety
     public let note: CandidateNote?
     public let removal: Removal
+    /// Identity of the folder at scan time; nil for external candidates. A `.trash` candidate without one is
+    /// never moved.
+    public let fileID: FileID?
 
     public init(id: String, ruleId: String, path: String, bytes: Int64, safety: Safety, note: CandidateNote? = nil,
-                removal: Removal = .trash) {
+                removal: Removal = .trash, fileID: FileID? = nil) {
         self.id = id
         self.ruleId = ruleId
         self.path = path
@@ -59,6 +73,7 @@ public struct Candidate: Sendable {
         self.safety = safety
         self.note = note
         self.removal = removal
+        self.fileID = fileID
     }
 
     /// False for info-only items (e.g. the Trash): there is nothing the app can move or run for them.
@@ -150,7 +165,7 @@ public final class RuleContext: @unchecked Sendable {
         var p = (path as NSString).deletingLastPathComponent
         while p.count > home.count, claimedAncestors.insert(p).inserted { p = (p as NSString).deletingLastPathComponent }
         return Candidate(id: "\(rule):\(relative(path))", ruleId: rule, path: path, bytes: bytes,
-                         safety: safety, note: note, removal: removal)
+                         safety: safety, note: note, removal: removal, fileID: FileID(dev: st.st_dev, ino: st.st_ino))
     }
 
     /// A candidate whose data lives outside the tree (simulator runtimes, Docker): `bytes` comes from the tool,

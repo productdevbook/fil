@@ -275,6 +275,68 @@ struct ExecuteTests {
         #expect(FileManager.default.fileExists(atPath: outside.root + "/f"))
     }
 
+    /// A trasher that moves a different folder than the one it was asked for, as a swapped path would.
+    final class WrongItemTrasher: Trasher, @unchecked Sendable {
+        let other: String, trashDir: String
+        init(other: String, trashDir: String) { self.other = other; self.trashDir = trashDir }
+        func trash(_ url: URL) throws -> URL {
+            try FileManager.default.createDirectory(atPath: trashDir, withIntermediateDirectories: true)
+            let target = URL(fileURLWithPath: trashDir).appendingPathComponent("wrong")
+            try FileManager.default.moveItem(atPath: other, toPath: target.path)
+            return target
+        }
+    }
+
+    @Test("a symlinked ancestor, a replaced item and another device are skipped; nothing moves")
+    func identityRecheck() async throws {
+        let f = try Fixture(label: "home"), outside = try Fixture(label: "outside"), trash = try Fixture(label: "trash")
+        defer { f.remove(); outside.remove(); trash.remove() }
+        try makeHome(f, outside: outside)
+        let scan = try await scanCandidates(f)
+        let logs = try #require(scan.candidates.first { $0.id == "logs:Library/Logs/foo" })
+        let derived = try #require(scan.candidates.first { $0.id == derivedId })
+        let cache = try #require(scan.candidates.first { $0.id == "app-caches:Library/Caches/com.example.app" })
+        let apple = try #require(scan.candidates.first { $0.id == "app-caches:Library/Caches/com.apple.bird" })
+        // 1. Library/Logs becomes a symlink to a folder that also has a "foo" (same device, last component is a dir)
+        try outside.mk("L/foo/f", bytes: 10)
+        try f.move("Library/Logs", to: "Library/Logs.orig")
+        try f.symlink(outside.path("L"), at: "Library/Logs")
+        // 2. the item is replaced by a new folder of the same name (the old one is kept, so the inode is new)
+        try f.move("Library/Developer/Xcode/DerivedData/a", to: "Library/Developer/Xcode/DerivedData/a.old")
+        try f.mk("Library/Developer/Xcode/DerivedData/a/f", bytes: 10)
+        // 3. the recorded device is not the home volume's
+        let otherDev = Candidate(id: cache.id, ruleId: cache.ruleId, path: cache.path, bytes: cache.bytes,
+                                 safety: cache.safety, fileID: FileID(dev: cache.fileID!.dev &+ 1, ino: cache.fileID!.ino))
+        // 4. no identity recorded; and a path that climbs out with ".."
+        let noID = Candidate(id: apple.id, ruleId: apple.ruleId, path: apple.path, bytes: apple.bytes, safety: apple.safety)
+        let dots = Candidate(id: "d", ruleId: "r", path: f.root + "/Library/Caches/../Logs.orig/foo", bytes: 1,
+                             safety: .safe, fileID: logs.fileID)
+        let fake = FakeTrasher(trashDir: trash.path("t"))
+        let results = await Cleanup.execute([logs, derived, otherDev, noID, dots], home: scan.home, trasher: fake)
+        for (c, outcome) in results {
+            guard case .failed(.pathChanged) = outcome else { Issue.record("\(c.id): \(outcome)"); continue }
+        }
+        #expect(results.count == 5)
+        #expect(fake.movedItems.isEmpty)
+        #expect(outside.exists("L/foo/f"))
+        #expect(f.exists("Library/Caches/com.example.app/f"))
+    }
+
+    @Test("a different item in the Trash after the move is reported with where it is")
+    func movedOtherItem() async throws {
+        let f = try Fixture(label: "home"), outside = try Fixture(label: "outside"), trash = try Fixture(label: "trash")
+        defer { f.remove(); outside.remove(); trash.remove() }
+        try makeHome(f, outside: outside)
+        let scan = try await scanCandidates(f)
+        let logs = try #require(scan.candidates.first { $0.id == "logs:Library/Logs/foo" })
+        let t = WrongItemTrasher(other: f.path("Library/Caches/com.example.app"), trashDir: trash.path("t"))
+        let results = await Cleanup.execute([logs], home: scan.home, trasher: t)
+        guard case .failed(.movedOtherItem(let url))? = results.first?.1 else { Issue.record("\(results)"); return }
+        #expect(url.path == trash.path("t/wrong"))
+        #expect(Cleanup.Failure.movedOtherItem(url).description
+            == "a different item was moved to the Trash at \(url.path); put it back")
+    }
+
     @Test("info-only items do nothing; a command runs once for candidates that share it")
     func commandsAndInfoOnly() async throws {
         try await Fixture.withAsync { f in

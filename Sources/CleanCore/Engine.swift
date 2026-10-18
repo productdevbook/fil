@@ -88,11 +88,14 @@ public enum Cleanup {
     public enum Failure: Sendable, Equatable, CustomStringConvertible {
         /// The path is no longer a plain directory inside home on the home volume.
         case pathChanged
+        /// After the move, the item in the Trash is not the one that was checked: a different item was moved.
+        case movedOtherItem(URL)
         case system(String)
 
         public var description: String {
             switch self {
             case .pathChanged: "path changed or is not a plain directory in home; skipped"
+            case .movedOtherItem(let url): "a different item was moved to the Trash at \(url.path); put it back"
             case .system(let text): text
             }
         }
@@ -151,21 +154,54 @@ public enum Cleanup {
                 ran[argv] = outcome
                 results.append((c, outcome))
             case .trash:
-                // Re-check right before moving: still a real directory inside home, same volume.
-                var st = stat()
-                guard c.path.hasPrefix(home + "/"), lstat(c.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR,
-                      st.st_dev == homeDev else {
+                // Re-check right before moving (chapter 04 §7.2).
+                guard let id = c.fileID, stillSameItem(path: c.path, home: home, homeDev: homeDev, id: id) else {
                     results.append((c, .failed(.pathChanged)))
                     continue
                 }
                 do {
-                    results.append((c, .trashed(try trasher.trash(URL(fileURLWithPath: c.path)))))
+                    let url = try trasher.trash(URL(fileURLWithPath: c.path))
+                    results.append((c, movedItem(at: url, is: id) ? .trashed(url) : .failed(.movedOtherItem(url))))
                 } catch {
                     results.append((c, .failed(.system(error.localizedDescription))))
                 }
             }
         }
         return results
+    }
+}
+
+extension Cleanup {
+    /// Opens home, then every ancestor of `path` below it without following symlinks, and compares the last
+    /// component's identity with `id`. All descriptors are closed before it returns.
+    static func stillSameItem(path: String, home: String, homeDev: dev_t, id: FileID) -> Bool {
+        guard path.hasPrefix(home + "/"), id.dev == homeDev else { return false }
+        let components = path.dropFirst(home.count + 1).split(separator: "/", omittingEmptySubsequences: true)
+            .map(String.init)
+        guard let last = components.last, !components.contains(where: { $0 == "." || $0 == ".." }) else { return false }
+        var fd = open(home, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0, st.st_dev == homeDev else { return false }
+        for component in components.dropLast() {
+            let next = openat(fd, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard next >= 0 else { return false }
+            close(fd)
+            fd = next
+            guard fstat(fd, &st) == 0, st.st_dev == homeDev else { return false }
+        }
+        guard fstatat(fd, last, &st, AT_SYMLINK_NOFOLLOW) == 0, (st.st_mode & S_IFMT) == S_IFDIR else { return false }
+        return st.st_dev == id.dev && st.st_ino == id.ino
+    }
+
+    /// After the move: the item at `url` has the identity that was checked. A rename on one volume keeps the
+    /// inode. When the system does not let us look (no access to the Trash folder), the move cannot be
+    /// verified and is accepted.
+    static func movedItem(at url: URL, is id: FileID) -> Bool {
+        var st = stat()
+        guard lstat(url.path, &st) == 0 else { return errno == EPERM || errno == EACCES }
+        return st.st_dev == id.dev && st.st_ino == id.ino
     }
 }
 
