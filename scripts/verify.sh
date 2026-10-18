@@ -2,6 +2,7 @@
 # Scan-engine checks for fil scan: incremental (FSEvents) vs full scan vs du -skx.
 # Every fixture is a fresh mktemp dir under /private/tmp, removed before exit.
 # Usage: scripts/verify.sh   (exit 0 = all scenarios PASS)
+# No -e on purpose: the checks count failures and report them at the end instead of stopping at the first.
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd) || exit 1

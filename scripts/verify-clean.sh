@@ -4,6 +4,7 @@
 # Clean --yes really moves items to ~/.Trash; the script removes only the exact Trash path
 # that fil reported for a fixture item, after checking it lies under ~/.Trash.
 # Usage: scripts/verify-clean.sh   (exit 0 = all checks PASS)
+# No -e on purpose: the checks count failures and report them at the end instead of stopping at the first.
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd) || exit 1
