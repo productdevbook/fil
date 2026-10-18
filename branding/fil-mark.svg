@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="200 250 660 600" fill="#1F4E5A" color="#1F4E5A">
+  
+  <!-- macOS-style rounded square -->
+  
+  <!-- ear, behind the head -->
+  <path d="M600 300 C 760 260, 840 380, 820 500 C 805 600, 730 660, 640 640 C 600 560, 590 400, 600 300 Z"
+        fill="currentColor" opacity="0.55"/>
+  <!-- head -->
+  <circle cx="520" cy="470" r="190" fill="currentColor"/>
+  <!-- trunk: one stroke that sweeps down and curls up, like a broom stroke -->
+  <path d="M 425 515 C 340 600, 320 730, 395 770 C 455 802, 520 770, 512 718 C 506 684, 470 676, 452 698"
+        fill="none" stroke="currentColor" stroke-width="84" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- tusk -->
+  <path d="M 470 598 C 492 650, 540 676, 596 664 C 552 650, 522 622, 506 590 Z" fill="#FFFFFF"/>
+  <!-- eye -->
+  <circle cx="470" cy="430" r="22" fill="#FFFFFF"/>
+</svg>

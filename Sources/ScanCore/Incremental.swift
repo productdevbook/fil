@@ -1,0 +1,473 @@
+import CoreServices
+import Darwin
+import Foundation
+import Synchronization
+
+public struct UpdateReport: Sendable {
+    public var events = 0
+    public var dirsRead = 0          // directories re-read on their own (contents changed)
+    public var subtreesScanned = 0   // new or flagged directories walked in full
+    public var dirsRemoved = 0
+    public var historyTime: Duration = .zero
+    public var applyTime: Duration = .zero
+    /// Tolerant mode: bytes this update added to `DiskTree.uncertainBytes`, and the first such files.
+    public var uncertainBytes: Int64 = 0
+    public var uncertainPaths: [String] = []
+}
+
+/// Why an incremental update was not possible; the caller then does a full scan.
+/// After a failure the tree may be partly updated and must be discarded.
+public enum UpdateFailure: Error, Sendable, CustomStringConvertible {
+    /// The root cannot be examined (`lstat` failed) or, during the replay, listed.
+    case rootUnreadable(errno: Int32)
+    /// The root is now on another volume than the one the tree was scanned on.
+    case volumeChanged(expected: String, found: String)
+    /// FSEvents flagged the history as incomplete: names of the flags and the path they came with.
+    case historyUntrusted(flags: [String], path: String)
+    /// The history replay did not finish within its time limit.
+    case historyTimeout(seconds: Int)
+    /// The barrier event that closes the replay did not arrive in time.
+    case barrierTimeout(seconds: Int)
+    /// The FSEvents stream or its barrier directory could not be set up.
+    case streamFailed(String)
+    /// A file with several hard links, older than the tree, that the tree has no record of: it was counted
+    /// somewhere as a single-link file. Paths of the first such files found.
+    case unattributedHardLink(paths: [String])
+
+    public var description: String {
+        switch self {
+        case .rootUnreadable(let e): "root unreadable (\(String(cString: strerror(e))))"
+        case .volumeChanged(let a, let b): "volume changed (\(a.isEmpty ? "unknown" : a) -> \(b.isEmpty ? "unknown" : b))"
+        case .historyUntrusted(let flags, let path): "history untrusted (\(flags.joined(separator: ", ")) at \(path))"
+        case .historyTimeout(let s): "history replay timed out after \(s) s"
+        case .barrierTimeout(let s): "barrier event timed out after \(s) s"
+        case .streamFailed(let why): "FSEvents stream failed: \(why)"
+        case .unattributedHardLink(let paths):
+            "unattributed hard link: \(paths.prefix(5).joined(separator: ", "))"
+                + (paths.count > 5 ? " (+\(paths.count - 5) more)" : "")
+        }
+    }
+}
+
+/// Brings a saved `DiskTree` up to date by replaying FSEvents since its last scan,
+/// re-reading only the directories that changed.
+public enum Incremental {
+    /// Fails when the history cannot be trusted (other volume, journal reset, dropped events, ...);
+    /// the caller should then discard the tree and do a full scan.
+    public static func update(_ tree: DiskTree, options: ScanOptions = ScanOptions()) -> Result<UpdateReport, UpdateFailure> {
+        Scanner.preventCloudDownloads()
+        var st = stat()
+        guard lstat(tree.rootPath, &st) == 0 else { return .failure(.rootUnreadable(errno: errno)) }
+        let volume = Scanner.volumeUUID(st.st_dev)
+        guard !tree.volumeUUID.isEmpty, volume == tree.volumeUUID else {
+            return .failure(.volumeChanged(expected: tree.volumeUUID, found: volume))
+        }
+        // Device numbers are assigned at mount time and may differ after a reboot.
+        tree.rootDev = st.st_dev
+
+        var report = UpdateReport()
+        var t = Timings.Lap("update")
+        let start = ContinuousClock.now
+        // Before the barrier event is made, like in a full scan: later changes are replayed by the next update.
+        let startWallClock = Scanner.nowNanoseconds()
+        let history: EventHistory
+        switch EventHistory.fetch(root: tree.rootPath, since: tree.eventId) {
+        case .failure(let why): return .failure(why)
+        case .success(let h): history = h
+        }
+        report.events = history.events.count
+        report.historyTime = ContinuousClock.now - start
+        t.lap("history(\(history.events.count) events)")
+
+        let applyStart = ContinuousClock.now
+        tree.hardlinks.beginUpdate(cutoff: tree.scanStart, strict: options.strictHardlinks)
+        tree.hardlinks.trackDrift()
+        defer {
+            tree.hardlinks.endUpdate()
+            _ = tree.hardlinks.takeDrift()
+        }
+        if let why = apply(history.events, to: tree, options: options, report: &report) { return .failure(why) }
+        t.lap("apply")
+        tree.eventId = history.barrierId
+        tree.scanStart = startWallClock
+        if tree.hardlinks.unattributed {
+            report.uncertainBytes = tree.hardlinks.unattributedAlloc
+            report.uncertainPaths = tree.hardlinks.unattributedPaths
+            tree.uncertainBytes += report.uncertainBytes
+        }
+        report.applyTime = ContinuousClock.now - applyStart
+        return .success(report)
+    }
+
+    /// Replays `events` on `tree`. Work is proportional to the changed directories and their ancestors,
+    /// not to the size of the tree: child lists are kept on the tree, totals are fixed up along ancestor chains.
+    private static func apply(_ events: [EventHistory.Event], to tree: DiskTree, options: ScanOptions,
+                              report: inout UpdateReport) -> UpdateFailure? {
+        guard !events.isEmpty else { return nil }
+        func unattributed() -> UpdateFailure { .unattributedHardLink(paths: tree.hardlinks.unattributedPaths) }
+        var t = Timings.Lap("apply")
+        let firstNew = tree.nodes.count
+        tree.syncLinks()
+        let prefixes = rootPrefixes(tree.rootPath)
+        t.lap("links")
+
+        // 1. Map each event to the nearest directory we know; a new directory is found by re-reading its parent.
+        var full = Set<Int32>()
+        var shallow = Set<Int32>()
+        for e in events {
+            guard let comps = relativeComponents(e.path, prefixes: prefixes) else { continue }
+            var id: Int32 = 0
+            for c in comps {
+                guard let child = tree.child(of: id, named: String(c)) else { break }
+                id = child
+            }
+            if e.mustScanSubDirs { full.insert(id) } else { shallow.insert(id) }
+        }
+        func underFull(_ id: Int32, includingSelf: Bool) -> Bool {
+            var i = includingSelf ? id : tree.nodes[Int(id)].parent
+            while i >= 0 {
+                if full.contains(i) { return true }
+                i = tree.nodes[Int(i)].parent
+            }
+            return false
+        }
+        shallow = shallow.filter { !underFull($0, includingSelf: true) }
+        full = full.filter { $0 == 0 || !underFull($0, includingSelf: false) }
+        t.lap("map(\(shallow.count) shallow, \(full.count) full)")
+
+        // 2. Re-read changed directories in parallel, then apply the results in id order.
+        // Hard links are claimed only after their old records are dropped.
+        let reread = shallow.sorted()
+        let outcomes = readDirectories(reread.map { tree.path(of: Int($0)) }, tree: tree, options: options)
+        report.dirsRead += reread.count
+        t.lap("reread(\(reread.count))")
+        if options.strictHardlinks && tree.hardlinks.unattributed { return unattributed() }
+
+        var changed: [Int32] = []           // own sizes or children changed; totals are fixed up from here
+        var killRoots: [Int32] = []
+        var unreadable: [Int32] = []        // kept, but a full scan would not know what is inside
+        var readable: [Int32] = []          // unreadable children that can be listed again
+        var newDirs: [Int32] = []
+        var pendingLinks: [(dir: Int32, inode: UInt64, alloc: Int64, logical: Int64)] = []
+        for (id, out) in zip(reread, outcomes) {
+            guard out.opened else {
+                if id == 0 { return .rootUnreadable(errno: out.openError) }
+                if out.isGone {
+                    killRoots.append(id)
+                } else {
+                    // Unreadable (permissions): keep it as a full scan does, empty and counted in openErrors.
+                    tree.nodes[Int(id)].ownAlloc = 0
+                    tree.nodes[Int(id)].ownLogical = 0
+                    tree.nodes[Int(id)].ownFiles = 0
+                    tree.nodes[Int(id)].unreadable = true
+                    tree.stats.openErrors += 1
+                    changed.append(id)
+                    unreadable.append(id)
+                }
+                continue
+            }
+            tree.nodes[Int(id)].ownAlloc = out.alloc
+            tree.nodes[Int(id)].ownLogical = out.logical
+            tree.nodes[Int(id)].ownFiles = out.files
+            tree.nodes[Int(id)].unreadable = false
+            changed.append(id)
+            var knownNames = Set<String>()
+            let onDisk = Set(out.childDirs)
+            let denied = Set(out.deniedChildDirs)
+            tree.forEachChild(of: id) { c in
+                let n = tree.nodes[Int(c)]
+                knownNames.insert(n.name)
+                if !onDisk.contains(n.name) {
+                    killRoots.append(c)
+                    return
+                }
+                // A permission change shows up only as an event on the parent. A child we can no longer list is
+                // emptied like a full scan leaves it; one that became listable again is walked.
+                // A child re-read or rescanned on its own is settled there.
+                if shallow.contains(c) || full.contains(c) { return }
+                let denied = denied.contains(n.name)
+                if denied && !n.unreadable {
+                    tree.nodes[Int(c)].ownAlloc = 0
+                    tree.nodes[Int(c)].ownLogical = 0
+                    tree.nodes[Int(c)].ownFiles = 0
+                    tree.nodes[Int(c)].unreadable = true
+                    changed.append(c)
+                    unreadable.append(c)
+                } else if !denied && n.unreadable {
+                    readable.append(c)
+                }
+            }
+            for name in out.childDirs where !knownNames.contains(name) {
+                newDirs.append(Int32(tree.nodes.count))
+                tree.nodes.append(DirNode(parent: id, name: name))
+            }
+            for l in out.deferredLinks { pendingLinks.append((id, l.inode, l.alloc, l.logical)) }
+        }
+        t.lap("diff")
+
+        // 3. Mark removed directories and the old contents of fully rescanned ones, walking only those subtrees.
+        tree.syncLinks()
+        var affected = [Bool](repeating: false, count: tree.nodes.count)
+        for id in shallow { affected[Int(id)] = true }
+        for id in full { affected[Int(id)] = true }
+        for id in unreadable { affected[Int(id)] = true }
+        var stack: [Int32] = []
+        func kill(_ root: Int32) {
+            stack.append(root)
+            while let i = stack.popLast() {
+                guard !tree.nodes[Int(i)].isDead else { continue }
+                tree.forEachChild(of: i) { stack.append($0) }
+                tree.nodes[Int(i)].parent = DirNode.dead
+                affected[Int(i)] = true
+                report.dirsRemoved += 1
+            }
+        }
+        for id in killRoots where !tree.nodes[Int(id)].isDead {
+            changed.append(tree.nodes[Int(id)].parent)
+            kill(id)
+        }
+        for id in full.sorted() + unreadable {
+            changed.append(id)
+            var kids: [Int32] = []
+            tree.forEachChild(of: id) { kids.append($0) }
+            kids.forEach(kill)
+        }
+        t.lap("dead")
+        // Every record of a re-read, rescanned or removed directory is dropped; the re-read puts back what is still there.
+        tree.hardlinks.forget { Int($0) < affected.count && affected[Int($0)] }
+        t.lap("forget")
+
+        for l in pendingLinks where !tree.nodes[Int(l.dir)].isDead
+            && tree.hardlinks.claim(l.inode, by: l.dir, alloc: l.alloc, logical: l.logical) {
+            tree.nodes[Int(l.dir)].ownAlloc += l.alloc
+            tree.nodes[Int(l.dir)].ownLogical += l.logical
+            tree.nodes[Int(l.dir)].ownFiles += 1
+        }
+
+        // 4. Walk new directories and flagged subtrees in one parallel pass.
+        let targets = full.sorted() + (newDirs + readable).filter { !tree.nodes[Int($0)].isDead }
+        report.subtreesScanned = targets.count
+        let gone = Scanner.rescanSubtrees(targets, in: tree, options: options)
+        if let e = gone[0] { return .rootUnreadable(errno: e) }
+        for id in gone.keys {
+            changed.append(tree.nodes[Int(id)].parent)
+            tree.nodes[Int(id)].parent = DirNode.dead
+        }
+        t.lap("rescan(\(targets.count))")
+        if options.strictHardlinks && tree.hardlinks.unattributed { return unattributed() }
+
+        // 5. A file changed through a link in a directory that does not own it: if only that directory got an
+        // event, the owner was not re-read and still counts the old size.
+        for (dir, d) in tree.hardlinks.takeDrift() where !tree.nodes[Int(dir)].isDead {
+            tree.nodes[Int(dir)].ownAlloc += d.alloc
+            tree.nodes[Int(dir)].ownLogical += d.logical
+            changed.append(dir)
+        }
+
+        // 6. An inode whose owner lost its link while another directory still has one moves to that directory.
+        for m in tree.hardlinks.resolveOrphans() {
+            tree.nodes[Int(m.dir)].ownAlloc += m.alloc
+            tree.nodes[Int(m.dir)].ownLogical += m.logical
+            tree.nodes[Int(m.dir)].ownFiles += 1
+            changed.append(m.dir)
+        }
+        t.lap("links+orphans")
+
+        tree.updateTotals(changed: changed, firstNew: firstNew)
+        t.lap("totals")
+        return nil
+    }
+
+    /// Reads each directory once with up to `options.threads` workers; results are in input order.
+    /// Invariant: nothing mutates the hard-link table while this runs. Workers only call `vet`, which reads the
+    /// table under its lock; every claim is deferred (the closure returns nil) and made after `forget`, on one thread.
+    private static func readDirectories(_ paths: [String], tree: DiskTree, options: ScanOptions) -> [DirOutcome] {
+        guard !paths.isEmpty else { return [] }
+        let config = DirReader.Config(rootDev: tree.rootDev, options: options, userAccess: true)
+        let hardlinks = tree.hardlinks
+        var results = [DirOutcome](repeating: DirOutcome(), count: paths.count)
+        let nextIndex = Atomic<Int>(0)
+        let workers = min(options.threads, paths.count)
+        results.withUnsafeMutableBufferPointer { buf in
+            // Each index is written by exactly one worker; `concurrentPerform` returns after all of them finish.
+            nonisolated(unsafe) let out = buf
+            DispatchQueue.concurrentPerform(iterations: workers) { _ in
+                let reader = DirReader(config)
+                defer { reader.deallocate() }
+                while true {
+                    let k = nextIndex.wrappingAdd(1, ordering: .relaxed).oldValue
+                    guard k < paths.count else { break }
+                    let dirPath = paths[k]
+                    var t0 = Timings.enabled ? Timings.Lap("apply") : nil
+                    out[k] = reader.read(dirPath) { inode, alloc, _, name in
+                        hardlinks.vet(inode, alloc: alloc, dirPath: dirPath, name: name)
+                        return nil
+                    }
+                    if let mark = t0?.mark, ContinuousClock.now - mark > .milliseconds(20) {
+                        t0?.lap("  slow read: \(out[k].files) files, \(dirPath)")
+                    }
+                }
+            }
+        }
+        return results
+    }
+
+    /// FSEvents may report a path through the Data volume's firmlink rather than the path we scanned.
+    fileprivate static func rootPrefixes(_ root: String) -> [String] {
+        var out = [root]
+        if let real = realpath(root, nil) {
+            out.append(String(cString: real))
+            free(real)
+        }
+        out.append("/System/Volumes/Data" + root)
+        return Array(Set(out.map { $0 == "/" ? "" : $0 }))
+    }
+
+    private static func relativeComponents(_ path: String, prefixes: [String]) -> [Substring]? {
+        var p = Substring(path)
+        while p.count > 1 && p.hasSuffix("/") { p = p.dropLast() }
+        for prefix in prefixes {
+            if p == prefix || (prefix.isEmpty && p == "/") { return [] }
+            if p.hasPrefix(prefix + "/") {
+                return p.dropFirst(prefix.count + 1).split(separator: "/")
+            }
+        }
+        return nil
+    }
+}
+
+// MARK: - FSEvents history replay
+
+private final class EventHistory: @unchecked Sendable {
+    struct Event {
+        let path: String
+        let mustScanSubDirs: Bool
+    }
+
+    private enum Phase { case history, live, finished }
+
+    var events: [Event] = []
+    /// Set when FSEvents reports lost history: the flag names and the event path.
+    var untrusted: (flags: [String], path: String)?
+    /// Id of the barrier event: every change made before `fetch` was called has an id at or below it.
+    private(set) var barrierId: FSEventStreamEventId = 0
+    private var phase = Phase.history
+    private var barrierPaths: Set<String> = []
+    private let historyDone = DispatchSemaphore(value: 0)
+    private let done = DispatchSemaphore(value: 0)
+
+    /// Replays every directory-level event under `root` since `since`, up to a barrier event made by this call.
+    ///
+    /// HistoryDone alone is not enough: fseventsd assigns event ids when it reads the kernel queue, so a change
+    /// finished just before this call may still be unnumbered (its id will be above `FSEventsGetCurrentEventId()`)
+    /// and is delivered as a live event after HistoryDone. `FSEventStreamFlushSync` does not wait for it either.
+    /// So after HistoryDone we create a file in a private directory that the same stream watches: the kernel
+    /// queues that event after every earlier change, and the stream delivers in id order, so once it arrives
+    /// every earlier change under `root` has been delivered.
+    static func fetch(root: String, since: FSEventStreamEventId) -> Result<EventHistory, UpdateFailure> {
+        guard let barrierDir = makeBarrierDir() else {
+            return .failure(.streamFailed("barrier directory: \(String(cString: strerror(errno)))"))
+        }
+        let marker = barrierDir + "/barrier"
+        defer {
+            unlink(marker)
+            rmdir(barrierDir)
+        }
+        let history = EventHistory()
+        history.barrierPaths = Set(Incremental.rootPrefixes(barrierDir))
+        var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(history).toOpaque(),
+                                           retain: nil, release: nil, copyDescription: nil)
+        let callback: FSEventStreamCallback = { _, info, count, paths, flags, ids in
+            let h = Unmanaged<EventHistory>.fromOpaque(info!).takeUnretainedValue()
+            guard h.phase != .finished else { return }
+            let paths = unsafeBitCast(paths, to: NSArray.self)
+            for i in 0..<count {
+                let f = flags[i]
+                let path = paths[i] as! String
+                if f & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 {
+                    if h.phase == .history {
+                        h.phase = .live
+                        h.historyDone.signal()
+                    }
+                    continue
+                }
+                let lost = FSEventStreamEventFlags(kFSEventStreamEventFlagUserDropped
+                    | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped
+                    | kFSEventStreamEventFlagRootChanged)
+                // Untrusted history means a full scan anyway, so there is no barrier to wait for.
+                let untrusted = f & lost != 0
+                if untrusted || (h.phase == .live && h.isBarrier(path)) {
+                    if untrusted { h.untrusted = (EventHistory.lostFlagNames(f), path) } else { h.barrierId = ids[i] }
+                    if h.phase == .history { h.historyDone.signal() }
+                    h.phase = .finished
+                    h.done.signal()
+                    return
+                }
+                let must = f & FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs) != 0
+                h.events.append(Event(path: path, mustScanSubDirs: must))
+            }
+        }
+        let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer
+            | kFSEventStreamCreateFlagWatchRoot)
+        guard let stream = FSEventStreamCreate(kCFAllocatorDefault, callback, &context,
+                                               [root, barrierDir] as CFArray, since, 0, flags) else {
+            return .failure(.streamFailed("FSEventStreamCreate"))
+        }
+        let queue = DispatchQueue(label: "Fil.fsevents")
+        FSEventStreamSetDispatchQueue(stream, queue)
+        guard FSEventStreamStart(stream) else {
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            return .failure(.streamFailed("FSEventStreamStart"))
+        }
+        // 30 s for the history replay; the barrier event, made after it, gets its own short timeout.
+        let historyLimit = 30, barrierLimit = 2
+        var failure: UpdateFailure?
+        if history.historyDone.wait(timeout: .now() + .seconds(historyLimit)) != .success {
+            failure = .historyTimeout(seconds: historyLimit)
+        } else {
+            let fd = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+            if fd >= 0 {
+                close(fd)
+                if history.done.wait(timeout: .now() + .seconds(barrierLimit)) != .success {
+                    failure = .barrierTimeout(seconds: barrierLimit)
+                }
+            } else {
+                failure = .streamFailed("barrier file: \(String(cString: strerror(errno)))")
+            }
+        }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        queue.sync {} // the callback runs on `queue`; drain it before reading `events`
+        if let lost = history.untrusted { return .failure(.historyUntrusted(flags: lost.flags, path: lost.path)) }
+        if let failure { return .failure(failure) }
+        return .success(history)
+    }
+
+    private static func lostFlagNames(_ f: FSEventStreamEventFlags) -> [String] {
+        let names: [(Int, String)] = [
+            (kFSEventStreamEventFlagUserDropped, "UserDropped"), (kFSEventStreamEventFlagKernelDropped, "KernelDropped"),
+            (kFSEventStreamEventFlagEventIdsWrapped, "EventIdsWrapped"), (kFSEventStreamEventFlagRootChanged, "RootChanged"),
+        ]
+        return names.filter { f & FSEventStreamEventFlags($0.0) != 0 }.map(\.1)
+    }
+
+    private func isBarrier(_ path: String) -> Bool {
+        var p = Substring(path)
+        while p.count > 1 && p.hasSuffix("/") { p = p.dropLast() }
+        return barrierPaths.contains(String(p))
+    }
+
+    /// A fresh directory of our own, resolved through symlinks (/var -> /private/var) as FSEvents reports it.
+    private static func makeBarrierDir() -> String? {
+        var template = Array((NSTemporaryDirectory() + "Fil-fsevents.XXXXXX").utf8CString)
+        guard let made = mkdtemp(&template) else { return nil }
+        guard let real = realpath(made, nil) else {
+            rmdir(made)
+            return nil
+        }
+        defer { free(real) }
+        return String(cString: real)
+    }
+}

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    # Fil targets macOS 27 and needs the macOS 27 SDK (Xcode 27). The only hosted image that has it is the
+    # `xcode-27` preview image (macOS 27.0.1, Xcode 27.0 / 27.1 RC / 27.2 beta; arm64), listed in
+    # https://github.com/actions/runner-images. Previews are outside the Actions SLA. The `macos-*` images
+    # (latest: macOS 26) cannot build this package: its platform is macOS 27.
+    runs-on: xcode-27
+    timeout-minutes: 30
+    env:
+      # Same Xcode as local development. The image installs it at this path.
+      DEVELOPER_DIR: /Applications/Xcode_27.1_Release_Candidate.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcrun --show-sdk-version
+          swift --version
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Test
+        # The incremental-update tests replay real FSEvents history (suite "Incremental update vs full scan
+        # (FSEvents)"). If fseventsd misbehaves on the runner, add `--skip FSEvents` here.
+        run: swift test

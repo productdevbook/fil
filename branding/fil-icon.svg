@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3B8C8A"/>
+      <stop offset="1" stop-color="#1F4E5A"/>
+    </linearGradient>
+    <linearGradient id="skin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F4F7F7"/>
+      <stop offset="1" stop-color="#D9E3E4"/>
+    </linearGradient>
+  </defs>
+  <!-- macOS-style rounded square -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <!-- ear, behind the head -->
+  <path d="M600 300 C 760 260, 840 380, 820 500 C 805 600, 730 660, 640 640 C 600 560, 590 400, 600 300 Z"
+        fill="#C5D3D5"/>
+  <!-- head -->
+  <circle cx="520" cy="470" r="190" fill="#EDF2F2"/>
+  <!-- trunk: one stroke that sweeps down and curls up, like a broom stroke -->
+  <path d="M 425 515 C 340 600, 320 730, 395 770 C 455 802, 520 770, 512 718 C 506 684, 470 676, 452 698"
+        fill="none" stroke="#EDF2F2" stroke-width="104" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- tusk -->
+  <path d="M 470 598 C 492 650, 540 676, 596 664 C 552 650, 522 622, 506 590 Z" fill="#FFFFFF"/>
+  <!-- eye -->
+  <circle cx="470" cy="430" r="22" fill="#1F4E5A"/>
+  <!-- sparkle: clean -->
+  <path d="M 285 250 L 302 300 L 352 317 L 302 334 L 285 384 L 268 334 L 218 317 L 268 300 Z" fill="#FFE08A"/>
+  <path d="M 755 735 L 764 760 L 789 769 L 764 778 L 755 803 L 746 778 L 721 769 L 746 760 Z" fill="#FFE08A" opacity="0.85"/>
+</svg>
