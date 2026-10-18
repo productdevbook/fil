@@ -1,7 +1,7 @@
 import Foundation
 import ScanCore
 
-let version = "0.1.1"
+let version = "0.2.0"
 
 let mainHelp = """
     Usage: fil <command> [options]
