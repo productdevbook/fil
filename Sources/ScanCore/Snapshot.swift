@@ -12,6 +12,7 @@ public enum Snapshot {
     /// 6: byte 8 is the mode byte (bit 0 `privateSize`, bit 1 `crossDevices`); after the aliases the body is a list of
     /// sections (`Section`), each `tag u32 | size u64 | payload`, ended by tag 0; adds the skipped mount points.
     /// Later additions without a version bump: the optional `stats` section (#15).
+    /// Directory names that are not UTF-8 go in a must-understand section (`rawNames`), present only when there are any.
     /// Older versions are not read: a full scan rebuilds what they lack.
     private static let version: UInt32 = 6
 
@@ -29,6 +30,9 @@ public enum Snapshot {
         /// Without it the tree has no last-known counters (`DiskTree.fullScanStart == nil`). At least 72 bytes: values a
         /// later writer appends are skipped.
         case stats = 5
+        /// Raw bytes of directory names that are not valid UTF-8 (`DiskTree.rawNames`); written only when there are
+        /// any. Must be understood: without it those directories could not be opened again.
+        case rawNames = 0x8000_0006
         static let mustUnderstand: UInt32 = 0x8000_0000
     }
 
@@ -185,6 +189,17 @@ public enum Snapshot {
             w.end(section)
         }
 
+        if !tree.rawNames.isEmpty {
+            section = w.begin(.rawNames)
+            w.put(UInt32(tree.rawNames.count))
+            for (id, bytes) in tree.rawNames {
+                w.put(id)
+                w.put(UInt32(bytes.count))
+                for b in bytes { w.put(b) }
+            }
+            w.end(section)
+        }
+
         w.put(Section.end.rawValue)
         w.put(UInt64(0))
         t.lap("encode(\(w.count) bytes)")
@@ -289,6 +304,7 @@ public enum Snapshot {
             var families: [UInt64: CloneRegistry.Entry] = [:]
             var mountPoints: [MountPoint] = []
             var stats: (ScanStats, start: Int64)?
+            var rawNames: [Int32: [UInt8]] = [:]
             var seen = Set<UInt32>()
             while true {
                 let tag = r.get(UInt32.self)
@@ -318,6 +334,7 @@ public enum Snapshot {
                     stats = (ScanStats(stored: v), r.get(Int64.self))
                     ok = r.ok
                     r.offset = sectionEnd
+                case .rawNames: ok = r.getRawNames(into: &rawNames, nodeCount: nodes.count)
                 case .end: ok = false
                 }
                 guard ok, r.ok, r.offset == sectionEnd else { return .failure(.corrupt) }
@@ -332,6 +349,7 @@ public enum Snapshot {
             tree.uncertainBytes = max(uncertainBytes, 0)
             tree.stats = stats?.0 ?? ScanStats()
             tree.fullScanStart = stats?.start
+            tree.rawNames = rawNames
             tree.computeTotals()
             t.lap("computeTotals")
             return .success(tree)
@@ -491,6 +509,20 @@ private struct Reader {
             let name = getString()
             guard ok, parent >= 0, parent < count, !name.isEmpty else { return false }
             mountPoints.append(MountPoint(parent: parent, name: name))
+        }
+        return true
+    }
+
+    /// id i32 (not the root), length u32 (not 0), bytes.
+    mutating func getRawNames(into names: inout [Int32: [UInt8]], nodeCount count: Int) -> Bool {
+        let n = Int(get(UInt32.self))
+        guard ok, n <= (raw.count - offset) / 9 else { return false }
+        for _ in 0..<n {
+            let id = get(Int32.self)
+            let len = Int(get(UInt32.self))
+            guard ok, id > 0, id < count, len > 0, offset + len <= raw.count else { return false }
+            names[id] = Array(UnsafeRawBufferPointer(rebasing: raw[offset..<offset + len]))
+            offset += len
         }
         return true
     }

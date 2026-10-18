@@ -18,6 +18,15 @@ public final class DiskImage: @unchecked Sendable {
         guard status == 0 else { return nil }
     }
 
+    /// An empty image of `megabytes` with file system `fs` (an `hdiutil create -fs` name such as "MS-DOS"), without a
+    /// partition map so that its file system starts at byte 0. Nil when `hdiutil create` fails.
+    public init?(emptyMegabytes megabytes: Int, fs: String, at path: String, volumeName: String = "FILTEST") {
+        self.path = path
+        let status = Process.run(Self.hdiutil, ["create", "-quiet", "-ov", "-size", "\(megabytes)m", "-fs", fs,
+                                                "-layout", "NONE", "-volname", volumeName, path])
+        guard status == 0 else { return nil }
+    }
+
     /// Mounts the image on the existing directory `mountPoint` (not shown in the Finder). False when it fails.
     public func attach(at mountPoint: String) -> Bool {
         let status = Process.run(Self.hdiutil, ["attach", "-quiet", "-nobrowse", "-noautoopen", "-noverify",

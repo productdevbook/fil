@@ -347,6 +347,9 @@ public final class DiskTree: @unchecked Sendable {
     /// Mount points the scan skipped inside the root, each under a live directory (none with `crossDevices`).
     /// Refreshed whenever their parent is listed again; compared with the mount table on every update.
     public internal(set) var mountPoints: [MountPoint] = []
+    /// Raw bytes of the directory names that are not valid UTF-8; `DirNode.name` then holds a display form with
+    /// U+FFFD, which no syscall can open. Rare: empty for most trees.
+    public internal(set) var rawNames: [Int32: [UInt8]] = [:]
     /// An update changed the tree since it was loaded, scanned or saved: `Snapshot.advance` must not be used.
     var changedSinceSave = false
     let exclusions: [String: Set<String>]
@@ -397,6 +400,32 @@ public final class DiskTree: @unchecked Sendable {
         }
         let base = rootPath == "/" ? "" : rootPath
         return parts.isEmpty ? rootPath : base + "/" + parts.reversed().joined(separator: "/")
+    }
+
+    /// The path of `id` for a syscall, NUL-terminated, built from `rawNames`; nil when `path(of:)` is exact (no
+    /// component on the way to the root has a raw name).
+    func cPath(of id: Int) -> [CChar]? {
+        guard !rawNames.isEmpty else { return nil }
+        var parts: [[UInt8]] = []
+        var raw = false
+        var i = id
+        while i > 0 {
+            if let r = rawNames[Int32(i)] {
+                parts.append(r)
+                raw = true
+            } else {
+                parts.append(Array(nodes[i].name.utf8))
+            }
+            i = Int(nodes[i].parent)
+        }
+        guard raw else { return nil }
+        var out = Array((rootPath == "/" ? "" : rootPath).utf8)
+        for p in parts.reversed() {
+            out.append(UInt8(ascii: "/"))
+            out += p
+        }
+        out.append(0)
+        return out.map { CChar(bitPattern: $0) }
     }
 
     public func computeTotals() {
@@ -488,6 +517,11 @@ public final class DiskTree: @unchecked Sendable {
         clones.remap(map)
         mountPoints = mountPoints.compactMap { m in
             map[Int(m.parent)] < 0 ? nil : MountPoint(parent: map[Int(m.parent)], name: m.name)
+        }
+        if !rawNames.isEmpty {
+            rawNames = Dictionary(uniqueKeysWithValues: rawNames.compactMap { id, bytes in
+                map[Int(id)] < 0 ? nil : (map[Int(id)], bytes)
+            })
         }
     }
 }

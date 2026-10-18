@@ -544,6 +544,16 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
   (`getfsstat`) and rescans tree folders that became mount points. "Unmount needs nothing more" is wrong: a folder
   uncovered by an unmount is not seen until its parent gets an event, and its contents are missing. Fixed with
   snapshot format 6 in #5 (skipped mount points recorded and compared with `getfsstat` on every update).
+- #6 (2026-10-18): built as §3.1 (side table, byte paths), not with `openat` as the issue text says. Facts found:
+  APFS refuses such a name (`EILSEQ`), HFS+ and FAT escape it on creation (`%FF`), exFAT refuses it, so no local
+  volume lets a user make one. A FAT volume written elsewhere can hold a lone UTF-16 surrogate, which macOS lists as
+  the bytes `ED A0 80`; but no path opens it (`du` fails too), so it stays an `open` failure. Names that are not
+  UTF-8 *and* can be opened come from network volumes (SMB, NFS). `DirOutcome.rawChildDirs` carries the bytes;
+  `DiskTree.cPath(of:)` is optional (nil: `path(of:)` is exact, the usual case). Snapshot: section tag
+  `0x8000_0006` (must-understand), written only when `rawNames` is not empty, so other format-6 files are unchanged.
+  Updates match children by display name; `HardlinkRegistry.vet` and mount-point names still use display paths
+  (a raw name there is only missed, never miscounted). Tests: a real listing from a patched FAT image, and a folder
+  whose display name differs from its bytes (re-read, rescan and snapshot by bytes).
 
 ## Glossary additions
 

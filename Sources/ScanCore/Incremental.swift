@@ -198,7 +198,8 @@ public enum Incremental {
         // 2. Re-read changed directories in parallel, then apply the results in id order.
         // Hard links are claimed only after their old records are dropped.
         let reread = shallow.sorted()
-        let outcomes = readDirectories(reread.map { tree.path(of: Int($0)) }, tree: tree, options: options)
+        let outcomes = readDirectories(reread.map { tree.path(of: Int($0)) }, cPaths: reread.map { tree.cPath(of: Int($0)) },
+                                       tree: tree, options: options)
         report.dirsRead += reread.count
         t.lap("reread(\(reread.count))")
         if options.strictHardlinks && tree.hardlinks.unattributed { return unattributed() }
@@ -265,8 +266,9 @@ public enum Incremental {
                     readable.append(c)
                 }
             }
-            for name in out.childDirs where !knownNames.contains(name) {
+            for (k, name) in out.childDirs.enumerated() where !knownNames.contains(name) {
                 newDirs.append(Int32(tree.nodes.count))
+                if let r = out.rawChildDirs.first(where: { $0.index == k }) { tree.rawNames[Int32(tree.nodes.count)] = r.bytes }
                 tree.nodes.append(DirNode(parent: id, name: name))
             }
             for name in out.mountPoints { newMounts.append(MountPoint(parent: id, name: name)) }
@@ -463,7 +465,9 @@ public enum Incremental {
     /// Reads each directory once with up to `options.threads` workers; results are in input order.
     /// Invariant: nothing mutates the hard-link table while this runs. Workers only call `vet`, which reads the
     /// table under its lock; every claim is deferred (the closure returns nil) and made after `forget`, on one thread.
-    private static func readDirectories(_ paths: [String], tree: DiskTree, options: ScanOptions) -> [DirOutcome] {
+    /// `cPaths[k]`, when set, is what is opened for `paths[k]` (`DiskTree.cPath(of:)`).
+    private static func readDirectories(_ paths: [String], cPaths: [[CChar]?], tree: DiskTree,
+                                        options: ScanOptions) -> [DirOutcome] {
         guard !paths.isEmpty else { return [] }
         let config = DirReader.Config(rootDev: tree.rootDev, options: options, userAccess: true,
                                       exclusions: tree.exclusions, checkOwnDevice: true)
@@ -482,7 +486,7 @@ public enum Incremental {
                     guard k < paths.count else { break }
                     let dirPath = paths[k]
                     var t0 = Timings.enabled ? Timings.Lap("apply") : nil
-                    out[k] = reader.read(dirPath) { inode, alloc, _, _, name in
+                    out[k] = reader.read(dirPath, cPath: cPaths[k]) { inode, alloc, _, _, name in
                         hardlinks.vet(inode, alloc: alloc, dirPath: dirPath, name: name)
                         return nil
                     }

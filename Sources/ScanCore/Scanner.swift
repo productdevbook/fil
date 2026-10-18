@@ -64,8 +64,8 @@ public enum Scanner {
     static func rescanSubtrees(_ ids: [Int32], in tree: DiskTree, options: ScanOptions, checkRootDevice: Bool = false,
                                progress: ScanProgress? = nil) -> [Int32: Int32] {
         guard !ids.isEmpty else { return [:] }
-        let job = ParallelScan(roots: ids.map { ($0, tree.path(of: Int($0))) }, rootDev: tree.rootDev,
-                               options: options, exclusions: tree.exclusions, hardlinks: tree.hardlinks,
+        let job = ParallelScan(roots: ids.map { ($0, tree.path(of: Int($0)), tree.cPath(of: Int($0))) },
+                               rootDev: tree.rootDev, options: options, exclusions: tree.exclusions, hardlinks: tree.hardlinks,
                                clones: tree.clones, idBase: Int32(tree.nodes.count), checkRootDevice: checkRootDevice,
                                progress: progress)
         job.run()
@@ -84,6 +84,7 @@ public enum Scanner {
             n.parent = n.parent < rootCount ? ids[Int(n.parent)] : base + n.parent - rootCount
             return n
         })
+        for (local, bytes) in job.rawNames { tree.rawNames[base + local - rootCount] = bytes }
         tree.stats.merge(job.stats)
         tree.mountPoints += job.mountPoints
         return Dictionary(job.failedRoots.map { (ids[Int($0.id)], $0.errno) }, uniquingKeysWith: { a, _ in a })
@@ -111,7 +112,10 @@ public enum Scanner {
 
 private struct WorkItem {
     let id: Int32
+    /// Display path; exact unless `cPath` is set.
     let path: String
+    /// NUL-terminated bytes to open when a component of the path is not valid UTF-8 (`DiskTree.rawNames`).
+    var cPath: [CChar]? = nil
 }
 
 private final class ParallelScan: @unchecked Sendable {
@@ -125,7 +129,7 @@ private final class ParallelScan: @unchecked Sendable {
     let checkRootDevice: Bool
     let progress: ScanProgress?
 
-    // `cond` guards: nodes, queue, active, stats, finished, failedRoots, mountPoints
+    // `cond` guards: nodes, queue, active, stats, finished, failedRoots, mountPoints, rawNames
     let cond = NSCondition()
     var nodes: [DirNode]
     var queue: [WorkItem]
@@ -135,10 +139,12 @@ private final class ParallelScan: @unchecked Sendable {
     var failedRoots: [(id: Int32, errno: Int32)] = []
     /// Skipped mount points, with the global id of the directory that lists them.
     var mountPoints: [MountPoint] = []
+    /// Raw bytes of child names that are not valid UTF-8, by local id (never a root's).
+    var rawNames: [Int32: [UInt8]] = [:]
 
     /// Local ids 0..<roots.count are the roots; everything found below them is appended after.
-    init(roots: [(id: Int32, path: String)], rootDev: dev_t, options: ScanOptions, exclusions: [String: Set<String>],
-         hardlinks: HardlinkRegistry, clones: CloneRegistry, idBase: Int32, checkRootDevice: Bool,
+    init(roots: [(id: Int32, path: String, cPath: [CChar]?)], rootDev: dev_t, options: ScanOptions,
+         exclusions: [String: Set<String>], hardlinks: HardlinkRegistry, clones: CloneRegistry, idBase: Int32, checkRootDevice: Bool,
          progress: ScanProgress?) {
         self.options = options
         self.checkRootDevice = checkRootDevice
@@ -150,7 +156,7 @@ private final class ParallelScan: @unchecked Sendable {
         self.idBase = idBase
         nodes = roots.map { DirNode(parent: -1, name: $0.path) }
         nodes.reserveCapacity(1 << 12)
-        queue = roots.indices.reversed().map { WorkItem(id: Int32($0), path: roots[$0].path) }
+        queue = roots.indices.reversed().map { WorkItem(id: Int32($0), path: roots[$0].path, cPath: roots[$0].cPath) }
     }
 
     /// Ids handed to the hardlink registry are the ids nodes will have once grafted into the tree.
@@ -192,7 +198,7 @@ private final class ParallelScan: @unchecked Sendable {
             cond.unlock()
 
             let gid = globalId(item.id)
-            var out = reader.read(item.path, checkOwnDevice: checkRootDevice && item.id < rootIds.count) {
+            var out = reader.read(item.path, cPath: item.cPath, checkOwnDevice: checkRootDevice && item.id < rootIds.count) {
                 inode, alloc, logical, cloneAware, name in
                 self.hardlinks.vet(inode, alloc: alloc, dirPath: item.path, name: name)
                 return self.hardlinks.claim(inode, by: gid, alloc: alloc, logical: logical, cloneAware: cloneAware)
@@ -215,10 +221,23 @@ private final class ParallelScan: @unchecked Sendable {
             stats.merge(out.stats)
             for name in out.mountPoints { mountPoints.append(MountPoint(parent: gid, name: name)) }
             let base = item.path == "/" ? "" : item.path
-            for name in out.childDirs {
-                let id = Int32(nodes.count)
-                nodes.append(DirNode(parent: item.id, name: name))
-                queue.append(WorkItem(id: id, path: base + "/" + name))
+            if item.cPath == nil && out.rawChildDirs.isEmpty {
+                for name in out.childDirs {
+                    let id = Int32(nodes.count)
+                    nodes.append(DirNode(parent: item.id, name: name))
+                    queue.append(WorkItem(id: id, path: base + "/" + name))
+                }
+            } else {
+                // Rare: a name that is not valid UTF-8 here or above; the children are opened by their bytes.
+                let raw = Dictionary(out.rawChildDirs.map { ($0.index, $0.bytes) }, uniquingKeysWith: { a, _ in a })
+                let parentBytes = item.cPath.map { $0.dropLast().map { UInt8(bitPattern: $0) } } ?? Array(base.utf8)
+                for (k, name) in out.childDirs.enumerated() {
+                    let id = Int32(nodes.count)
+                    nodes.append(DirNode(parent: item.id, name: name))
+                    if let r = raw[k] { rawNames[id] = r }
+                    let bytes = parentBytes + [UInt8(ascii: "/")] + (raw[k] ?? Array(name.utf8)) + [0]
+                    queue.append(WorkItem(id: id, path: base + "/" + name, cPath: bytes.map { CChar(bitPattern: $0) }))
+                }
             }
             active -= 1
             if out.childDirs.count > 1 || (queue.isEmpty && active == 0) {
@@ -241,6 +260,8 @@ struct DirOutcome {
     /// Full-clone files counted here (not hard-linked); the caller claims them in the `CloneRegistry`.
     var cloneMembers: [CloneMember] = []
     var childDirs: [String] = []
+    /// Raw bytes of the entries of `childDirs` whose names are not valid UTF-8 (`childDirs` holds a display form).
+    var rawChildDirs: [(index: Int, bytes: [UInt8])] = []
     /// Child directories the caller may not list (no read or search permission); only with `Config.userAccess`.
     var deniedChildDirs: [String] = []
     /// Child directories skipped because another volume is mounted on them (not with `crossDevices`).
@@ -299,10 +320,12 @@ struct DirReader {
 
     /// `claim(inode, alloc, logical, cloneAware, name)` decides whether a multiply-linked inode is counted here;
     /// returning nil defers it. `checkOwnDevice` overrides `Config.checkOwnDevice` for this directory.
-    func read(_ path: String, checkOwnDevice: Bool? = nil,
+    /// `cPath`, when set, is what is opened (NUL-terminated bytes; `path` is then only a display form).
+    func read(_ path: String, cPath: [CChar]? = nil, checkOwnDevice: Bool? = nil,
               claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?) -> DirOutcome {
         var out = DirOutcome()
-        let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        let fd = cPath.map { open($0, flags) } ?? open(path, flags)
         guard fd >= 0 else {
             out.openError = errno
             out.opened = false
@@ -345,23 +368,30 @@ struct DirReader {
             var entry = UnsafeRawPointer(buf)
             for _ in 0..<count {
                 let length = Int(entry.loadUnaligned(as: UInt32.self))
-                parseEntry(entry + 4, into: &out, dirPath: path, skip: skip, claim: claim)
+                parseEntry(entry + 4, into: &out, dirPath: path, dirCPath: cPath, skip: skip, claim: claim)
                 entry += length
             }
         }
         return out
     }
 
-    /// `st_dev` of the volume mounted on `dirPath/name`, from `lstat` (as `du -x` sees it).
-    private static func mountedDevice(_ dirPath: String, _ name: UnsafeRawPointer) -> dev_t? {
-        let path = (dirPath == "/" ? "" : dirPath) + "/" + String(cString: name.assumingMemoryBound(to: CChar.self))
+    /// `st_dev` of the volume mounted on `dirPath/name`, from `lstat` (as `du -x` sees it). Built from bytes, so a name
+    /// that is not valid UTF-8 is found too.
+    private static func mountedDevice(_ dirPath: String, _ dirCPath: [CChar]?, _ name: UnsafeRawPointer) -> dev_t? {
+        var path = dirCPath.map { Array($0.dropLast()) }
+            ?? (dirPath == "/" ? [] : dirPath.utf8.map { CChar(bitPattern: $0) })
+        path.append(CChar(UInt8(ascii: "/")))
+        let cName = name.assumingMemoryBound(to: CChar.self)
+        path += UnsafeBufferPointer(start: cName, count: strlen(cName))
+        path.append(0)
         var st = stat()
         return lstat(path, &st) == 0 ? st.st_dev : nil
     }
 
     // Fields are packed in sys/attr.h bit order (common, directory, file, fork); ERROR comes right after RETURNED_ATTRS.
     @inline(__always)
-    private func parseEntry(_ start: UnsafeRawPointer, into out: inout DirOutcome, dirPath: String, skip: Set<String>?,
+    private func parseEntry(_ start: UnsafeRawPointer, into out: inout DirOutcome, dirPath: String, dirCPath: [CChar]?,
+                            skip: Set<String>?,
                             claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?) {
         var f = start
         let returned = f.loadUnaligned(as: attribute_set_t.self)
@@ -414,7 +444,7 @@ struct DirReader {
             if mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT) != 0 && !config.options.crossDevices, let namePtr {
                 // DEVID is the covered directory's; the mounted volume's root decides, as for du -x. One syscall per
                 // mount point, none per file. If lstat fails the device is unknown: not entered.
-                dev = Self.mountedDevice(dirPath, namePtr) ?? ~config.rootDev
+                dev = Self.mountedDevice(dirPath, dirCPath, namePtr) ?? ~config.rootDev
             }
             if dev != config.rootDev && !config.options.crossDevices {
                 out.stats.mountsSkipped += 1
@@ -426,9 +456,17 @@ struct DirReader {
             }
             if flags & UInt32(SF_DATALESS) != 0 { out.stats.datalessDirs += 1; return }
             if let namePtr {
-                let name = String(cString: namePtr.assumingMemoryBound(to: CChar.self))
+                let cName = namePtr.assumingMemoryBound(to: CChar.self)
+                // Same validation work as String(cString:), without its silent repair.
+                let valid = String(validatingCString: cName)
+                let name = valid ?? String(cString: cName)
                 if let skip, skip.contains(name) { out.stats.firmlinksSkipped += 1; return }
                 if access & UInt32(R_OK | X_OK) != UInt32(R_OK | X_OK) { out.deniedChildDirs.append(name) }
+                if valid == nil {
+                    // Not UTF-8: `name` (with U+FFFD) is for display; the walk opens the raw bytes.
+                    out.rawChildDirs.append((out.childDirs.count,
+                                             Array(UnsafeRawBufferPointer(start: namePtr, count: strlen(cName)))))
+                }
                 out.childDirs.append(name)
             }
             return
