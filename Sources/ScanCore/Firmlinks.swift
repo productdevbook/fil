@@ -108,6 +108,16 @@ public struct FirmlinkTable: Sendable, Equatable {
         return best.link.source + path.dropFirst(best.dataPath.count)
     }
 
+    /// `root` lies on the data volume (or is its mount point) and holds a firmlink's target below it, e.g.
+    /// `/System/Volumes/Data/usr` holds `usr/local`. Changes in that target are reported under the firmlink path
+    /// (`/usr/local/...`), which is not a spelling of `root`.
+    public func holdsFirmlinkTargets(_ root: String) -> Bool {
+        guard !dataRoot.isEmpty else { return false }
+        let root = Self.normalize(root)
+        guard Self.isInside(root, dataRoot, orEqual: true) else { return false }
+        return links.contains { Self.isInside(dataRoot + "/" + $0.target, root, orEqual: false) }
+    }
+
     static func isInside(_ path: String, _ root: String, orEqual: Bool) -> Bool {
         if path == root { return orEqual }
         return root == "/" || path.hasPrefix(root + "/")

@@ -480,7 +480,7 @@ partly updated tree is dropped and never saved.
 | `streamFailed(String)` | section 4.5 | `FSEvents stream failed: <why>` |
 | `unattributedHardLink(paths:)` | strict mode, section 5.7 | `unattributed hard link: <first 5 paths> (+N more)` |
 | `firmlinksChanged` | `aliases(for: root)` ≠ stored aliases | `firmlinks changed` |
-| `dataVolumeRoot` (#5) | root is the data volume's mount point (checked first) | `incremental updates are not supported for the data volume root` |
+| `dataVolumeRoot` (#5) | root lies on the data volume and holds a firmlink target below it (checked first) | `incremental updates are not supported for a data-volume root that holds firmlinked folders` |
 
 ### 7.2 What the user sees
 
@@ -617,9 +617,11 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   firmlink spelling of a root under a firmlink target (`FirmlinkTable.firmlinkPath`, the reverse of
   `dataVolumePath`), for events and the mount table alike. A root at `/System/Volumes/Data` itself has no single
   firmlink spelling: its mount-table names are still rewritten in `mountChanges`, but its events cannot be mapped,
-  so `Incremental.update` refuses that root first with the new `UpdateFailure.dataVolumeRoot`
-  (`incremental updates are not supported for the data volume root`, added to §7.1): every run of
-  `fil scan /System/Volumes/Data` is a full scan, never stale sizes shown as current.
+  so `Incremental.update` refuses it first with the new `UpdateFailure.dataVolumeRoot` (added to §7.1). The same
+  holds for any data-volume root that holds a firmlink target below it without being inside one
+  (`/System/Volumes/Data/usr` holds `usr/local`, `/System/Volumes/Data/System/Library` holds `System/Library/Caches`):
+  changes there arrive as `/usr/local/...`. `FirmlinkTable.holdsFirmlinkTargets` decides; such roots always get a
+  full scan, never stale sizes shown as current. Roots inside a target (`.../private/tmp/t`) are updated as before.
 
 ## Glossary additions
 

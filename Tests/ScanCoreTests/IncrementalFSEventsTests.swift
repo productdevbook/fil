@@ -412,27 +412,39 @@ struct IncrementalFSEventsTests {
         }
     }
 
-    @Test("the data volume's own root is never updated incrementally: a full scan always runs")
+    @Test("a data-volume root holding a firmlink target is never updated incrementally: a full scan always runs")
     func dataVolumeRootRefused() throws {
         try withSnapshotDir { dir in
             try Fixture.with { f in
                 try f.mk("Users/a", bytes: 10_000)
-                // The fixture plays the data volume: its events would come under the firmlink paths.
-                let options = ScanOptions(firmlinks: FirmlinkTable(dataRoot: f.root,
-                                                                    links: [.init(source: "/Users", target: "Users")]))
-                try Snapshot.save(try Scanner.scan(f.root, options: options), in: dir)
-                let tree = try #require(Snapshot.load(rootPath: f.root, options: options, in: dir))
-                guard case .failure(.dataVolumeRoot) = Incremental.update(tree, options: options) else {
-                    Issue.record("expected dataVolumeRoot")
-                    return
+                try f.mk("usr/local/b", bytes: 10_000)
+                try f.mk("usr/bin/c", bytes: 10_000)
+                try f.mk("other/d", bytes: 10_000)
+                // The fixture plays the data volume: changes under a target would come under its firmlink path.
+                let table = FirmlinkTable(dataRoot: f.root, links: [.init(source: "/Users", target: "Users"),
+                                                                    .init(source: "/usr/local", target: "usr/local")])
+                let options = ScanOptions(firmlinks: table)
+                func update(_ relative: String) throws -> Result<UpdateReport, UpdateFailure> {
+                    let root = f.path(relative)
+                    try Snapshot.save(try Scanner.scan(root, options: options), in: dir)
+                    let tree = try #require(Snapshot.load(rootPath: root, options: options, in: dir))
+                    return Incremental.update(tree, options: options)
+                }
+                // The data volume itself, and a folder that holds a target below it (usr holds usr/local).
+                for relative in ["", "usr"] {
+                    guard case .failure(.dataVolumeRoot) = try update(relative) else {
+                        Issue.record("\(relative): expected dataVolumeRoot")
+                        continue
+                    }
+                }
+                // Inside a target (its firmlink spelling is a root prefix) or holding none: updated as before.
+                for relative in ["usr/local", "Users", "other", "usr/bin"] {
+                    if case .failure(.dataVolumeRoot) = try update(relative) { Issue.record("\(relative): refused") }
                 }
                 #expect(UpdateFailure.dataVolumeRoot.description
-                    == "incremental updates are not supported for the data volume root")
-                // Any other root updates as before.
-                guard case .success = Incremental.update(tree) else {
-                    Issue.record("update with the system table failed")
-                    return
-                }
+                    == "incremental updates are not supported for a data-volume root that holds firmlinked folders")
+                #expect(!FirmlinkTable.system.holdsFirmlinkTargets("/Users/code"))
+                #expect(!table.holdsFirmlinkTargets("/"))
             }
         }
     }
