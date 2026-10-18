@@ -150,11 +150,24 @@ public enum Cleanup {
     public static func execute(_ items: [Candidate], home: String, trasher: any Trasher = SystemTrasher(),
                                runner: (any CommandRunner)? = nil,
                                removalTimeout: Duration = .seconds(600)) async -> [(Candidate, Outcome)] {
+        await executeReporting(items, home: home, trasher: trasher, runner: runner,
+                               removalTimeout: removalTimeout).results
+    }
+
+    /// `execute`, also telling whether a cancellation cut it short: an item was left untouched or a running
+    /// command was stopped. A cancellation after the last item finished is not "stopped early".
+    public static func executeReporting(_ items: [Candidate], home: String, trasher: any Trasher = SystemTrasher(),
+                                        runner: (any CommandRunner)? = nil,
+                                        removalTimeout: Duration = .seconds(600))
+        async -> (results: [(Candidate, Outcome)], stoppedEarly: Bool) {
+        var stoppedEarly = false
         let runner = runner ?? SystemCommandRunner(workingDirectory: home, gracePeriod: .seconds(5))
         var results: [(Candidate, Outcome)] = []
         var ran: [[String]: Outcome] = [:]
         let homeDev: dev_t = { var st = stat(); return stat(home, &st) == 0 ? st.st_dev : 0 }()
         for c in items {
+            // Ctrl-C: nothing more is touched, whatever the kind of the item.
+            if Task.isCancelled { stoppedEarly = true; break }
             switch c.removal {
             case .none:
                 results.append((c, .nothingToDo))
@@ -163,18 +176,20 @@ public enum Cleanup {
                     results.append((c, prev.isFailure ? prev : .commandShared))
                     continue
                 }
-                if Task.isCancelled { return results }
                 let outcome: Outcome
                 switch await runner.run(argv, timeout: removalTimeout) {
                 case .success: outcome = .commandRan
                 case .failed(let why):
                     outcome = .failed(.system("\(((argv.first ?? "") as NSString).lastPathComponent) failed: \(why)"))
                 case .timedOut:
-                    outcome = .failed(Task.isCancelled ? .system("interrupted; the command was stopped")
-                                                       : .timedOut(seconds: Int(removalTimeout.components.seconds)))
+                    if Task.isCancelled {
+                        stoppedEarly = true
+                        outcome = .failed(.system("interrupted; the command was stopped"))
+                    } else {
+                        outcome = .failed(.timedOut(seconds: Int(removalTimeout.components.seconds)))
+                    }
                 }
                 results.append((c, outcome))
-                if Task.isCancelled { return results }
                 ran[argv] = outcome
             case .trash:
                 // Re-check right before moving (chapter 04 §7.2). A window remains between the last check and
@@ -194,7 +209,7 @@ public enum Cleanup {
                 }
             }
         }
-        return results
+        return (results, stoppedEarly)
     }
 }
 

@@ -159,14 +159,16 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     var failures = 0
     // Ctrl-C: the removal commands run in their own session and no longer get the terminal's SIGINT, so cancel
     // the execute task; that stops the running command (SIGTERM, then SIGKILL).
-    let work = Task { await Cleanup.execute(chosen, home: scan.home) }
+    // The handler is installed before the task exists, so a Ctrl-C in between is not lost.
+    let canceller = TaskCanceller()
     signal(SIGINT, SIG_IGN)
     let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
-    interrupt.setEventHandler { work.cancel() }
+    interrupt.setEventHandler { canceller.cancel() }
     interrupt.resume()
-    let executed = await work.value
+    let work = Task { await Cleanup.executeReporting(chosen, home: scan.home) }
+    canceller.attach(work)
+    let (executed, interrupted) = await work.value
     interrupt.cancel()
-    let interrupted = work.isCancelled
     for (c, outcome) in executed {
         switch outcome {
         case .trashed(let url):
@@ -219,4 +221,24 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
 
 extension Removal {
     var isInfoOnly: Bool { if case .none = self { return true } else { return false } }
+}
+
+/// Cancels a task that may not exist yet when the signal arrives.
+private final class TaskCanceller: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<(results: [(Candidate, Cleanup.Outcome)], stoppedEarly: Bool), Never>?
+    private var requested = false
+
+    func attach(_ t: Task<(results: [(Candidate, Cleanup.Outcome)], stoppedEarly: Bool), Never>) {
+        let now = lock.withLock { () -> Bool in task = t; return requested }
+        if now { t.cancel() }
+    }
+
+    func cancel() {
+        let t = lock.withLock { () -> Task<(results: [(Candidate, Cleanup.Outcome)], stoppedEarly: Bool), Never>? in
+            requested = true
+            return task
+        }
+        t?.cancel()
+    }
 }

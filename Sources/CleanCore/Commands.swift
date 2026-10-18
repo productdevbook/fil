@@ -50,23 +50,45 @@ public struct SystemCommandRunner: CommandRunner {
         let workingDirectory = workingDirectory
         let gracePeriod = gracePeriod
         let environment = env
-        return await withTaskGroup(of: CommandResult?.self) { group in
+        let timer = timeout
+        return await withTaskGroup(of: Racer.self) { group in
             group.addTask {
-                await collect(argv, environment: environment, workingDirectory: workingDirectory, gracePeriod: gracePeriod)
+                .command(await collect(argv, environment: environment, workingDirectory: workingDirectory,
+                                       gracePeriod: gracePeriod))
             }
             group.addTask {
-                try? await Task.sleep(for: timeout)
-                return Task.isCancelled ? nil : .timedOut
+                try? await Task.sleep(for: timer)
+                return .timer
             }
-            // The first answer wins; cancelling the other task kills the child (teardown) or stops the timer.
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first ?? .timedOut
+            // The first answer ends the race; cancelling the other task kills the child (teardown) or stops the
+            // timer. A command that finished on its own at the same moment keeps its real result.
+            var command: CommandResult?
+            var cancelled = false
+            for await racer in group {
+                if case .command(let r) = racer { command = r }
+                if !cancelled { cancelled = true; group.cancelAll() }
+            }
+            return command ?? .timedOut
         }
     }
 }
 
-/// Runs one command to completion. Returns nil when cancelled (the timeout fired first).
+private enum Racer: Sendable {
+    /// nil: the command was stopped (timeout or cancellation) and has no result of its own.
+    case command(CommandResult?)
+    case timer
+}
+
+/// The child's pid, remembered so a stopped run can SIGKILL its whole process group.
+private final class ChildPid: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pid: pid_t = 0
+    func set(_ p: pid_t) { lock.withLock { pid = p } }
+    var value: pid_t { lock.withLock { pid } }
+}
+
+/// Runs one command to completion. Returns nil when it was stopped (timeout or cancellation); a command that
+/// ran to its end returns its real result even when the stop arrived at the same moment.
 private func collect(_ argv: [String], environment: [Environment.Key: String?], workingDirectory: String?,
                      gracePeriod: Duration) async -> CommandResult? {
     var options = PlatformOptions()
@@ -77,12 +99,25 @@ private func collect(_ argv: [String], environment: [Environment.Key: String?], 
     }
     teardown.append(.send(signal: .kill, toProcessGroup: true, allowedDurationToNextStep: .zero))
     options.teardownSequence = teardown
+    let configuration = Configuration(
+        executable: .path(FilePath(argv[0])), arguments: Arguments(Array(argv.dropFirst())),
+        environment: .inherit.updating(environment), workingDirectory: workingDirectory.map { FilePath($0) },
+        platformOptions: options)
+    let child = ChildPid()
+    // swift-subprocess watches only the group leader: when the leader exits on SIGTERM its SIGKILL step is
+    // skipped and a helper that ignores SIGTERM would survive. A stopped run therefore ends with one SIGKILL to
+    // the whole group (harmless, ESRCH, when nothing is left). The group id stays reserved while any member lives.
+    func killLeftovers() {
+        let pid = child.value
+        if pid > 0 { _ = kill(-pid, SIGKILL) }
+    }
     do {
-        let r = try await run(.path(FilePath(argv[0])), arguments: Arguments(Array(argv.dropFirst())),
-                              environment: .inherit.updating(environment), workingDirectory: workingDirectory.map { FilePath($0) },
-                              platformOptions: options, output: .string(limit: 16 << 20),
-                              error: .string(limit: 1 << 20))
-        if Task.isCancelled { return nil }
+        let r = try await run(configuration, input: .none, output: .string(limit: 16 << 20),
+                              error: .string(limit: 1 << 20)) { execution in
+            child.set(execution.processIdentifier.value)
+        }
+        if Task.isCancelled { killLeftovers() }
+        if case .signaled = r.terminationStatus, Task.isCancelled { return nil }
         guard r.terminationStatus.isSuccess else {
             let err = r.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
             let line = err.split(separator: "\n").first.map(String.init) ?? ""
@@ -90,6 +125,7 @@ private func collect(_ argv: [String], environment: [Environment.Key: String?], 
         }
         return .success(r.standardOutput)
     } catch {
+        if Task.isCancelled { killLeftovers() }
         return Task.isCancelled ? nil : .failed("\(error)")
     }
 }
