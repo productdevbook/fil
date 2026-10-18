@@ -184,7 +184,16 @@ public enum Incremental {
             for i in nodes.indices where nodes[i].incomplete && !nodes[i].isDead { ids.append(Int32(i)) }
             return ids
         }
-        guard !events.isEmpty || !mounts.mounted.isEmpty || !mounts.uncovered.isEmpty || !retry.isEmpty else {
+        // A mount point left out of the scan counts the volume root's own blocks in its parent. No event reaches the parent
+        // when the volume under it is swapped or its root grows, so the parents of the recorded mount points are read
+        // again on every update (few mounts; none with `--cross-devices`, which enters them).
+        let mountParents =
+            options.crossDevices
+            ? [] : Set(tree.mountPoints.map(\.parent).filter { !tree.nodes[Int($0)].isDead })
+        guard
+            !events.isEmpty || !mountParents.isEmpty || !mounts.mounted.isEmpty || !mounts.uncovered.isEmpty
+                || !retry.isEmpty
+        else {
             return nil
         }
         report.mountChanges = mounts.mounted.count + mounts.uncovered.count
@@ -208,6 +217,7 @@ public enum Incremental {
         }
         // Its old contents are hidden now; the rescan's own-device check finds the other volume and removes the node.
         full.formUnion(mounts.mounted)
+        shallow.formUnion(mountParents)
         // The parent's re-read counts the mount point's own space (the volume root's `st_blocks`, as `du -x` does).
         for id in mounts.mounted { shallow.insert(tree.nodes[Int(id)].parent) }
         // The folder under an unmounted volume is visible again: its parent's re-read finds it as a new directory.

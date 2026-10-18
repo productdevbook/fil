@@ -246,6 +246,43 @@ struct FATVolumeTests {
         }
     }
 
+    @Test("a volume swapped at a recorded mount point is counted by the next update")
+    func swappedMount() throws {
+        guard DiskImage.isAvailable else { try Test.cancel("no hdiutil") }
+        try withSnapshotDir { dir in
+            try Fixture.with("swap") { box in
+                // Different cluster sizes, hence different root sizes: 2048 (20 MB FAT16) and 512 (64 MB FAT32).
+                guard let a = DiskImage(emptyMegabytes: 20, fs: "MS-DOS", at: box.path("a.dmg")),
+                    let b = DiskImage(emptyMegabytes: 64, fs: "MS-DOS FAT32", at: box.path("b.dmg"))
+                else { try Test.cancel("hdiutil cannot make FAT images") }
+                defer {
+                    a.detach()
+                    b.detach()
+                }
+                try box.mk("root/apfs/file", bytes: 5000)
+                try box.mkdir("root/mnt")
+                let root = box.path("root")
+                guard a.attach(at: box.path("root/mnt")) else { try Test.cancel("hdiutil cannot attach") }
+                let before = try Scanner.scan(root)
+                try Snapshot.save(before, in: dir)
+
+                a.detach()
+                guard b.attach(at: box.path("root/mnt")) else { try Test.cancel("hdiutil cannot attach") }
+                let loaded = try #require(Snapshot.load(rootPath: root, privateSize: false, in: dir).tree)
+                let result = Incremental.update(loaded)
+                guard case .success = result else {
+                    Issue.record("update after the swap failed: \(result)")
+                    return
+                }
+                let full = try Scanner.scan(root)
+                #expect(full.root.totalAlloc != before.root.totalAlloc, "the two volumes differ")
+                #expect(Totals(loaded) == Totals(full), "incremental \(Totals(loaded)) full \(Totals(full))")
+                #expect(full.root.totalAlloc == Fixture.duBlockBytes(root))
+                #expect(loaded.root.totalAlloc == Fixture.duBlockBytes(root))
+            }
+        }
+    }
+
     @Test("an update's re-read counts a folder's own space also with --cross-devices")
     func rereadCrossDevices() throws {
         let kind = VolumeKind(fs: "MS-DOS", megabytes: 20)
