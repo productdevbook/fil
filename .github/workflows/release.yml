@@ -10,8 +10,7 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: release
@@ -25,11 +24,15 @@ jobs:
   # Nothing is signed unless the release build and the unit tests pass on this commit.
   test:
     runs-on: xcode-27
+    permissions:
+      contents: read
     timeout-minutes: 30
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Version
         id: version
@@ -47,13 +50,17 @@ jobs:
   build:
     needs: test
     runs-on: xcode-27
+    permissions:
+      contents: read
     timeout-minutes: 45
     env:
       VERSION: ${{ needs.test.outputs.version }}
     outputs:
       sha256: ${{ steps.sum.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Import the Developer ID certificate
         env:
@@ -87,7 +94,7 @@ jobs:
         run: echo "sha256=$(cut -d' ' -f1 "dist/fil-$VERSION-arm64.tar.gz.sha256")" >> "$GITHUB_OUTPUT"
 
       # For a tag, `publish` downloads this; for a manual run it is the result to inspect.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release
           path: |
@@ -104,11 +111,13 @@ jobs:
     needs: [test, build]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     timeout-minutes: 10
     env:
       VERSION: ${{ needs.test.outputs.version }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release
           path: dist
@@ -138,6 +147,7 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: xcode-27
     timeout-minutes: 20
+    permissions: {}
     env:
       VERSION: ${{ needs.test.outputs.version }}
       SHA: ${{ needs.build.outputs.sha256 }}
