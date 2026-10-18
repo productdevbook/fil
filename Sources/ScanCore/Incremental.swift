@@ -44,6 +44,10 @@ public enum UpdateFailure: Error, Sendable, CustomStringConvertible {
     case unattributedHardLink(paths: [String])
     /// The firmlinks that decide which data-volume directories the tree skips differ from the snapshot's.
     case firmlinksChanged
+    /// The root is the data volume's mount point (`/System/Volumes/Data`). fseventsd reports its changes under the
+    /// firmlink paths (`/Users/...`, `/private/...`), which have no single spelling as a root prefix, so an update
+    /// would miss them and present stale sizes as current.
+    case dataVolumeRoot
 
     public var description: String {
         switch self {
@@ -57,6 +61,7 @@ public enum UpdateFailure: Error, Sendable, CustomStringConvertible {
             "unattributed hard link: \(paths.prefix(5).joined(separator: ", "))"
                 + (paths.count > 5 ? " (+\(paths.count - 5) more)" : "")
         case .firmlinksChanged: "firmlinks changed"
+        case .dataVolumeRoot: "incremental updates are not supported for the data volume root"
         }
     }
 }
@@ -67,6 +72,8 @@ public enum Incremental {
     /// Fails when the history cannot be trusted (other volume, journal reset, dropped events, ...);
     /// the caller should then discard the tree and do a full scan.
     public static func update(_ tree: DiskTree, options: ScanOptions = ScanOptions()) -> Result<UpdateReport, UpdateFailure> {
+        guard options.firmlinks.dataRoot.isEmpty || FirmlinkTable.normalize(tree.rootPath) != options.firmlinks.dataRoot
+        else { return .failure(.dataVolumeRoot) }
         Scanner.preventCloudDownloads()
         var st = stat()
         guard lstat(tree.rootPath, &st) == 0 else { return .failure(.rootUnreadable(errno: errno)) }

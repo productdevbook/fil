@@ -480,6 +480,7 @@ partly updated tree is dropped and never saved.
 | `streamFailed(String)` | section 4.5 | `FSEvents stream failed: <why>` |
 | `unattributedHardLink(paths:)` | strict mode, section 5.7 | `unattributed hard link: <first 5 paths> (+N more)` |
 | `firmlinksChanged` | `aliases(for: root)` ≠ stored aliases | `firmlinks changed` |
+| `dataVolumeRoot` (#5) | root is the data volume's mount point (checked first) | `incremental updates are not supported for the data volume root` |
 
 ### 7.2 What the user sees
 
@@ -615,7 +616,10 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   every event of such a root was dropped (a new file or a replaced root went unseen). `rootPrefixes` now adds the
   firmlink spelling of a root under a firmlink target (`FirmlinkTable.firmlinkPath`, the reverse of
   `dataVolumePath`), for events and the mount table alike. A root at `/System/Volumes/Data` itself has no single
-  firmlink spelling: its mount-table names are still rewritten in `mountChanges`; its events are not (open).
+  firmlink spelling: its mount-table names are still rewritten in `mountChanges`, but its events cannot be mapped,
+  so `Incremental.update` refuses that root first with the new `UpdateFailure.dataVolumeRoot`
+  (`incremental updates are not supported for the data volume root`, added to §7.1): every run of
+  `fil scan /System/Volumes/Data` is a full scan, never stale sizes shown as current.
 
 ## Glossary additions
 

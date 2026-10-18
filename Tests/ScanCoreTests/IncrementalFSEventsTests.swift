@@ -412,6 +412,31 @@ struct IncrementalFSEventsTests {
         }
     }
 
+    @Test("the data volume's own root is never updated incrementally: a full scan always runs")
+    func dataVolumeRootRefused() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("Users/a", bytes: 10_000)
+                // The fixture plays the data volume: its events would come under the firmlink paths.
+                let options = ScanOptions(firmlinks: FirmlinkTable(dataRoot: f.root,
+                                                                    links: [.init(source: "/Users", target: "Users")]))
+                try Snapshot.save(try Scanner.scan(f.root, options: options), in: dir)
+                let tree = try #require(Snapshot.load(rootPath: f.root, options: options, in: dir))
+                guard case .failure(.dataVolumeRoot) = Incremental.update(tree, options: options) else {
+                    Issue.record("expected dataVolumeRoot")
+                    return
+                }
+                #expect(UpdateFailure.dataVolumeRoot.description
+                    == "incremental updates are not supported for the data volume root")
+                // Any other root updates as before.
+                guard case .success = Incremental.update(tree) else {
+                    Issue.record("update with the system table failed")
+                    return
+                }
+            }
+        }
+    }
+
     @Test("a root given by its data-volume path that is replaced is not updated in place",
           .enabled(if: !FirmlinkTable.system.dataRoot.isEmpty, "no data volume"))
     func dataVolumeRootReplaced() throws {
