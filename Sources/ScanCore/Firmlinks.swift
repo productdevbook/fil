@@ -3,7 +3,7 @@ import Foundation
 
 /// The firmlinks of the macOS volume group (`/usr/share/firmlinks`): directories on the sealed system volume that
 /// lead into the data volume, e.g. `/Users` -> `/System/Volumes/Data/Users`. Both volumes report the same device,
-/// so a scan of `/` reaches every such directory twice. See docs/specs/accounting.md.
+/// so a scan of `/` reaches every such directory twice. See docs/design/02-size-accounting.md.
 public struct FirmlinkTable: Sendable, Equatable {
     public struct Link: Sendable, Equatable {
         /// Absolute path on the system volume, e.g. "/Users".

@@ -13,7 +13,7 @@ struct CloneMember {
 /// Counts each APFS clone family once in the clone-aware size, like `HardlinkRegistry` counts each inode once.
 /// Per family it keeps the directory that counts (owns) it, its size, the directory holding the original file
 /// (preferred owner, so attribution does not depend on the order workers read directories), and every other
-/// directory where a member was seen. See docs/specs/accounting.md.
+/// directory where a member was seen. See docs/design/02-size-accounting.md.
 final class CloneRegistry: @unchecked Sendable {
     struct Entry {
         /// Directory that counts this family; -1 while released and not yet re-claimed.

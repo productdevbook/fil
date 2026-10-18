@@ -4,7 +4,7 @@ import Foundation
 /// Binary on-disk copy of a `DiskTree`, so the next launch starts from the last scan
 /// and only replays FSEvents instead of walking the disk again.
 public enum Snapshot {
-    private static let magic: UInt32 = 0x4D54_5A31 // "MTZ1"
+    private static let magic: UInt32 = 0x4D54_5A31 // little-endian on disk: the file starts with the bytes "1ZTM" (31 5A 54 4D)
     /// 3: one flags byte per directory (bit 0: unreadable; bit 1, from 6: incomplete) after the parent id.
     /// 4: `uncertainBytes` (i64) in the header after `scanStart`.
     /// 5: firmlink aliases after `rootPath`; `ownCloneAware` (i64) per directory after `ownFiles`; `cloneAware` (i64)

@@ -35,7 +35,7 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     func phase(_ name: String, _ since: ContinuousClock.Instant, _ extra: String = "") {
         if timings { FileHandle.standardError.write(Data("  \(name.padding(toLength: 22, withPad: " ", startingAt: 0))\(ms(clock.now - since))\(extra)\n".utf8)) }
     }
-    // Tolerant hard links, like the app: an unknown old hard link is counted and reported as uncertain.
+    // Tolerant hard links (see docs/design/04-cleanup.md): an unknown old hard link is counted and reported as uncertain.
     let options = ScanOptions(strictHardlinks: false)
     // The simctl query runs while the tree loads and updates.
     // A dry run writes nothing: no snapshot, no tool-paths.json (chapter 05 §6.2, #13).

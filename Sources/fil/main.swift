@@ -37,7 +37,7 @@ Usage: fil scan [DIR] [-j N] [--private] [--full] [--top N] [--naive] [--porcela
   --no-color            plain output (also when NO_COLOR is set or stdout is not a terminal)
 
 Sizes are on-disk bytes with each APFS clone family counted once; a scan of / counts each firmlinked
-directory once (see docs/specs/accounting.md). Output is styled only on a terminal. --porcelain fields
+directory once (see docs/design/02-size-accounting.md). Output is styled only on a terminal. --porcelain fields
 are only ever appended: alloc= stays du-compatible, cloneaware= is the clone-aware size and shared= the
 bytes du counts again for clones (not with --private); unreadable= is the number of folders that
 could not be read (permission denied). If some were privacy-protected, scan points to `fil doctor` (Full Disk

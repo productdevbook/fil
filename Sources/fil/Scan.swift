@@ -3,7 +3,7 @@ import ScanCore
 
 // fil scan [DIR] [-j N] [--private] [--full] [--top N] [--naive] [--porcelain] [--tolerant-hardlinks] [-v] [--no-color]
 // Hard links are strict by default (an unknown old multiply-linked file makes the update fall back to a full
-// scan); --tolerant-hardlinks counts it and reports `uncertain=` bytes, as the app does.
+// scan); --tolerant-hardlinks counts it and reports `uncertain=` bytes (see docs/design/02-size-accounting.md).
 func runScan(_ arguments: [String]) throws {
     var args = arguments
     var given = NSHomeDirectory()
