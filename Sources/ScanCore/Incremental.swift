@@ -269,10 +269,11 @@ public enum Incremental {
                 }
                 continue
             }
-            tree.nodes[Int(id)].ownAlloc = out.alloc
+            // The folder's own clusters (`fstat` of the read, which the device check makes anyway) count in the folder.
+            tree.nodes[Int(id)].ownAlloc = out.alloc + out.selfAlloc
             tree.nodes[Int(id)].ownLogical = out.logical
             tree.nodes[Int(id)].ownFiles = out.files
-            tree.nodes[Int(id)].ownCloneAware = out.cloneAware
+            tree.nodes[Int(id)].ownCloneAware = out.cloneAware + out.selfAlloc
             tree.nodes[Int(id)].unreadable = false
             tree.nodes[Int(id)].incomplete = out.incomplete
             changed.append(id)
@@ -534,7 +535,7 @@ public enum Incremental {
         guard !paths.isEmpty else { return [] }
         let config = DirReader.Config(
             rootDev: tree.rootDev, options: options, userAccess: true,
-            exclusions: tree.exclusions, checkOwnDevice: true)
+            exclusions: tree.exclusions, checkOwnDevice: true, allocUnit: Scanner.allocationUnit(of: tree.rootPath))
         let hardlinks = tree.hardlinks
         var results = [DirOutcome](repeating: DirOutcome(), count: paths.count)
         let nextIndex = Atomic<Int>(0)

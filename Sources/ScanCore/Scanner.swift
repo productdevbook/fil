@@ -76,7 +76,7 @@ public enum Scanner {
             roots: ids.map { ($0, tree.path(of: Int($0)), tree.cPath(of: Int($0))) },
             rootDev: tree.rootDev, options: options, exclusions: tree.exclusions, hardlinks: tree.hardlinks,
             clones: tree.clones, idBase: Int32(tree.nodes.count), checkRootDevice: checkRootDevice,
-            progress: progress)
+            allocUnit: allocationUnit(of: tree.rootPath), progress: progress)
         job.run()
         let rootCount = Int32(ids.count)
         for (i, id) in ids.enumerated() {
@@ -100,6 +100,13 @@ public enum Scanner {
         tree.stats.merge(job.stats)
         tree.mountPoints += job.mountPoints
         return Dictionary(job.failedRoots.map { (ids[Int($0.id)], $0.errno) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// The volume's allocation unit (`statfs.f_bsize`: the cluster size on FAT and exFAT), for a listing that omits
+    /// `ALLOCSIZE`. One syscall per scan or update; 0 when `statfs` fails (data lengths are then not rounded).
+    static func allocationUnit(of path: String) -> Int64 {
+        var fs = statfs()
+        return statfs(path, &fs) == 0 ? Int64(fs.f_bsize) : 0
     }
 
     static func preventCloudDownloads() {
@@ -132,6 +139,8 @@ private struct WorkItem {
     /// Its own name is not valid UTF-8. Such a folder can exist and still not open by its bytes (a FAT volume with a
     /// lone UTF-16 surrogate), so `ENOENT` does not prove it gone.
     var rawName = false
+    /// The directory's own allocation from its parent's listing (0 on APFS); added to its node when it is read.
+    var selfAlloc: Int64 = 0
 
     /// The parent directory still exists at its path (one `lstat`; only for a child that turned out gone).
     var parentExists: Bool {
@@ -176,13 +185,14 @@ private final class ParallelScan: @unchecked Sendable {
     init(
         roots: [(id: Int32, path: String, cPath: [CChar]?)], rootDev: dev_t, options: ScanOptions,
         exclusions: [String: Set<String>], hardlinks: HardlinkRegistry, clones: CloneRegistry, idBase: Int32,
-        checkRootDevice: Bool,
+        checkRootDevice: Bool, allocUnit: Int64,
         progress: ScanProgress?
     ) {
         self.options = options
         self.checkRootDevice = checkRootDevice
         self.progress = progress
-        self.config = DirReader.Config(rootDev: rootDev, options: options, exclusions: exclusions)
+        self.config = DirReader.Config(
+            rootDev: rootDev, options: options, exclusions: exclusions, allocUnit: allocUnit)
         self.hardlinks = hardlinks
         self.clones = clones
         self.rootIds = roots.map(\.id)
@@ -231,8 +241,9 @@ private final class ParallelScan: @unchecked Sendable {
             cond.unlock()
 
             let gid = globalId(item.id)
+            let isRoot = item.id < rootIds.count
             var out = reader.read(
-                item.path, cPath: item.cPath, checkOwnDevice: checkRootDevice && item.id < rootIds.count
+                item.path, cPath: item.cPath, checkOwnDevice: checkRootDevice && isRoot, statSelf: isRoot
             ) {
                 inode, alloc, logical, cloneAware, name in
                 self.hardlinks.vet(inode, alloc: alloc, dirPath: item.path, name: name)
@@ -252,10 +263,12 @@ private final class ParallelScan: @unchecked Sendable {
 
             cond.lock()
             if item.id < rootIds.count && out.isGone { failedRoots.append((item.id, out.openError)) }
-            nodes[Int(item.id)].ownAlloc = out.alloc
+            // The folder's own clusters count in the folder itself, as `du` counts them (0 on APFS and HFS+).
+            let own = out.opened ? (isRoot ? out.selfAlloc : item.selfAlloc) : 0
+            nodes[Int(item.id)].ownAlloc = out.alloc + own
             nodes[Int(item.id)].ownLogical = out.logical
             nodes[Int(item.id)].ownFiles = out.files
-            nodes[Int(item.id)].ownCloneAware = out.cloneAware
+            nodes[Int(item.id)].ownCloneAware = out.cloneAware + own
             if vanished {
                 // Removed (or replaced by a file or symlink) after its parent listed it. `openErrors` still counts it.
                 if parentLost { nodes[Int(nodes[Int(item.id)].parent)].incomplete = true }
@@ -268,16 +281,28 @@ private final class ParallelScan: @unchecked Sendable {
             for name in out.mountPoints { mountPoints.append(MountPoint(parent: gid, name: name)) }
             let base = item.path == "/" ? "" : item.path
             if item.cPath == nil && out.rawChildDirs.isEmpty {
-                for name in out.childDirs {
+                var next = 0  // out.childAllocs holds only the non-zero ones, in index order
+                for (k, name) in out.childDirs.enumerated() {
                     let id = Int32(nodes.count)
                     nodes.append(DirNode(parent: item.id, name: name))
-                    queue.append(WorkItem(id: id, path: base + "/" + name))
+                    var selfAlloc: Int64 = 0
+                    if next < out.childAllocs.count && out.childAllocs[next].index == k {
+                        selfAlloc = out.childAllocs[next].alloc
+                        next += 1
+                    }
+                    queue.append(WorkItem(id: id, path: base + "/" + name, selfAlloc: selfAlloc))
                 }
             } else {
                 // Rare: a name that is not valid UTF-8 here or above; the children are opened by their bytes.
                 let raw = Dictionary(out.rawChildDirs.map { ($0.index, $0.bytes) }, uniquingKeysWith: { a, _ in a })
                 let parentBytes = item.cPath.map { $0.dropLast().map { UInt8(bitPattern: $0) } } ?? Array(base.utf8)
+                var next = 0
                 for (k, name) in out.childDirs.enumerated() {
+                    var selfAlloc: Int64 = 0
+                    if next < out.childAllocs.count && out.childAllocs[next].index == k {
+                        selfAlloc = out.childAllocs[next].alloc
+                        next += 1
+                    }
                     let id = Int32(nodes.count)
                     nodes.append(DirNode(parent: item.id, name: name))
                     if let r = raw[k] { rawNames[id] = r }
@@ -285,7 +310,7 @@ private final class ParallelScan: @unchecked Sendable {
                     queue.append(
                         WorkItem(
                             id: id, path: base + "/" + name, cPath: bytes.map { CChar(bitPattern: $0) },
-                            rawName: raw[k] != nil))
+                            rawName: raw[k] != nil, selfAlloc: selfAlloc))
                 }
             }
             active -= 1
@@ -309,6 +334,12 @@ struct DirOutcome {
     /// Full-clone files counted here (not hard-linked); the caller claims them in the `CloneRegistry`.
     var cloneMembers: [CloneMember] = []
     var childDirs: [String] = []
+    /// Own allocation of the child directories whose listing gave a non-zero one (FAT, exFAT; never on APFS or HFS+),
+    /// by index into `childDirs`, in index order.
+    var childAllocs: [(index: Int, alloc: Int64)] = []
+    /// Allocation of this directory itself (`st_blocks` x 512), only when the read took an `fstat` (`statSelf`, or the
+    /// device check).
+    var selfAlloc: Int64 = 0
     /// Raw bytes of the entries of `childDirs` whose names are not valid UTF-8 (`childDirs` holds a display form).
     var rawChildDirs: [(index: Int, bytes: [UInt8])] = []
     /// Indices into `childDirs` of the child directories the caller may not list (no read or search permission); only
@@ -348,14 +379,18 @@ struct DirReader {
         /// update opens on their own: a listing checks its children, but nothing has checked these since the snapshot,
         /// and one may now be a mount point. One syscall per directory, none per file.
         var checkOwnDevice = false
+        /// Allocation unit of the volume (`Scanner.allocationUnit(of:)`): a record without `ALLOCSIZE` counts its data
+        /// length rounded up to it. Decided by the volume, read once per scan or update, never per file.
+        var allocUnit: Int64 = 0
         #if DEBUG
             let faults: DirFaults
         #endif
 
         init(
             rootDev: dev_t, options: ScanOptions, userAccess: Bool = false, exclusions: [String: Set<String>] = [:],
-            checkOwnDevice: Bool = false
+            checkOwnDevice: Bool = false, allocUnit: Int64 = 0
         ) {
+            self.allocUnit = allocUnit
             self.rootDev = rootDev
             self.options = options
             self.userAccess = userAccess
@@ -382,7 +417,7 @@ struct DirReader {
     /// returning nil defers it. `checkOwnDevice` overrides `Config.checkOwnDevice` for this directory.
     /// `cPath`, when set, is what is opened (NUL-terminated bytes; `path` is then only a display form).
     func read(
-        _ path: String, cPath: [CChar]? = nil, checkOwnDevice: Bool? = nil,
+        _ path: String, cPath: [CChar]? = nil, checkOwnDevice: Bool? = nil, statSelf: Bool = false,
         claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?
     ) -> DirOutcome {
         var out = DirOutcome()
@@ -399,13 +434,18 @@ struct DirReader {
             return out
         }
         defer { close(fd) }
-        if checkOwnDevice ?? config.checkOwnDevice, !config.options.crossDevices {
+        let checkDevice = (checkOwnDevice ?? config.checkOwnDevice) && !config.options.crossDevices
+        if checkDevice || statSelf {
+            // One `fstat` for the directories that need it, none per file.
             var st = stat()
-            if fstat(fd, &st) == 0 && st.st_dev != config.rootDev {
-                out.openError = EXDEV
-                out.opened = false
-                out.stats.mountsSkipped = 1
-                return out
+            if fstat(fd, &st) == 0 {
+                if checkDevice && st.st_dev != config.rootDev {
+                    out.openError = EXDEV
+                    out.opened = false
+                    out.stats.mountsSkipped = 1
+                    return out
+                }
+                out.selfAlloc = Int64(st.st_blocks) * 512
             }
         }
 
@@ -420,7 +460,9 @@ struct DirReader {
             | attrgroup_t(ATTR_FILE_DATALENGTH)
         if config.userAccess { al.commonattr |= attrgroup_t(ATTR_CMN_USERACCESS) }
         // Directories only: a mount point is listed with the attributes of the directory underneath it.
-        al.dirattr = attrgroup_t(ATTR_DIR_MOUNTSTATUS)
+        // Own allocation and length of a child directory: FAT has only the length, exFAT both, APFS a zero allocation.
+        al.dirattr =
+            attrgroup_t(ATTR_DIR_MOUNTSTATUS) | attrgroup_t(ATTR_DIR_ALLOCSIZE) | attrgroup_t(ATTR_DIR_DATALENGTH)
         // Clone id and extended flags are inode fields: cheap, unlike PRIVATESIZE, which walks the extents.
         al.forkattr = attrgroup_t(ATTR_CMNEXT_CLONEID) | attrgroup_t(ATTR_CMNEXT_EXT_FLAGS)
         if config.options.privateSize { al.forkattr |= attrgroup_t(ATTR_CMNEXT_PRIVATESIZE) }
@@ -488,6 +530,13 @@ struct DirReader {
         return lstat(path, &st) == 0 ? st.st_dev : nil
     }
 
+    /// `length` rounded up to the volume's allocation unit (0 stays 0; unchanged when the unit is unknown).
+    @inline(__always)
+    private func roundedUp(_ length: Int64) -> Int64 {
+        let unit = config.allocUnit
+        return unit > 0 ? (length + unit - 1) / unit * unit : length
+    }
+
     // Fields are packed in sys/attr.h bit order (common, directory, file, fork); ERROR comes right after RETURNED_ATTRS.
     @inline(__always)
     private func parseEntry(
@@ -553,6 +602,18 @@ struct DirReader {
             mountStatus = f.loadUnaligned(as: UInt32.self)
             f += 4
         }
+        var dirAlloc: Int64 = 0
+        if returned.dirattr & attrgroup_t(ATTR_DIR_ALLOCSIZE) != 0 {
+            dirAlloc = f.loadUnaligned(as: Int64.self)
+            f += 8
+        }
+        var dirLength: Int64 = 0
+        if returned.dirattr & attrgroup_t(ATTR_DIR_DATALENGTH) != 0 {
+            dirLength = f.loadUnaligned(as: Int64.self)
+            f += 8
+            // No ALLOCSIZE (FAT): the folder's clusters, as `du` counts them.
+            if returned.dirattr & attrgroup_t(ATTR_DIR_ALLOCSIZE) == 0 { dirAlloc = roundedUp(dirLength) }
+        }
 
         if type == UInt32(VDIR.rawValue) {
             if mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT) != 0 && !config.options.crossDevices, let namePtr {
@@ -586,6 +647,7 @@ struct DirReader {
                             Array(UnsafeRawBufferPointer(start: namePtr, count: strlen(cName)))
                         ))
                 }
+                if dirAlloc != 0 { out.childAllocs.append((out.childDirs.count, dirAlloc)) }
                 out.childDirs.append(name)
             }
             return
@@ -598,7 +660,8 @@ struct DirReader {
             f += 4
         }
         var alloc: Int64 = 0
-        if fileAttrs & attrgroup_t(ATTR_FILE_ALLOCSIZE) != 0 {
+        let hasAlloc = fileAttrs & attrgroup_t(ATTR_FILE_ALLOCSIZE) != 0
+        if hasAlloc {
             alloc = f.loadUnaligned(as: Int64.self)
             f += 8
         }
@@ -606,6 +669,8 @@ struct DirReader {
         if fileAttrs & attrgroup_t(ATTR_FILE_DATALENGTH) != 0 {
             logical = f.loadUnaligned(as: Int64.self)
             f += 8
+            // The volume does not report allocations (FAT): whole clusters, as `du` counts them.
+            if !hasAlloc { alloc = roundedUp(logical) }
         }
         // Fork (CMNEXT) fields follow in bit order: PRIVATESIZE, CLONEID, EXT_FLAGS.
         let fork = returned.forkattr

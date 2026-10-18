@@ -545,6 +545,13 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
 
 ## As built
 
+- #48 (2026-10-18): the request carries `ATTR_DIR_ALLOCSIZE` and `ATTR_DIR_DATALENGTH` (after `MOUNTSTATUS` in bit
+  order). `DirOutcome.childAllocs` holds the non-zero folder allocations by child index (empty on APFS and HFS+: no
+  allocation); `WorkItem.selfAlloc` carries one to the child's read, `DirOutcome.selfAlloc` is the `fstat`
+  `st_blocks` x 512 of a scan root, a rescan root or a directory an update re-reads (the device check makes that
+  `fstat` already). `DirReader.Config.allocUnit` is `statfs.f_bsize`, read once per scan or update. Details and the
+  file systems checked: chapter 02 As built.
+
 - #4 (2026-10-18): two facts the chapter did not know. (1) `getattrlistbulk` returns, for a mount point, the
   `ATTR_CMN_DEVID` of the covered directory, so the §8 check never skipped mount points and even `--full` entered
   them. Listings now flag mount points (mount-status attribute) and take their device from one `lstat` each, as

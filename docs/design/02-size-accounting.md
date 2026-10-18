@@ -326,6 +326,26 @@ single-thread scan, family counted once); `shared` and `cloneaware` with a datal
 
 ## As built
 
+- #48 (2026-10-18): checked on macOS 27 with `hdiutil create -fs` images (all FSKit mounts): FAT12, FAT16, FAT32
+  (64 MB, 512-byte clusters; the default `MS-DOS` at 20 MB gives FAT16 with 2048), exFAT (4096), plus HFS+ and APFS
+  for no change. `fil scan <mount> --full` equals `du -sx` x 512 for the volume and every folder on all of them, with
+  nested folders, empty files, files of one cluster, just under and just over, and a folder holding hundreds of
+  files (several clusters). Rule per file system:
+  - FAT (`msdos`): no `ATTR_FILE_ALLOCSIZE`, no `ATTR_DIR_ALLOCSIZE`; files count `DATALENGTH` rounded up to
+    `statfs.f_bsize` (the cluster size: 512 to 2048 here), folders `ATTR_DIR_DATALENGTH` rounded up. The root is the
+    `fstat` of the read (`st_blocks` x 512): 16 KB on the 20 MB image, one cluster on FAT32.
+  - exFAT: files already report `ALLOCSIZE`; folders report `ATTR_DIR_ALLOCSIZE` (4096) and were not counted before, so
+    exFAT was short by one cluster per folder (`du` 320 KB, `fil` 308 KB).
+  - APFS, HFS+: nothing changes; folders report 0 (HFS+ does not return the directory attributes at all).
+  `statfs.f_bsize` is the cluster size, not `st_blksize` or `statvfs.f_bsize` (both 1 MB, the I/O size). The record
+  decides (`RETURNED_ATTRS` has no `ALLOCSIZE`), a bit test of the field already parsed; only the unit is a syscall,
+  once per scan or update. A volume mounted inside the root with `--cross-devices` uses the root's unit.
+  `du -k` rounds a total up to 1 KB, so on 512-byte clusters `du -skx` x 1024 can exceed the exact sum by 512; compare
+  with `du -sx` x 512. FAT and exFAT have no FSEvents volume UUID, so an update is refused (`volumeChanged`) and `fil`
+  scans in full: the result equals `du` (the `selfAlloc` of an update's re-read is only exercised through
+  `DirReader`). Timing, `~/Library --full` warm, interleaved on a busy machine: unchanged within noise (median 6.6 s
+  before, 6.5 s after).
+
 ## Glossary additions
 
 - `realAlloc`: `ATTR_FILE_ALLOCSIZE` of a file, independent of `--private`.

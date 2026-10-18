@@ -105,6 +105,17 @@ public final class Fixture: @unchecked Sendable {
     }
 }
 
+extension Fixture {
+    /// `du -sx` of an absolute `path` in bytes, counted in 512-byte blocks. `du -k` rounds up to 1 KB, which is not the
+    /// exact sum on a volume whose clusters are 512 bytes (FAT32).
+    public static func duBlockBytes(_ path: String) -> Int64 {
+        let out = Process.output("/usr/bin/du", ["-sx", path])
+        guard let first = out.split(whereSeparator: { $0 == " " || $0 == "\t" }).first, let blocks = Int64(first)
+        else { return -1 }
+        return blocks * 512
+    }
+}
+
 extension Process {
     @discardableResult
     static func run(_ tool: String, _ args: [String]) -> Int32 {
