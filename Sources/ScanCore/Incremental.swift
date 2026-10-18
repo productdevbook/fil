@@ -17,6 +17,8 @@ public struct UpdateReport: Sendable {
     /// Volumes found mounted on a folder of the tree, plus recorded mount points found unmounted (neither leaves an
     /// event in the history).
     public var mountChanges = 0
+    /// What this update's re-reads and walks counted. `DiskTree.stats` keep the last full scan's counters.
+    public var stats = ScanStats()
 
     /// The update read, walked or removed a directory: the tree may differ from the snapshot it was loaded from, so
     /// it must be saved (not `Snapshot.advance`d) and is not "up to date". False when every event fell outside the
@@ -72,7 +74,10 @@ public enum UpdateFailure: Error, Sendable, CustomStringConvertible {
 public enum Incremental {
     /// Fails when the history cannot be trusted (other volume, journal reset, dropped events, ...);
     /// the caller should then discard the tree and do a full scan.
+    /// The tree is owned by this call until it returns (`DiskTree` concurrent access).
     public static func update(_ tree: DiskTree, options: ScanOptions = ScanOptions()) -> Result<UpdateReport, UpdateFailure> {
+        tree.acquire("Incremental.update")
+        defer { tree.release() }
         guard !options.firmlinks.holdsFirmlinkTargets(tree.rootPath) else { return .failure(.dataVolumeRoot) }
         Scanner.preventCloudDownloads()
         var st = stat()
@@ -130,7 +135,12 @@ public enum Incremental {
         tree.hardlinks.beginUpdate(cutoff: tree.scanStart, strict: options.strictHardlinks)
         tree.hardlinks.trackDrift()
         tree.clones.beginUpdate()
+        // The tree's counters stay those of the last full scan; what the re-reads count goes to the report.
+        let fullScanStats = tree.stats
+        tree.stats = ScanStats()
         defer {
+            report.stats = tree.stats
+            tree.stats = fullScanStats
             tree.hardlinks.endUpdate()
             _ = tree.hardlinks.takeDrift()
             _ = tree.clones.takeCreated()

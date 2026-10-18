@@ -152,8 +152,12 @@ func runScan(_ arguments: [String]) throws {
         timing   \(ms(scanTime)) [\(mode)]
                  snapshot saved in \(ms(saveTime))
         """))
-        if !usedIncremental {
-            print(UI.dim("skipped  denied \(s.openErrors) · errors \(s.entryErrors) · hardlinks \(s.hardlinkDupes) · mounts \(s.mountsSkipped) · cloud-dirs \(s.datalessDirs) (cloud files \(human(s.datalessLogical)))"))
+        // After an update the counters are the last full scan's, labelled as such (chapter 03 §9); `denied` is the
+        // current number of unreadable folders. A snapshot without them shows none.
+        let skipped: (label: String, denied: Int)? = !usedIncremental ? ("skipped", s.openErrors)
+            : scanned.fullScanStart.map { ("skipped (as of full scan at \(lastKnownTime($0)))", unreadableCount) }
+        if let skipped {
+            print(UI.dim("\(skipped.label)  denied \(skipped.denied) · errors \(s.entryErrors) · hardlinks \(s.hardlinkDupes) · mounts \(s.mountsSkipped) · cloud-dirs \(s.datalessDirs) (cloud files \(human(s.datalessLogical)))"))
             print(UI.dim("         firmlinked data dirs \(s.firmlinksSkipped) · clone files counted once \(s.cloneDupes)"))
         }
     }

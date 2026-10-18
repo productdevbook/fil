@@ -84,6 +84,16 @@ func ms(_ d: Duration) -> String {
     return String(format: "%.0f ms", locale: nil, Double(s) * 1000 + Double(atto) / 1e15)
 }
 
+/// Time of a last-known result (chapter 03 §9 rule 2): "12:05" (24-hour, local time) today, else "17 Oct 12:05".
+/// `nanoseconds` since 1970.
+func lastKnownTime(_ nanoseconds: Int64, now: Date = Date()) -> String {
+    let date = Date(timeIntervalSince1970: Double(nanoseconds) / 1e9)
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = Calendar.current.isDate(date, inSameDayAs: now) ? "HH:mm" : "d MMM HH:mm"
+    return f.string(from: date)
+}
+
 /// "850 ms", "1.4 s", "2m 05s".
 func humanDuration(_ d: Duration) -> String {
     let (s, atto) = d.components

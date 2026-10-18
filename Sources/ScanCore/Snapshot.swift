@@ -11,6 +11,7 @@ public enum Snapshot {
     /// per hard-link entry; the clone-family table at the end.
     /// 6: byte 8 is the mode byte (bit 0 `privateSize`, bit 1 `crossDevices`); after the aliases the body is a list of
     /// sections (`Section`), each `tag u32 | size u64 | payload`, ended by tag 0; adds the skipped mount points.
+    /// Later additions without a version bump: the optional `stats` section (#15).
     /// Older versions are not read: a full scan rebuilds what they lack.
     private static let version: UInt32 = 6
 
@@ -24,6 +25,9 @@ public enum Snapshot {
         case hardlinks = 2
         case cloneFamilies = 3
         case mountPoints = 4
+        /// Optional: the last full scan's `ScanStats` (8 × i64 in `ScanStats.merge` order) and its start, i64 ns.
+        /// Without it the tree has no last-known counters (`DiskTree.fullScanStart == nil`).
+        case stats = 5
         static let mustUnderstand: UInt32 = 0x8000_0000
     }
 
@@ -51,7 +55,7 @@ public enum Snapshot {
 
     // Header layout: magic u32 | version u32 | mode u8 | rootDev i32 | eventId u64 | scanStart i64 |
     // uncertainBytes i64 | volumeUUID | rootPath | aliases | sections (nodes, hard links, clone families,
-    // mount points, end). Chapter 03 §6.2.
+    // mount points, stats if known, end). Chapter 03 §6.2 and §6.5 "As built".
     private static let eventIdOffset = 13
 
     /// Records a new event id and scan start in an existing snapshot without rewriting the tree.
@@ -80,7 +84,10 @@ public enum Snapshot {
         return pwrite(fd, field.baseAddress, field.count, off_t(eventIdOffset)) == field.count
     }
 
+    /// The tree is owned by this call until it returns (`DiskTree` concurrent access).
     public static func save(_ tree: DiskTree, in directory: URL? = nil) throws {
+        tree.acquire("Snapshot.save")
+        defer { tree.release() }
         var t = Timings.Lap("save")
         tree.compact()
         t.lap("compact")
@@ -149,6 +156,13 @@ public enum Snapshot {
         }
         w.end(section)
 
+        if let fullScanStart = tree.fullScanStart {
+            section = w.begin(.stats)
+            for v in tree.stats.stored { w.put(v) }
+            w.put(fullScanStart)
+            w.end(section)
+        }
+
         w.put(Section.end.rawValue)
         w.put(UInt64(0))
         t.lap("encode(\(w.count) bytes)")
@@ -189,6 +203,7 @@ public enum Snapshot {
             var table: [UInt64: HardlinkRegistry.Entry] = [:]
             var families: [UInt64: CloneRegistry.Entry] = [:]
             var mountPoints: [MountPoint] = []
+            var stats: (ScanStats, start: Int64)?
             var seen = Set<UInt32>()
             while true {
                 let tag = r.get(UInt32.self)
@@ -211,6 +226,10 @@ public enum Snapshot {
                 case .hardlinks: ok = r.getHardlinks(into: &table, nodeCount: nodes.count)
                 case .cloneFamilies: ok = r.getCloneFamilies(into: &families, nodeCount: nodes.count)
                 case .mountPoints: ok = r.getMountPoints(into: &mountPoints, nodeCount: nodes.count)
+                case .stats:
+                    let v = (0..<8).map { _ in r.get(Int64.self) }
+                    stats = (ScanStats(stored: v), r.get(Int64.self))
+                    ok = r.ok
                 case .end: ok = false
                 }
                 guard ok, r.ok, r.offset == sectionEnd else { return nil }
@@ -223,6 +242,8 @@ public enum Snapshot {
                                 hardlinks: HardlinkRegistry(table), clones: CloneRegistry(families), aliases: aliases,
                                 mountPoints: mountPoints)
             tree.uncertainBytes = max(uncertainBytes, 0)
+            tree.stats = stats?.0 ?? ScanStats()
+            tree.fullScanStart = stats?.start
             tree.computeTotals()
             t.lap("computeTotals")
             return tree

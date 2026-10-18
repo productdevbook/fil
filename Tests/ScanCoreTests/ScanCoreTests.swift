@@ -174,6 +174,39 @@ struct FullScanTests {
         }
     }
 
+    @Test("the full scan's stats and start survive a snapshot; a file without them has none")
+    func snapshotStats() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("own/file", bytes: 40_000)
+                try f.link("own/file", to: "peer/alias")
+                try f.mk("locked/secret", bytes: 100)
+                try f.chmod("locked", 0o000)
+                defer { try? f.chmod("locked", 0o755) }
+                let tree = try Scanner.scan(f.root)
+                #expect(tree.stats.openErrors == 1 && tree.stats.hardlinkDupes == 1)
+                #expect(tree.fullScanStart == tree.scanStart)
+                try Snapshot.save(tree, in: dir)
+                let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                #expect(loaded.stats.openErrors == 1 && loaded.stats.hardlinkDupes == 1)
+                #expect(loaded.fullScanStart == tree.scanStart)
+
+                // The stats section (tag 5, 72 bytes) is the last one before the 12-byte end marker.
+                let url = Snapshot.url(for: f.root, in: dir)
+                let good = try Data(contentsOf: url)
+                let at = good.count - 12 - 12 - 72
+                #expect(good[at] == 5)
+                try (good.prefix(at) + good.suffix(12)).write(to: url)
+                let bare = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                #expect(bare.fullScanStart == nil)
+                #expect(bare.stats.openErrors == 0 && bare.stats.hardlinkDupes == 0)
+                // Saved again, it still has none: no counters are made up.
+                try Snapshot.save(bare, in: dir)
+                #expect(try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir)).fullScanStart == nil)
+            }
+        }
+    }
+
     @Test("a corrupt snapshot is rejected, not trusted")
     func corruptSnapshot() throws {
         try withSnapshotDir { dir in

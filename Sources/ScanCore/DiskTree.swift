@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 
 /// One record per scanned directory. Files are not stored individually; they roll up into their directory.
 /// Invariant: a child always has a larger id than its parent, so totals are one reverse pass.
@@ -64,6 +65,24 @@ public struct ScanStats: Sendable {
     public var cloneDupes = 0
 
     public init() {}
+
+    /// The fields in the order of `merge`, as stored in the snapshot's stats section.
+    var stored: [Int64] {
+        [Int64(openErrors), Int64(entryErrors), Int64(hardlinkDupes), Int64(datalessDirs), datalessLogical,
+         Int64(mountsSkipped), Int64(firmlinksSkipped), Int64(cloneDupes)]
+    }
+
+    /// The inverse of `stored`; `v` holds 8 values.
+    init(stored v: [Int64]) {
+        openErrors = Int(v[0])
+        entryErrors = Int(v[1])
+        hardlinkDupes = Int(v[2])
+        datalessDirs = Int(v[3])
+        datalessLogical = v[4]
+        mountsSkipped = Int(v[5])
+        firmlinksSkipped = Int(v[6])
+        cloneDupes = Int(v[7])
+    }
 
     mutating func merge(_ o: ScanStats) {
         openErrors += o.openErrors
@@ -294,6 +313,12 @@ public struct MountPoint: Hashable, Sendable {
 }
 
 /// The whole scanned hierarchy for one root, kept as a flat array of directories.
+///
+/// Concurrent access (chapter 01 §5.6): a tree passed to `Incremental.update` or `Snapshot.save` is owned by that call
+/// until it returns, and nothing else may read or change it meanwhile. A reader that must not wait takes
+/// `let view = tree.nodes` before the call (copy-on-write: a consistent copy at no cost) and labels it last-known.
+/// A second `update` or `save` of the same tree while one runs is a `preconditionFailure`. A full scan builds its tree
+/// privately and publishes it only when `Scanner.scan` returns.
 public final class DiskTree: @unchecked Sendable {
     public let rootPath: String
     public internal(set) var rootDev: dev_t
@@ -307,7 +332,12 @@ public final class DiskTree: @unchecked Sendable {
     public internal(set) var volumeUUID: String
     /// Wall-clock start (ns since epoch) of the scan or update this tree reflects; see `HardlinkRegistry.unattributed`.
     public internal(set) var scanStart: Int64
+    /// Counters of the last full scan (`fullScanStart`). An update leaves them unchanged: they are totals, which a
+    /// re-read cannot correct (its own counts are in `UpdateReport.stats`). Kept in the snapshot.
     public internal(set) var stats = ScanStats()
+    /// Wall-clock start (ns since epoch) of the full scan `stats` come from; nil when they are unknown (a snapshot
+    /// written without them), in which case `stats` are zero and must not be shown.
+    public internal(set) var fullScanStart: Int64?
     /// On-disk bytes that may be counted twice: multiply-linked files older than the tree that an incremental
     /// update met without a record (counted where met; another link may still count them as single-link files).
     /// Grows with tolerant updates, kept in the snapshot, 0 after a full scan.
@@ -323,6 +353,8 @@ public final class DiskTree: @unchecked Sendable {
     let hardlinks: HardlinkRegistry
     let clones: CloneRegistry
     fileprivate let links = ChildLinks()
+    /// Set while `Incremental.update` or `Snapshot.save` owns the tree.
+    private let busy = Mutex(false)
 
     init(rootPath: String, rootDev: dev_t, privateSize: Bool, crossDevices: Bool, nodes: [DirNode],
          eventId: UInt64, volumeUUID: String, scanStart: Int64, hardlinks: HardlinkRegistry,
@@ -339,8 +371,20 @@ public final class DiskTree: @unchecked Sendable {
         self.eventId = eventId
         self.volumeUUID = volumeUUID
         self.scanStart = scanStart
+        self.fullScanStart = scanStart
         self.hardlinks = hardlinks
     }
+
+    /// Takes the tree for `caller` (an update or a save) until `release`; traps if another one holds it.
+    func acquire(_ caller: StaticString) {
+        let wasBusy = busy.withLock { b in
+            defer { b = true }
+            return b
+        }
+        if wasBusy { preconditionFailure("\(caller): the tree is already being updated or saved") }
+    }
+
+    func release() { busy.withLock { $0 = false } }
 
     public var root: DirNode { nodes[0] }
 

@@ -104,6 +104,32 @@ struct CloneAccountingTests {
     }
 }
 
+@Suite("Stats across updates")
+struct UpdateStatsTests {
+    @Test("an update keeps the full scan's stats; its own counts go to the report")
+    func updateKeepsFullScanStats() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("x/a", bytes: 1000)
+                try f.mk("y/other", bytes: 10)
+                try Snapshot.save(try Scanner.scan(f.root), in: dir)
+                let tree = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                // A denied folder found by the update: counted in the report and as an unreadable node, not in stats.
+                try f.mk("y/locked/secret", bytes: 100)
+                try f.chmod("y/locked", 0o000)
+                defer { try? f.chmod("y/locked", 0o755) }
+                var report = UpdateReport()
+                let failure = Incremental.applyTracked([EventHistory.Event(path: f.path("y"), mustScanSubDirs: false)],
+                                                       to: tree, options: ScanOptions(), report: &report)
+                #expect(failure == nil)
+                #expect(report.stats.openErrors == 1)
+                #expect(tree.stats.openErrors == 0)
+                #expect(tree.nodes[try #require(tree.node(at: f.path("y/locked")))].unreadable)
+            }
+        }
+    }
+}
+
 @Suite("Clone originals cloned after the snapshot")
 struct CloneAdoptionTests {
     @Test("an original whose directory got no event becomes the owner; the family counts once")

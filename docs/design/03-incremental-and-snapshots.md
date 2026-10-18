@@ -622,6 +622,17 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   (`/System/Volumes/Data/usr` holds `usr/local`, `/System/Volumes/Data/System/Library` holds `System/Library/Caches`):
   changes there arrive as `/usr/local/...`. `FirmlinkTable.holdsFirmlinkTargets` decides; such roots always get a
   full scan, never stale sizes shown as current. Roots inside a target (`.../private/tmp/t`) are updated as before.
+- #15 (2026-10-18): stats section tag 5 as planned in "As built (#5)": 8 × i64 in `ScanStats.merge` order, then
+  `fullScanStart` i64 (72 bytes), written only when the tree has full-scan stats (`DiskTree.fullScanStart != nil`;
+  a full scan sets it to its `scanStart`, `load` from the section, nil without one; such a tree saves no section,
+  so no counters are made up). `applyTracked` sets `tree.stats` aside, lets the re-reads count into a fresh one and
+  hands that to `UpdateReport.stats`, then restores the full scan's; this needs no change in `Scanner.rescanSubtrees`,
+  which still merges into `tree.stats`. On incremental runs `scan -v` prints
+  `skipped (as of full scan at HH:mm)  denied <live unreadable> · …` (time per §9 rule 2, also `17 Oct 12:05` when
+  not today), and no `skipped` lines when the snapshot had no stats. `nodes` stays `public internal(set)` as §6.5 says
+  (`private(set)` would need `Scanner.swift` to mutate through `DiskTree` methods); the busy flag is
+  `DiskTree.acquire`/`release` over a `Mutex<Bool>`, taken by `Incremental.update` and `Snapshot.save`, not by
+  `advance` (it only reads `eventId`/`scanStart` and the mode).
 
 ## Glossary additions
 
