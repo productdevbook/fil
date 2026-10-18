@@ -3,14 +3,19 @@
 #
 #   scripts/release.sh 0.1.0
 #
-# Needs a "Developer ID Application" identity in the keychain and a notarytool profile
-# (FIL_NOTARY_PROFILE, default "fil-notary"), created once with:
-#   xcrun notarytool store-credentials fil-notary --apple-id <id> --team-id <team>
-# Publishing (tag, GitHub release, Homebrew cask) is a separate, manual step.
+# Needs a "Developer ID Application" identity in the keychain and notary credentials: either an
+# App Store Connect API key (FIL_NOTARY_KEY = path to the .p8, FIL_NOTARY_KEY_ID, FIL_NOTARY_ISSUER),
+# as in .github/workflows/release.yml, or a notarytool keychain profile (FIL_NOTARY_PROFILE,
+# default "fil-notary"), created once with `xcrun notarytool store-credentials`.
+# Publishing (GitHub release, Homebrew cask) is done by the release workflow.
 set -euo pipefail
 
 VERSION=${1:?usage: scripts/release.sh <version>}
-PROFILE=${FIL_NOTARY_PROFILE:-fil-notary}
+if [[ -n ${FIL_NOTARY_KEY:-} ]]; then
+  NOTARY_AUTH=(--key $FIL_NOTARY_KEY --key-id ${FIL_NOTARY_KEY_ID:?} --issuer ${FIL_NOTARY_ISSUER:?})
+else
+  NOTARY_AUTH=(--keychain-profile ${FIL_NOTARY_PROFILE:-fil-notary})
+fi
 ROOT=${0:A:h:h}
 DIST=$ROOT/dist
 NAME=fil-$VERSION-arm64
@@ -37,7 +42,7 @@ codesign --verify --strict --verbose=2 $DIST/$NAME/fil
 
 # notarytool takes a zip; a bare Mach-O cannot be stapled, Gatekeeper checks the ticket online.
 ditto -c -k $DIST/$NAME/fil $DIST/$NAME.zip
-xcrun notarytool submit $DIST/$NAME.zip --keychain-profile $PROFILE --wait
+xcrun notarytool submit $DIST/$NAME.zip "${NOTARY_AUTH[@]}" --wait
 rm $DIST/$NAME.zip
 
 # "Accepted" comes minutes before Gatekeeper's online lookup finds the ticket; a release published

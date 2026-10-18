@@ -1,0 +1,99 @@
+name: Release
+
+# Push a tag `vX.Y.Z` whose version matches Sources/fil/main.swift. The workflow builds, signs and
+# notarizes `fil`, publishes the GitHub release and updates the cask in productdevbook/homebrew-tap.
+# Only tag pushes run it, so pull requests never see the signing secrets. A manual run (Actions tab)
+# builds, signs and notarizes the current version without publishing anything.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Same image as ci.yml: the only hosted one with the macOS 27 SDK.
+    runs-on: xcode-27
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1_Release_Candidate.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        run: |
+          if [[ $GITHUB_REF_TYPE == tag ]]; then V=${GITHUB_REF_NAME#v}
+          else V=$(sed -n 's/^let version = "\(.*\)"$/\1/p' Sources/fil/main.swift); fi
+          echo "VERSION=$V" >> $GITHUB_ENV
+
+      - name: Import the Developer ID certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN=$RUNNER_TEMP/signing.keychain-db
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$CERTIFICATE_BASE64" | base64 --decode > $RUNNER_TEMP/cert.p12
+          security import $RUNNER_TEMP/cert.p12 -k "$KEYCHAIN" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN"
+          rm $RUNNER_TEMP/cert.p12
+
+      - name: Build, sign and notarize
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          FIL_NOTARY_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          FIL_NOTARY_ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          export FIL_NOTARY_KEY=$RUNNER_TEMP/AuthKey.p8
+          printf '%s' "$ASC_KEY_P8" > "$FIL_NOTARY_KEY"
+          scripts/release.sh "$VERSION"
+          rm "$FIL_NOTARY_KEY"
+
+      - name: Publish the GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NAME=fil-$VERSION-arm64
+          SHA=$(cut -d' ' -f1 dist/$NAME.tar.gz.sha256)
+          gh release create "$GITHUB_REF_NAME" dist/$NAME.tar.gz dist/$NAME.tar.gz.sha256 \
+            --title "fil $VERSION" --verify-tag --generate-notes \
+            --notes "Signed with a Developer ID and notarized by Apple.
+
+          \`\`\`sh
+          brew install --cask productdevbook/tap/fil
+          \`\`\`
+
+          SHA-256 ($NAME.tar.gz): \`$SHA\`"
+
+      - name: Update the Homebrew cask
+        if: github.ref_type == 'tag'
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          SHA=$(cut -d' ' -f1 dist/fil-$VERSION-arm64.tar.gz.sha256)
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/tap_key && chmod 600 ~/.ssh/tap_key
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone --depth 1 git@github.com:productdevbook/homebrew-tap.git $RUNNER_TEMP/tap
+          cd $RUNNER_TEMP/tap
+          sed -i '' -E "s/^  version \".*\"/  version \"$VERSION\"/; s/^  sha256 \".*\"/  sha256 \"$SHA\"/" Casks/fil.rb
+          git diff --stat
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -am "fil $VERSION"
+          git push origin HEAD
+          rm ~/.ssh/tap_key
+
+      - name: Remove the signing keychain
+        if: always()
+        run: security delete-keychain $RUNNER_TEMP/signing.keychain-db || true
