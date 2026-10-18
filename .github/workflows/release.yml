@@ -225,8 +225,9 @@ jobs:
           [[ -s "$RUNNER_TEMP/known_hosts" ]] || { echo "::error::no GitHub host keys"; exit 1; }
           SSH="ssh -i $RUNNER_TEMP/tap_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes"
           echo "GIT_SSH_COMMAND=$SSH" >> "$GITHUB_ENV"
-          export GIT_SSH_COMMAND=$SSH
-          brew tap productdevbook/tap git@github.com:productdevbook/homebrew-tap.git
+          # The tap is public: clone it over HTTPS. Homebrew runs git with a filtered environment, so
+          # GIT_SSH_COMMAND would not reach it; the key is used only by the plain `git push` below.
+          brew tap productdevbook/tap https://github.com/productdevbook/homebrew-tap.git
           echo "TAP=$(brew --repository productdevbook/tap)" >> "$GITHUB_ENV"
 
       - name: Write the cask
@@ -257,7 +258,7 @@ jobs:
           GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
         run: |
           git -C "$TAP" commit -m "fil $VERSION" -- Casks/fil.rb
-          git -C "$TAP" push origin HEAD:main
+          git -C "$TAP" push git@github.com:productdevbook/homebrew-tap.git HEAD:main
 
       - name: Remove the tap key
         if: always()

@@ -929,6 +929,11 @@ the CLA check on Your first pull request".
     SHA256 from it; the render, audit, install and push steps are the tag path's. A manual run without the input is
     unchanged (builds, signs, notarizes, publishes nothing). `publish` now also requires a `push` event, so a manual
     run on a tag ref cannot release.
+  - Recovery run 39159124092: `brew tap ... git@github.com:...` failed with `Permission denied (publickey)`; the
+    key was never offered (Homebrew runs git with a filtered environment, so `GIT_SSH_COMMAND` is not passed
+    through). The tap is now cloned over HTTPS (public repo, no key) and only the final `git push` goes to
+    `git@github.com:productdevbook/homebrew-tap.git` (branch `main`) with the deploy key and the pinned
+    `known_hosts`, which `GIT_SSH_COMMAND` carries to plain git.
 
 ## Glossary additions
 
