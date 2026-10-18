@@ -146,15 +146,13 @@ enum CacheTools {
                   exactMarkers: ["_cacache"]),
         CacheTool(name: "pnpm", args: ["store", "path"], defaults: ["Library/pnpm/store"],
                   configFiles: ["Library/Preferences/pnpm/rc", ".npmrc"],
-                  envKeys: ["PNPM_HOME", "npm_config_store_dir", "XDG_DATA_HOME"], markers: ["pnpm"],
-                  exactMarkers: ["store"]),
+                  envKeys: ["PNPM_HOME", "npm_config_store_dir", "XDG_DATA_HOME"], markers: ["pnpm"]),
         CacheTool(name: "yarn", args: ["cache", "dir"], defaults: ["Library/Caches/Yarn"],
                   configFiles: [".yarnrc", ".yarnrc.yml"], envKeys: ["YARN_CACHE_FOLDER", "XDG_CACHE_HOME"], markers: ["yarn"]),
         CacheTool(name: "go", args: ["env", "GOMODCACHE", "GOCACHE"],
                   defaults: ["go/pkg/mod", "Library/Caches/go-build"],
                   configFiles: ["Library/Application Support/go/env"],
-                  envKeys: ["GOPATH", "GOMODCACHE", "GOCACHE", "GOENV"], markers: ["go-build", "gomod"],
-                  exactMarkers: ["mod", "go"]),
+                  envKeys: ["GOPATH", "GOMODCACHE", "GOCACHE", "GOENV"], markers: ["go-build", "gomod"]),
         CacheTool(name: "pip3", args: ["cache", "dir"], defaults: ["Library/Caches/pip"],
                   configFiles: [".config/pip/pip.conf", "Library/Application Support/pip/pip.conf", ".pip/pip.conf"],
                   envKeys: ["PIP_CACHE_DIR", "PIP_CONFIG_FILE", "XDG_CACHE_HOME"], markers: ["pip"]),
@@ -192,7 +190,13 @@ enum CacheTools {
                     guard let exe = env.locate(tool.name) else { return (tool.name, fallback, nil, nil, nil) }
                     let key = ToolPathCache.key(binary: exe, tool: tool, home: env.home)
                     if let e = stored[tool.name], e.key == key, e.isFresh(now: now) {
-                        if let paths = e.paths { return (tool.name, paths.map { apply(tool, $0) }, exe, nil, e) }
+                        if let paths = e.paths {
+                            // A damaged file must not shape the answer: wrong count or relative paths mean defaults.
+                            guard paths.count == tool.defaults.count, paths.allSatisfy({ $0.hasPrefix("/") }) else {
+                                return (tool.name, fallback, nil, nil, nil)
+                            }
+                            return (tool.name, paths.map { apply(tool, $0) }, exe, nil, e)
+                        }
                         return (tool.name, fallback, nil, nil, e)
                     }
                     let argv = [exe] + tool.args

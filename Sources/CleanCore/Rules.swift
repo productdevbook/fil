@@ -151,7 +151,9 @@ public enum Rules {
         var seen: Set<String> = []
         var out: [CacheLocation] = []
         for tool in tools {
-            let paths = answer.paths[tool.name] ?? CacheTools.defaults(tool, home: ctx.home)
+            let defaultPaths = CacheTools.defaults(tool, home: ctx.home)
+            var paths = answer.paths[tool.name] ?? defaultPaths
+            if paths.count != defaultPaths.count { paths = defaultPaths }
             let removals: [Removal]
             if tool.name == "go" {
                 guard let go = answer.reportedBy["go"], paths.count == 2 else { continue }
@@ -167,7 +169,7 @@ public enum Rules {
             }
             // `go clean` removes the whole directory Go names: if either Go path is refused, report neither.
             if tool.name == "go", verdicts.contains(where: {
-                switch $0 { case .shared, .notCache: true; case .duplicate, .accepted: false }
+                switch $0 { case .accepted: false; case .duplicate, .shared, .notCache: true }
             }) {
                 for case .notCache(let r) in verdicts { ctx.noteSkippedCommand(notCacheLine(tool, r)) }
                 continue
@@ -196,13 +198,20 @@ public enum Rules {
         let home = resolvedPath(ctx.home), real = resolvedPath(path)
         guard real.hasPrefix(home + "/") else { return .shared }
         let relative = String(real.dropFirst(home.count + 1))
+        // The tool's own default location (or a versioned folder below it) needs no marker.
+        let def = resolvedPath(defaultPath)
+        if real == def || real.hasPrefix(def + "/") { return .accepted(custom: false) }
         let components = relative.split(separator: "/").map { $0.lowercased() }
-        let marked = components.contains { c in
+        // The marker sits in the folder itself, or in its parent when the folder is only a version (`v6`, `10`).
+        var window = components.suffix(1)
+        if let last = components.last, last.drop(while: { $0 == "v" }).allSatisfy(\.isNumber) {
+            window = components.suffix(2)
+        }
+        let marked = window.contains { c in
             c.contains("cache") || tool.markers.contains { c.contains($0) } || tool.exactMarkers.contains(c)
         }
         guard components.count >= 2, marked else { return .notCache(relative: relative) }
-        let def = resolvedPath(defaultPath)
-        return .accepted(custom: !(real == def || real.hasPrefix(def + "/")))
+        return .accepted(custom: true)
     }
 
     static func isSharedLocation(_ path: String, _ ctx: RuleContext) -> Bool {

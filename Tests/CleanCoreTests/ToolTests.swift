@@ -233,6 +233,49 @@ struct CachePathTests {
         }
     }
 
+    @Test("the marker must be in the folder or its parent; GOMODCACHE=~/go/src and marked ancestors are refused")
+    func markerPosition() async throws {
+        try await Fixture.withAsync("tools") { f in
+            let mb = 2_000_000
+            try f.mk("go/src/f", bytes: mb)
+            try f.mk("cache-backup/Projects/f", bytes: mb)
+            try f.mk("Developer/store/f", bytes: mb)
+            try f.mk("dev/go-build/f", bytes: mb)
+            let b = "/fake/bin/"
+            let (env, _) = fakeEnvironment(f, tools: ["go", "uv", "pnpm"], answers: [
+                b + "go env GOMODCACHE GOCACHE": .success(f.path("go/src") + "\n" + f.path("dev/go-build") + "\n"),
+                b + "uv cache dir": .success(f.path("cache-backup/Projects") + "\n"),
+                b + "pnpm store path": .success(f.path("Developer/store") + "\n"),
+            ])
+            let scan = try await scanWithTools(f, env)
+            #expect(!scan.candidates.contains { $0.ruleId == "pkg-caches" })
+            #expect(!scan.candidates.contains {
+                if case .command = $0.removal { true } else { false }
+            })
+            #expect(Set(scan.skippedCommands) == [
+                "go: reported cache ~/go/src does not look like a cache folder; ignored",
+                "uv: reported cache ~/cache-backup/Projects does not look like a cache folder; ignored",
+                "pnpm: reported cache ~/Developer/store does not look like a cache folder; ignored",
+            ])
+        }
+    }
+
+    @Test("a damaged tool-paths.json (wrong count, relative paths) is ignored: defaults, no crash")
+    func corruptCache() async throws {
+        try await Fixture.withAsync("tools") { f in
+            try f.mk("Library/Caches/Homebrew/f", bytes: 2_000_000)
+            let cache = ToolPathCache(file: URL(fileURLWithPath: f.path("state/tool-paths.json")))
+            let key = ToolPathCache.key(binary: "/fake/bin/brew", tool: CacheTools.brew, home: f.root)
+            for bad in [["/a/cache", "/b/cache"], ["relative/cache"], []] {
+                cache.save(["brew": .init(key: key, paths: bad, savedAt: Date().timeIntervalSince1970)])
+                let (env, _) = fakeEnvironment(f, tools: ["brew"], answers: [:], cache: cache)
+                let scan = try await scanWithTools(f, env)
+                #expect(scan.candidates.map(\.id) == ["homebrew-cache:Library/Caches/Homebrew"], "\(bad)")
+                #expect(scan.candidates.first?.safety == .safe)
+            }
+        }
+    }
+
     @Test("answers are cached by binary and key; a cached answer skips the command")
     func pathCache() async throws {
         try await Fixture.withAsync("tools") { f in

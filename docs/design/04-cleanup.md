@@ -350,8 +350,12 @@ Spec named pip `pip` in places; the tool name (and `tool-paths.json` key) is `pi
   `cacheLocations` to every tool-reported candidate path (live or from `tool-paths.json`), after the
   shared-location check and before the tree lookup. Let `R` be the candidate path relative to the resolved
   home (after `realpath`, after the npm `_cacache` subpath), split into components:
+  0. **Default:** a path equal to or below the tool's resolved default (§6.7.3) is accepted as is, without 1 and 2
+     (so `Library/pnpm/store/v10` and `go/pkg/mod` pass). `GOMODCACHE=~/go/src` and `~/Developer/store` are
+     refused: a bare `go` or `store` component is not a marker.
   1. **Depth:** `R` has at least 2 components. `~/Projects` and `~/Developer` fail; `~/.cache/uv` passes.
-  2. **Marker:** at least one component of `R` matches, case-insensitively, one of:
+  2. **Marker:** the last component of `R` matches (when it is only a version, `v<digits>` or digits, the one
+     before it counts too; a marker in a higher ancestor such as `~/cache-backup/Projects` does not count), case-insensitively, one of:
      - the generic substring `cache` (matches `Caches`, `.cache`, `_cacache`, `cache`);
      - the tool's markers:
 
@@ -359,9 +363,9 @@ Spec named pip `pip` in places; the tool name (and `tool-paths.json` key) is `pi
        |---|---|---|
        | `brew` | `homebrew` | |
        | `npm` | `npm` | `_cacache` |
-       | `pnpm` | `pnpm` | `store` |
+       | `pnpm` | `pnpm` | |
        | `yarn` | `yarn` | |
-       | `go` | `go-build`, `gomod` | `mod`, `go` |
+       | `go` | `go-build`, `gomod` | |
        | `pip3` | `pip` | |
        | `uv` | | `uv` |
 
