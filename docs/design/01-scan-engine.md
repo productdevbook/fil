@@ -106,6 +106,12 @@ Directories carry no file or fork attributes; their record ends after field 8. T
 when the worker exits. `CLONEID` and `EXT_FLAGS` are inode fields and cost about 3% (chapter 02);
 `PRIVATESIZE` walks extents and costs about 70%, hence opt-in.
 
+**[Change] (#48)** A FAT (msdos) listing returns no `ATTR_FILE_ALLOCSIZE`, so every file counts 0 bytes. Add
+`ATTR_DIR_ALLOCSIZE` (0x00000008) and `ATTR_DIR_DATALENGTH` (0x00000020), 8 bytes each in that order, to every
+request; directory records then end after them. `DirOutcome` carries each child directory's own allocation, and
+a missing `ALLOCSIZE` (file or directory) is replaced by the data length rounded up to the allocation unit
+(chapter 02 §1.1). Cost: two fields per directory record, no syscall.
+
 ### 3.3 Read loop
 
 **[Exists]** `while true { count = getattrlistbulk(fd, &al, buf, bufSize, opts) }`: `count == 0` ends the
@@ -135,7 +141,7 @@ silently (the directory still has `opened == true`; a dropped child directory is
 | `type == VDIR`, `dev != rootDev`, `!options.crossDevices` | `mountsSkipped += 1`; not entered. |
 | `type == VDIR`, `flags & SF_DATALESS` | `datalessDirs += 1`; not entered. |
 | `type == VDIR`, name in `exclusions[path]` | `firmlinksSkipped += 1`; not entered (chapter 02). |
-| `type == VDIR`, otherwise | `childDirs.append(name)`; with `userAccess` and access lacking `R_OK` or `X_OK`, also `deniedChildDirs.append(name)`. A directory is never a file: no sizes. |
+| `type == VDIR`, otherwise | `childDirs.append(name)` (with its own allocation after #48); with `userAccess` and access lacking `R_OK` or `X_OK`, also `deniedChildDirs.append(name)`. A directory is never a file: no sizes. |
 | file, `flags & SF_DATALESS` | `datalessLogical += logical`, `files += 1`; nothing added to `alloc`, `logical` or `cloneAware`. |
 | file, `links > 1`, `type == VREG` | Hard-link claim (section 6): nil defers it to `deferredLinks`; false adds 1 to `hardlinkDupes` and counts nothing; true adds `realAlloc` to `cloneAware` and falls through to the sums. |
 | file, `EF_SHARES_ALL_BLOCKS`, `cloneID != 0`, `type == VREG` | Appended to `cloneMembers` (`CloneMember(cloneID, alloc: realAlloc, isOriginal: cloneID == fileID)`); `cloneAware` decided by the `CloneRegistry` (chapter 02). |
@@ -285,7 +291,8 @@ directory. `MemoryLayout<DirNode>.stride == 96` bytes; names of up to 15 UTF-8 b
    clone family in the `CloneRegistry` in exactly one live node's `ownCloneAware`.
 8. Root `totalAlloc == du -skx x 1024` when the scan is not `--private` and the tree has no `unreadable` node,
    no incomplete node, no skipped `SF_DATALESS` directory and no firmlink alias (chapter 02). `du` skips the
-   same unreadable directories, so in practice it also holds with them.
+   same unreadable directories, so in practice it also holds with them. **[Change] (#48)** Also on a volume
+   whose listings omit `ALLOCSIZE` (FAT, exFAT), and counting directories' own clusters (chapter 02 §1.1).
 9. `nodes` is not safe to read while a scan or update mutates it (see 5.6).
 
 ### 5.4 Totals
@@ -596,6 +603,7 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
   (porcelain `uncertain=`); strict / tolerant hard links.
 - Denied (`openErrors`); entry error (`entryErrors`); gone (`isGone`).
 - Incomplete directory (**[New]**, #7).
+- Allocation unit (**[New]**, #48, chapter 02).
 - `rawNames` (**[New]**, #6); `DirReader.Config.checkOwnDevice` (**[New]**, #4, shared with chapter 03).
 - Naive mode (`--naive`); `FIL_TIMINGS`; `FIL_SNAPSHOT_DIR`.
 - Full scan (`--full`).

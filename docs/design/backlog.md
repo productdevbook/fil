@@ -141,6 +141,19 @@ settings and secrets only a person with admin rights can change).
     via link A` (full scan instead of incremental) and the ScanCore test "a folder that becomes readable again is
     walked". Each flaky case gets a cause or an issue for `macos-engineer`.
 
+### F-048 · Sizes on FAT volumes match `du`
+
+- **Area** scan · **Owner** macos-engineer · **Priority** P2 · **Depends on** — · **Chapters** 02 §1.1, §6; 01 §3.2, §5.3
+- **Acceptance**
+  - A file record without `ATTR_FILE_ALLOCSIZE` counts its data length rounded up to the allocation unit
+    (`statfs(root).f_bsize`, once per scan or update); a directory's own allocation (`ATTR_DIR_ALLOCSIZE`, else its
+    rounded `ATTR_DIR_DATALENGTH`; root from its `lstat`) is counted in its own node, as in chapter 02 §1.1.
+  - On a FAT image made with `hdiutil create -fs MS-DOS` holding a 300 KB file, a 3-byte file and a subfolder,
+    `fil scan <mount> --full --top 0 --porcelain` `alloc=` equals `du -skx <mount>` × 1024 (today `alloc=0`, `du`
+    320 KB); the same for the subfolder. An automated test builds the image.
+  - `scripts/verify.sh` on APFS passes unchanged; the full-scan time stays within the chapter 01 §12 budget.
+  - Chapter 02 "As built" lists the file systems checked (FAT32, exFAT at least).
+
 ### F-020 · ScanCore regression tests
 
 - **Area** scan · **Owner** macos-engineer · **Priority** P1 · **Depends on** F-004, F-006, F-007 · **Chapters** 01 §13; 03 §11

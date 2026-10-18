@@ -10,7 +10,7 @@ build, then a CLI scripts can rely on, then speed at scale, then the map library
 
 **Goal:** every size `fil` prints is either correct or clearly marked, and no input makes it crash.
 
-Items: F-001, F-011, F-004, F-032, F-005, F-033, F-006, F-007, F-034, F-015, F-035, F-036, F-037, F-047, F-020.
+Items: F-001, F-011, F-004, F-032, F-005, F-033, F-006, F-007, F-034, F-015, F-035, F-036, F-037, F-047, F-048, F-020.
 
 ## M2 · Safe cleaning
 
@@ -90,11 +90,11 @@ Every agent file gets `disallowedTools: Agent` and only that: no list of unrelat
 
 | Milestone | Items | IDs | scan | clean | cli | map | ops | design |
 |---|---|---|---|---|---|---|---|---|
-| M1 · Trustworthy numbers | 15 | F-001, F-004–F-007, F-011, F-015, F-020, F-032–F-037, F-047 | 12 | 0 | 2 | 0 | 0 | 1 |
+| M1 · Trustworthy numbers | 16 | F-001, F-004–F-007, F-011, F-015, F-020, F-032–F-037, F-047, F-048 | 13 | 0 | 2 | 0 | 0 | 1 |
 | M2 · Safe cleaning | 7 | F-002, F-003, F-008, F-013, F-014, F-021, F-038 | 0 | 6 | 1 | 0 | 0 | 0 |
 | M3 · Releases you can trust | 9 (+1 withdrawn) | F-022–F-025, F-028–F-031, F-039, F-040 | 0 | 0 | 0 | 0 | 8 | 1 |
 | M4 · Scriptable CLI | 6 | F-009, F-010, F-012, F-026, F-041, F-042 | 0 | 0 | 6 | 0 | 0 | 0 |
 | M5 · Scales | 5 | F-016–F-018, F-043, F-044 | 5 | 0 | 0 | 0 | 0 | 0 |
 | M6 · Map | 1 | F-019 | 0 | 0 | 0 | 1 | 0 | 0 |
 | M7 · Finishing touches | 2 | F-027, F-045 | 0 | 0 | 1 | 0 | 1 | 0 |
-| **Total** | **45 (+1 withdrawn, 1 not used)** | F-001–F-047 | 17 | 6 | 10 | 1 | 9 | 2 |
+| **Total** | **46 (+1 withdrawn, 1 not used)** | F-001–F-048 | 18 | 6 | 10 | 1 | 9 | 2 |

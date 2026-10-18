@@ -30,6 +30,25 @@ as described here (reason and issue given); **[New]** does not exist yet.
 | full clone (`EF_SHARES_ALL_BLOCKS`, `cloneID != 0`, `VREG`, 1 link) | `alloc` / `DATALENGTH` / +1 | family's `alloc` once per family, in the owning directory (section 4) |
 | anything else (incl. partial clones, symlinks) | `alloc` / `DATALENGTH` / +1 | `realAlloc` |
 
+**[Change] (#48)** A volume whose listings omit `ATTR_FILE_ALLOCSIZE` is counted as 0 bytes. Reason: on a FAT
+(msdos) volume `getattrlistbulk` returns `LINKCOUNT` and `DATALENGTH` but not `ALLOCSIZE` for files, and only
+`ATTR_DIR_DATALENGTH` for directories (checked on macOS 27 with a 20 MB FAT32 image, cluster 2048 bytes; the
+volume's `validattr` claims `ALLOCSIZE` all the same). `fil scan <mount> --full` printed `alloc=0` with
+`logical=307203`, while `du -skx` printed 320. `du` also counts the clusters of every directory (root 16 KB, a
+subfolder 2 KB), which APFS reports as 0. Rule:
+
+- The **allocation unit** is `statfs(root).f_bsize`, read once per scan and once per update (one syscall each,
+  never per file or directory).
+- A file record without `ALLOCSIZE` in `RETURNED_ATTRS`: `alloc` = `realAlloc` = `DATALENGTH` rounded up to the
+  allocation unit (0 stays 0). With `--private` and no `PRIVATESIZE`, `alloc` keeps that value, as today.
+- A directory's own allocation is counted in its own node's `ownAlloc` and `ownCloneAware`, as `du` counts it in
+  the directory itself: `ATTR_DIR_ALLOCSIZE` from the parent's listing (requested always; APFS returns 0), or
+  `ATTR_DIR_DATALENGTH` rounded up to the allocation unit when `ALLOCSIZE` is absent. The scan root uses the
+  `lstat` it already makes (`st_blocks × 512`); a re-read directory uses the `fstat` its read already makes.
+- Exact on FAT and exFAT, which have no sparse, compressed or cloned files: every file holds whole clusters.
+  `logical` is unchanged. A file system that omits `ALLOCSIZE` and has sparse files is not known today; the
+  As built entry for #48 lists which file systems were checked.
+
 ### 1.2 Tree fields and output
 
 **[Exists]** (`Scan.swift:105-131`). `r` is the root `DirNode`.
@@ -299,6 +318,9 @@ firmlink table parsing; alias selection; data-volume event translation; `/` and 
 an injected table counting a firmlinked directory once; `firmlinksChanged` on a different table; the system table
 covering `/Users`.
 
+**[Change] (#48)** Add: a FAT image (`hdiutil create -fs MS-DOS`) with a 300 KB file, a 3-byte file and a
+subfolder: `alloc` equals `du -skx` × 1024 for the volume and for the subfolder; an APFS tree is unchanged.
+
 **[Change] (#20)** Add: concurrent claims of one clone family from many directories in parallel (totals equal a
 single-thread scan, family counted once); `shared` and `cloneaware` with a dataless file in a clone family.
 
@@ -317,3 +339,4 @@ single-thread scan, family counted once); `shared` and `cloneaware` with a datal
 - Volume group; data volume; `FirmlinkTable`, `FirmlinkTable.Link` (`source`, `target`), `FirmlinkTable.Alias`
   (`dataPath`, `source`); exclusions; `translate`; `rootPrefixes`; `relativeComponents`.
 - Snapshot format 5 (format 6 **[New]**).
+- Allocation unit (**[New]**, #48): `statfs(root).f_bsize`, used when a listing omits `ALLOCSIZE`.
