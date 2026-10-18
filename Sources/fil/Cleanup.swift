@@ -23,7 +23,7 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         case "--timings": timings = true
         case "--no-color": noColor = true
         default:
-            if a.hasPrefix("-") { usageError("unknown option \(a) for 'fil \(command)'", help: command == "list" ? listHelp : cleanHelp) }
+            if a.hasPrefix("-") { usageError("unknown option \(a) for 'fil \(command)'") }
             selectors.append(a)
         }
     }
@@ -55,10 +55,10 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         }
     }
     t = clock.now
-    let scanned = try tree ?? Scanner.scan(home, options: options)
+    let scanned = try tree ?? withPath(home) { try Scanner.scan(home, options: options) }
     if tree == nil { phase("full scan", t) }
     t = clock.now
-    if !(unchanged && Snapshot.advance(scanned)) { try Snapshot.save(scanned) }
+    if !(unchanged && Snapshot.advance(scanned)) { saveSnapshot(scanned) }
     phase("snapshot save", t, unchanged ? "  (advance only)" : "")
     t = clock.now
     let scan = await Cleanup.scan(home: home, tree: scanned, simulators: simulators)

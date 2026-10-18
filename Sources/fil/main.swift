@@ -1,4 +1,5 @@
 import Foundation
+import ScanCore
 
 let version = "0.1.1"
 
@@ -69,13 +70,66 @@ func helpText(for command: String) -> String? {
     }
 }
 
+/// A runtime error with its final message; printed as `fil: <message>`, exit 1.
+struct CLIError: Error, CustomStringConvertible {
+    let description: String
+}
+
+/// The text after `fil: ` for an error: `description` for our own error types, `strerror` for POSIX errors
+/// (also when a system error wraps one), else `localizedDescription`; the path goes in front when known.
+func errorMessage(_ error: Error, path: String? = nil) -> String {
+    var path = path
+    let text: String
+    if let e = error as? POSIXError {
+        text = String(cString: strerror(e.code.rawValue))
+    } else if !(error is CocoaError), !(type(of: error) is NSError.Type),
+              let e = error as Any as? CustomStringConvertible {
+        text = e.description
+    } else {
+        let ns = error as NSError
+        if let under = ns.userInfo[NSUnderlyingErrorKey] as? NSError, under.domain == NSPOSIXErrorDomain {
+            text = String(cString: strerror(Int32(under.code)))
+            path = path ?? ns.userInfo[NSFilePathErrorKey] as? String
+        } else {
+            text = ns.localizedDescription.hasSuffix(".") ? String(ns.localizedDescription.dropLast())
+                : ns.localizedDescription
+        }
+    }
+    return path.map { "\($0): \(text)" } ?? text
+}
+
+/// Runs `body`; an error it throws becomes a `CLIError` naming `path`.
+func withPath<T>(_ path: String, _ body: () throws -> T) throws -> T {
+    do { return try body() } catch let e as CLIError { throw e } catch {
+        throw CLIError(description: errorMessage(error, path: path))
+    }
+}
+
+/// Saves the snapshot; a failure is only a warning, since the result is correct and only the cache is missing.
+func saveSnapshot(_ tree: DiskTree) {
+    do { try Snapshot.save(tree) } catch {
+        warn("could not save the snapshot (\(errorMessage(error))); the next run does a full scan")
+    }
+}
+
+/// Prints `fil: warning: <msg>` on stderr.
+func warn(_ msg: String) {
+    FileHandle.standardError.write(Data("fil: warning: \(msg)\n".utf8))
+}
+
+/// Prints `fil: <msg>` on stderr and exits 1.
 func fail(_ msg: String) -> Never {
-    FileHandle.standardError.write(Data((msg + "\n").utf8))
+    FileHandle.standardError.write(Data("fil: \(msg)\n".utf8))
     exit(1)
 }
 
-func usageError(_ msg: String, help: String = mainHelp) -> Never {
-    FileHandle.standardError.write(Data((msg + "\n\n" + help + "\n").utf8))
+/// The command being run, for the usage hint; nil until one is recognised.
+nonisolated(unsafe) var currentCommand: String?
+
+/// Prints `fil: <msg>` and a pointer to the help on stderr and exits 2.
+func usageError(_ msg: String) -> Never {
+    let hint = currentCommand.map { "Run 'fil help \($0)' for usage." } ?? "Run 'fil --help' for usage."
+    FileHandle.standardError.write(Data("fil: \(msg)\n\(hint)\n".utf8))
     exit(2)
 }
 
@@ -88,27 +142,32 @@ func takeValue(_ args: inout [String], _ option: String) -> String {
 var arguments = Array(CommandLine.arguments.dropFirst())
 guard !arguments.isEmpty else { usageError("missing command") }
 let command = arguments.removeFirst()
-switch command {
-case "--help", "-h":
-    print(mainHelp)
-case "--version", "-V":
-    print("fil \(version)")
-case "help":
-    if let name = arguments.first {
-        guard let text = helpText(for: name) else { usageError("unknown command '\(name)'") }
-        print(text)
-    } else {
+if helpText(for: command) != nil { currentCommand = command }
+do {
+    switch command {
+    case "--help", "-h":
         print(mainHelp)
+    case "--version", "-V":
+        print("fil \(version)")
+    case "help":
+        if let name = arguments.first {
+            guard let text = helpText(for: name) else { usageError("unknown command '\(name)'") }
+            print(text)
+        } else {
+            print(mainHelp)
+        }
+    case "scan":
+        if arguments.contains("--help") || arguments.contains("-h") { print(scanHelp); exit(0) }
+        try runScan(arguments)
+    case "doctor":
+        if arguments.contains("--help") || arguments.contains("-h") { print(doctorHelp); exit(0) }
+        await runDoctor(arguments)
+    case "list", "clean":
+        if arguments.contains("--help") || arguments.contains("-h") { print(helpText(for: command)!); exit(0) }
+        try await runCleanup(command, arguments)
+    default:
+        usageError("unknown command '\(command)'")
     }
-case "scan":
-    if arguments.contains("--help") || arguments.contains("-h") { print(scanHelp); exit(0) }
-    try runScan(arguments)
-case "doctor":
-    if arguments.contains("--help") || arguments.contains("-h") { print(doctorHelp); exit(0) }
-    await runDoctor(arguments)
-case "list", "clean":
-    if arguments.contains("--help") || arguments.contains("-h") { print(helpText(for: command)!); exit(0) }
-    try await runCleanup(command, arguments)
-default:
-    usageError("unknown command '\(command)'")
+} catch {
+    fail(errorMessage(error))
 }

@@ -162,7 +162,7 @@ func runDoctor(_ arguments: [String]) async -> Never {
         switch a {
         case "--no-open": open = false
         case "--no-color": noColor = true
-        default: usageError("unknown option \(a) for 'fil doctor'", help: doctorHelp)
+        default: usageError("unknown option \(a) for 'fil doctor'")
         }
     }
     UI.setup(noColor: noColor)

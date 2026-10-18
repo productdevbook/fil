@@ -112,6 +112,7 @@ final class Progress: @unchecked Sendable {
     private let stop = Atomic<Bool>(false)
     private let done = DispatchSemaphore(value: 0)
     private let enabled: Bool
+    private var started = false
 
     init(label: String, progress: ScanProgress) {
         self.label = label
@@ -120,7 +121,8 @@ final class Progress: @unchecked Sendable {
     }
 
     func start() {
-        guard enabled else { return }
+        guard enabled, !started else { return }
+        started = true
         let t = Thread { [self] in
             let frames = Array("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
             let begin = ContinuousClock.now
@@ -144,8 +146,10 @@ final class Progress: @unchecked Sendable {
         t.start()
     }
 
+    /// Clears the line; a no-op when the spinner never started (also safe to call twice).
     func finish() {
-        guard enabled else { return }
+        guard enabled, started else { return }
+        started = false
         stop.store(true, ordering: .relaxed)
         done.wait()
     }

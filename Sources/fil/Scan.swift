@@ -30,7 +30,7 @@ func runScan(_ arguments: [String]) throws {
         case "--no-color": noColor = true
         case "--tolerant-hardlinks": options.strictHardlinks = false
         default:
-            if a.hasPrefix("-") { usageError("unknown option \(a) for 'fil scan'", help: scanHelp) }
+            if a.hasPrefix("-") { usageError("unknown option \(a) for 'fil scan'") }
             path = (a as NSString).standardizingPath
         }
     }
@@ -88,12 +88,18 @@ func runScan(_ arguments: [String]) throws {
             }
         }
     }
-    let scanned = try tree ?? Scanner.scan(path, options: options, progress: liveProgress)
+    let scanned: DiskTree
+    do {
+        scanned = try tree ?? withPath(path) { try Scanner.scan(path, options: options, progress: liveProgress) }
+    } catch {
+        spinner.finish()
+        throw error
+    }
     let scanTime = clock.now - start
     spinner.finish()
     let saveStart = clock.now
     // An incremental update with no events left the tree untouched: only the event id moves.
-    if !(unchanged && Snapshot.advance(scanned)) { try Snapshot.save(scanned) }
+    if !(unchanged && Snapshot.advance(scanned)) { saveSnapshot(scanned) }
     let saveTime = clock.now - saveStart
 
     let nodes = scanned.nodes
