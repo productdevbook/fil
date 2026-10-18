@@ -438,6 +438,31 @@ add it to the `snapshot load` line. `nil`-returning behaviour is otherwise uncha
 - **[New]** Version 6 carries both changes (mode byte bit 1, stats block). Version 5 files are rejected (rule 3) and
   rebuilt by one full scan, as with earlier versions.
 
+**As built (#5): format 6.** The header is version 5's with byte 8 as the mode byte; offsets 0–36 do not move
+(`eventIdOffset` 13, `advance` compares bytes 0..<9). After the aliases the body is a list of **sections**:
+
+| Field | Type | Notes |
+|---|---|---|
+| `tag` | u32 | `0` end · `1` nodes · `2` hard links · `3` clone families · `4` mount points |
+| `size` | u64 | payload bytes; `≤` bytes left in the file |
+| payload | | record layouts as in §6.2, each table starting with its u32 count |
+
+- Mount-points payload: count u32, then per record `parent` i32 (a node id) · `name` string (not empty): a child of
+  `parent` that the scan skipped because another volume is mounted on it (`DiskTree.mountPoints`).
+- The file ends with tag 0, size 0. Load rules replacing 7–14 of §6.4: each known section exactly once; `nodes`
+  before any other (they refer to its ids); all four present; each payload read exactly to its `size`; an unknown tag
+  is skipped, unless bit 31 (`mustUnderstand`) is set, which rejects the file. The count bounds stay (hard links now
+  bounded too, 40 bytes per record; clone families use 28).
+- Room for later changes without a version bump before v0.2.0: #15 adds its `ScanStats` + `fullScanStart` as a new
+  optional section (tag 5, 72 bytes) instead of moving `volumeUUID` (the header text above for #15 is superseded); a
+  file without it simply has no last-known stats. #33 changes only the file name. A change that older format-6
+  readers must not ignore uses a tag with bit 31 set.
+- `load(rootPath:options:)` compares the whole mode byte with `privateSize | crossDevices << 1`; the
+  `load(rootPath:privateSize:crossDevices:)` form defaults `crossDevices` to false (`list`/`clean` unchanged).
+- `advance` also refuses a tree that an update changed (`DiskTree.changedSinceSave`, set when `apply` does any work,
+  cleared by `save`): a mount or unmount changes the tree with 0 events, so `report.events == 0` no longer proves the
+  tree unchanged.
+
 ## 7. Update failures
 
 ### 7.1 Cases
@@ -565,6 +590,18 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   (`getfsstat`) and rescans tree folders that became mount points. "Unmount needs nothing more" is wrong: a folder
   uncovered by an unmount is not seen until its parent gets an event, and its contents are missing. Fixed with
   snapshot format 6 in #5 (skipped mount points recorded and compared with `getfsstat` on every update).
+- #5 (2026-10-18): format 6 as in §6.5 "As built (#5)". Skipped mount points are recorded from listings (children
+  with `DIR_MNTSTATUS_MNTPOINT` on another device; other device mismatches are not recorded, so a record is always
+  something `getfsstat` lists) and from update reads that end in `EXDEV`. A directory's records are dropped whenever it
+  is re-read, rescanned, emptied or removed (like the hard-link `forget`) and re-made by the read; records under dead
+  nodes are dropped and `compact` remaps them. `Incremental.mountChanges` reads `getfsstat` once per update and
+  returns `mounted` (tree folders now mount points → full rescan, as for #4) and `uncovered` (parents of records not in
+  the mount table → shallow re-read, which finds the uncovered folder as a new directory and walks it). If
+  `getfsstat` fails, every record's parent is re-read. A tree with records but no event still runs `apply`.
+  Checked: `fil scan /private/var/run` records 6 cryptex/system mounts and the next runs re-read nothing; `fil scan /`
+  (17 mounts skipped) re-reads no more directories than its events ask for.
+  Not done: the `scan` summary still says `up to date from snapshot` for an update whose only change was a mount or
+  unmount (sizes are right; the text counts events).
 
 ## Glossary additions
 

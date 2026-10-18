@@ -279,11 +279,27 @@ final class HardlinkRegistry: @unchecked Sendable {
     }
 }
 
+/// A directory of the tree on which another volume was mounted when it was last listed: the scan left it out
+/// (never crossing into another device). Kept so that an update can find it again once the volume is unmounted,
+/// which leaves no FSEvents event.
+public struct MountPoint: Hashable, Sendable {
+    /// Directory that lists the mount point.
+    public var parent: Int32
+    public var name: String
+
+    public init(parent: Int32, name: String) {
+        self.parent = parent
+        self.name = name
+    }
+}
+
 /// The whole scanned hierarchy for one root, kept as a flat array of directories.
 public final class DiskTree: @unchecked Sendable {
     public let rootPath: String
     public internal(set) var rootDev: dev_t
     public let privateSize: Bool
+    /// Scanned with `ScanOptions.crossDevices`: other volumes mounted inside the root are counted.
+    public let crossDevices: Bool
     /// Only appended to, marked dead, or replaced by `compact` (which resets `links`).
     public internal(set) var nodes: [DirNode]
     /// FSEvents id captured *before* the scan started; replaying from here never misses a change.
@@ -298,14 +314,21 @@ public final class DiskTree: @unchecked Sendable {
     public internal(set) var uncertainBytes: Int64 = 0
     /// Data-volume directories this tree reaches through a firmlink instead (`FirmlinkTable.aliases(for:)`).
     public let aliases: [FirmlinkTable.Alias]
+    /// Mount points the scan skipped inside the root, each under a live directory (none with `crossDevices`).
+    /// Refreshed whenever their parent is listed again; compared with the mount table on every update.
+    public internal(set) var mountPoints: [MountPoint] = []
+    /// An update changed the tree since it was loaded, scanned or saved: `Snapshot.advance` must not be used.
+    var changedSinceSave = false
     let exclusions: [String: Set<String>]
     let hardlinks: HardlinkRegistry
     let clones: CloneRegistry
     fileprivate let links = ChildLinks()
 
-    init(rootPath: String, rootDev: dev_t, privateSize: Bool, nodes: [DirNode],
+    init(rootPath: String, rootDev: dev_t, privateSize: Bool, crossDevices: Bool, nodes: [DirNode],
          eventId: UInt64, volumeUUID: String, scanStart: Int64, hardlinks: HardlinkRegistry,
-         clones: CloneRegistry, aliases: [FirmlinkTable.Alias]) {
+         clones: CloneRegistry, aliases: [FirmlinkTable.Alias], mountPoints: [MountPoint] = []) {
+        self.crossDevices = crossDevices
+        self.mountPoints = mountPoints
         self.aliases = aliases
         self.exclusions = aliases.exclusions
         self.clones = clones
@@ -419,6 +442,9 @@ public final class DiskTree: @unchecked Sendable {
         links.reset()
         hardlinks.remap(map)
         clones.remap(map)
+        mountPoints = mountPoints.compactMap { m in
+            map[Int(m.parent)] < 0 ? nil : MountPoint(parent: map[Int(m.parent)], name: m.name)
+        }
     }
 }
 

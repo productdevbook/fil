@@ -118,6 +118,62 @@ struct FullScanTests {
         }
     }
 
+    @Test("a snapshot is used only with its own device-crossing mode, in both directions")
+    func snapshotCrossDevicesMode() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("a/b", bytes: 4096)
+                try Snapshot.save(try Scanner.scan(f.root, options: ScanOptions(crossDevices: true)), in: dir)
+                #expect(Snapshot.load(rootPath: f.root, options: ScanOptions(), in: dir) == nil)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: true, crossDevices: true, in: dir) == nil)
+                let crossing = try #require(Snapshot.load(rootPath: f.root, options: ScanOptions(crossDevices: true), in: dir))
+                #expect(crossing.crossDevices)
+
+                try Snapshot.save(try Scanner.scan(f.root), in: dir)
+                #expect(Snapshot.load(rootPath: f.root, options: ScanOptions(crossDevices: true), in: dir) == nil)
+                let plain = try #require(Snapshot.load(rootPath: f.root, options: ScanOptions(), in: dir))
+                #expect(!plain.crossDevices)
+                // advance compares the mode byte: a tree of the other mode never rewrites this file's header.
+                #expect(!Snapshot.advance(crossing, in: dir))
+                #expect(Snapshot.advance(plain, in: dir))
+            }
+        }
+    }
+
+    @Test("format: version 5 is rejected; unknown sections are skipped unless marked must-understand")
+    func snapshotFormatVersion() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("a/b", bytes: 4096)
+                try Snapshot.save(try Scanner.scan(f.root), in: dir)
+                let url = Snapshot.url(for: f.root, in: dir)
+                let good = try Data(contentsOf: url)
+                #expect(good[4] == 6 && good[8] == 0)
+
+                var old = good
+                old[4] = 5
+                try old.write(to: url)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir) == nil)
+
+                // The end marker is the last 12 bytes: insert a section before it.
+                func withSection(tag: UInt32) -> Data {
+                    var d = good.prefix(good.count - 12)
+                    withUnsafeBytes(of: tag.littleEndian) { d.append(contentsOf: $0) }
+                    withUnsafeBytes(of: UInt64(3).littleEndian) { d.append(contentsOf: $0) }
+                    d.append(contentsOf: [1, 2, 3])
+                    return d + good.suffix(12)
+                }
+                try withSection(tag: 99).write(to: url)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir) != nil)
+                try withSection(tag: 0x8000_0063).write(to: url)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir) == nil)
+                // A known section twice is corrupt.
+                try withSection(tag: 4).write(to: url)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir) == nil)
+            }
+        }
+    }
+
     @Test("a corrupt snapshot is rejected, not trusted")
     func corruptSnapshot() throws {
         try withSnapshotDir { dir in

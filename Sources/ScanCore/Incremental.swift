@@ -118,9 +118,11 @@ public enum Incremental {
         let prefixes = rootPrefixes(tree.rootPath)
         let aliases = tree.aliases
         // FSEvents keeps no Mount or Unmount event in its history (they are delivered live only), so a volume mounted
-        // on a directory of the tree since the snapshot is found in the mount table.
-        let mounted = options.crossDevices ? [] : mountedOver(tree, prefixes: prefixes, aliases: aliases)
-        guard !events.isEmpty || !mounted.isEmpty else { return nil }
+        // on a directory of the tree since the snapshot, or unmounted from a recorded mount point, is found in the
+        // mount table.
+        let mounts = options.crossDevices ? MountChanges() : mountChanges(tree, prefixes: prefixes, aliases: aliases)
+        guard !events.isEmpty || !mounts.mounted.isEmpty || !mounts.uncovered.isEmpty else { return nil }
+        tree.changedSinceSave = true
         func unattributed() -> UpdateFailure { .unattributedHardLink(paths: tree.hardlinks.unattributedPaths) }
         var t = Timings.Lap("apply")
         let firstNew = tree.nodes.count
@@ -140,7 +142,9 @@ public enum Incremental {
             if e.mustScanSubDirs { full.insert(id) } else { shallow.insert(id) }
         }
         // Its old contents are hidden now; the rescan's own-device check finds the other volume and removes the node.
-        full.formUnion(mounted)
+        full.formUnion(mounts.mounted)
+        // The folder under an unmounted volume is visible again: its parent's re-read finds it as a new directory.
+        shallow.formUnion(mounts.uncovered)
         func underFull(_ id: Int32, includingSelf: Bool) -> Bool {
             var i = includingSelf ? id : tree.nodes[Int(id)].parent
             while i >= 0 {
@@ -168,10 +172,14 @@ public enum Incremental {
         var newDirs: [Int32] = []
         var pendingLinks: [(dir: Int32, inode: UInt64, alloc: Int64, logical: Int64, cloneAware: Int64)] = []
         var pendingClones: [(dir: Int32, members: [CloneMember])] = []
+        var newMounts: [MountPoint] = []
         for (id, out) in zip(reread, outcomes) {
             guard out.opened else {
                 if id == 0 { return .rootUnreadable(errno: out.openError) }
                 if out.isGone {
+                    if out.openError == EXDEV {
+                        newMounts.append(MountPoint(parent: tree.nodes[Int(id)].parent, name: tree.nodes[Int(id)].name))
+                    }
                     killRoots.append(id)
                 } else {
                     // Unreadable (permissions): keep it as a full scan does, empty and counted in openErrors.
@@ -223,6 +231,7 @@ public enum Incremental {
                 newDirs.append(Int32(tree.nodes.count))
                 tree.nodes.append(DirNode(parent: id, name: name))
             }
+            for name in out.mountPoints { newMounts.append(MountPoint(parent: id, name: name)) }
             for l in out.deferredLinks { pendingLinks.append((id, l.inode, l.alloc, l.logical, l.cloneAware)) }
             if !out.cloneMembers.isEmpty { pendingClones.append((id, out.cloneMembers)) }
         }
@@ -259,6 +268,9 @@ public enum Incremental {
         // Every record of a re-read, rescanned or removed directory is dropped; the re-read puts back what is still there.
         tree.hardlinks.forget { Int($0) < affected.count && affected[Int($0)] }
         tree.clones.forget { Int($0) < affected.count && affected[Int($0)] }
+        // Likewise the mount points listed by those directories; the re-reads and rescans record the current ones.
+        tree.mountPoints.removeAll { Int($0.parent) < affected.count && affected[Int($0.parent)] }
+        tree.mountPoints += newMounts
         t.lap("forget")
 
         for l in pendingLinks where !tree.nodes[Int(l.dir)].isDead
@@ -279,7 +291,8 @@ public enum Incremental {
         report.subtreesScanned = targets.count
         let gone = Scanner.rescanSubtrees(targets, in: tree, options: options, checkRootDevice: true)
         if let e = gone[0] { return .rootUnreadable(errno: e) }
-        for id in gone.keys {
+        for (id, e) in gone {
+            if e == EXDEV { tree.mountPoints.append(MountPoint(parent: tree.nodes[Int(id)].parent, name: tree.nodes[Int(id)].name)) }
             changed.append(tree.nodes[Int(id)].parent)
             tree.nodes[Int(id)].parent = DirNode.dead
             report.dirsRemoved += 1
@@ -319,51 +332,81 @@ public enum Incremental {
         changed += Scanner.applyPreferredOriginals(tree)
         t.lap("links+orphans(\(adopted.count) clone originals adopted)")
 
+        // A record whose directory was removed after it was made (its parent re-read as gone), or made twice.
+        var seen = Set<MountPoint>()
+        tree.mountPoints.removeAll { tree.nodes[Int($0.parent)].isDead || !seen.insert($0).inserted }
+
         tree.updateTotals(changed: changed, firstNew: firstNew)
         t.lap("totals")
         return nil
     }
 
-    /// Live directories of the tree on which another volume is mounted now. A full scan never has a node for a mount
-    /// point, so each one was mounted after the snapshot. One `getfsstat` per update; the child links are synced and
-    /// `lstat` called only for mount points inside the root, the tree lookup first (no `lstat` of an unrelated, perhaps
-    /// slow, network volume). A volume on our own device (the data volume of the boot volume group) is part of the tree.
-    static func mountedOver(_ tree: DiskTree, prefixes: [String], aliases: [FirmlinkTable.Alias]) -> [Int32] {
+    struct MountChanges {
+        /// Live directories of the tree on which another volume is mounted now.
+        var mounted: [Int32] = []
+        /// Directories listing a recorded mount point that is no longer one.
+        var uncovered: [Int32] = []
+    }
+
+    /// Compares the mount table with the tree. `mounted`: live directories of the tree on which another volume is
+    /// mounted now; a full scan never has a node for a mount point, so each one was mounted after the snapshot.
+    /// `uncovered`: parents of recorded mount points (`DiskTree.mountPoints`) that are no longer in the mount table.
+    /// One `getfsstat` per update; the child links are synced and `lstat` called only for mount points inside the root,
+    /// the tree lookup first (no `lstat` of an unrelated, perhaps slow, network volume). A volume on our own device
+    /// (the data volume of the boot volume group) is part of the tree. If the table cannot be read, every recorded
+    /// mount point's parent is re-read: a few directory listings, never a stale folder.
+    static func mountChanges(_ tree: DiskTree, prefixes: [String], aliases: [FirmlinkTable.Alias]) -> MountChanges {
+        var out = MountChanges()
+        let recordedParents = { Array(Set(tree.mountPoints.map(\.parent))) }
         let count = getfsstat(nil, 0, MNT_NOWAIT)
-        guard count > 0 else { return [] }
+        guard count > 0 else {
+            out.uncovered = recordedParents()
+            return out
+        }
         // Room for a few mounts made between the two calls. Plain C structs: the kernel fills the first `got`.
         let capacity = Int(count) + 8
         let mounts = UnsafeMutablePointer<statfs>.allocate(capacity: capacity)
         defer { mounts.deallocate() }
         let got = getfsstat(mounts, Int32(capacity * MemoryLayout<statfs>.stride), MNT_NOWAIT)
-        guard got > 0 else { return [] }
+        guard got > 0 else {
+            out.uncovered = recordedParents()
+            return out
+        }
         var synced = false
-        var ids: [Int32] = []
+        var current = Set<MountPoint>()
         for i in 0..<Int(got) {
             let path = withUnsafeBytes(of: mounts[i].f_mntonname) { raw in
                 String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
             }
-            guard let comps = relativeComponents(path, prefixes: prefixes, aliases: aliases), !comps.isEmpty else {
+            guard let comps = relativeComponents(path, prefixes: prefixes, aliases: aliases), let last = comps.last else {
                 continue
             }
             if !synced {
                 tree.syncLinks()
                 synced = true
             }
-            var id: Int32 = 0
-            for c in comps {
-                guard let child = tree.child(of: id, named: String(c)) else {
-                    id = -1
+            var parent: Int32 = 0
+            var found = true
+            for c in comps.dropLast() {
+                guard let child = tree.child(of: parent, named: String(c)) else {
+                    found = false
                     break
                 }
-                id = child
+                parent = child
             }
-            guard id > 0 else { continue }
+            guard found else { continue }
+            let name = String(last)
+            current.insert(MountPoint(parent: parent, name: name))
+            guard let id = tree.child(of: parent, named: name) else { continue }
             var st = stat()
             if lstat(path, &st) == 0 && st.st_dev == tree.rootDev { continue }
-            ids.append(id)
+            out.mounted.append(id)
         }
-        return ids
+        var parents = Set<Int32>()
+        for m in tree.mountPoints where !current.contains(m) && !tree.nodes[Int(m.parent)].isDead {
+            if parents.insert(m.parent).inserted { out.uncovered.append(m.parent) }
+        }
+        return out
     }
 
     /// Reads each directory once with up to `options.threads` workers; results are in input order.

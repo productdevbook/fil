@@ -70,7 +70,7 @@ func runScan(_ arguments: [String]) throws {
 
     if !forceFull {
         let loadStart = clock.now
-        if let cached = Snapshot.load(rootPath: path, privateSize: options.privateSize) {
+        if let cached = Snapshot.load(rootPath: path, options: options) {
             let loadTime = clock.now - loadStart
             switch Incremental.update(cached, options: options) {
             case .success(let report):

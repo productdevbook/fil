@@ -33,7 +33,7 @@ public enum Scanner {
         // Taken before walking: anything that changes during the scan is replayed next time.
         let eventId = FSEventsGetCurrentEventId()
         let tree = DiskTree(rootPath: path, rootDev: st.st_dev, privateSize: options.privateSize,
-                            nodes: [DirNode(parent: -1, name: path)], eventId: eventId,
+                            crossDevices: options.crossDevices, nodes: [DirNode(parent: -1, name: path)], eventId: eventId,
                             volumeUUID: volumeUUID(st.st_dev), scanStart: scanStart, hardlinks: HardlinkRegistry(),
                             clones: CloneRegistry(), aliases: options.firmlinks.aliases(for: path))
         _ = rescanSubtrees([0], in: tree, options: options, progress: progress)
@@ -58,6 +58,7 @@ public enum Scanner {
     /// Scans the subtrees under existing nodes `ids` in one parallel pass. Their old descendants must
     /// already be dead; new descendants are appended to the tree. Returns the ids whose directory is gone
     /// (`DirOutcome.isGone`) with the errno of the failed `open`; an unreadable root stays, empty, like in a full scan.
+    /// Mount points skipped below `ids` are appended to `tree.mountPoints`.
     /// `checkRootDevice` (updates): each of `ids` is opened by path and may have become another volume's mount point
     /// since the snapshot; it is then gone with `EXDEV`. A full scan leaves it off: there the root defines the device.
     static func rescanSubtrees(_ ids: [Int32], in tree: DiskTree, options: ScanOptions, checkRootDevice: Bool = false,
@@ -84,6 +85,7 @@ public enum Scanner {
             return n
         })
         tree.stats.merge(job.stats)
+        tree.mountPoints += job.mountPoints
         return Dictionary(job.failedRoots.map { (ids[Int($0.id)], $0.errno) }, uniquingKeysWith: { a, _ in a })
     }
 
@@ -123,7 +125,7 @@ private final class ParallelScan: @unchecked Sendable {
     let checkRootDevice: Bool
     let progress: ScanProgress?
 
-    // `cond` guards: nodes, queue, active, stats, finished, failedRoots
+    // `cond` guards: nodes, queue, active, stats, finished, failedRoots, mountPoints
     let cond = NSCondition()
     var nodes: [DirNode]
     var queue: [WorkItem]
@@ -131,6 +133,8 @@ private final class ParallelScan: @unchecked Sendable {
     var finished = 0
     var stats = ScanStats()
     var failedRoots: [(id: Int32, errno: Int32)] = []
+    /// Skipped mount points, with the global id of the directory that lists them.
+    var mountPoints: [MountPoint] = []
 
     /// Local ids 0..<roots.count are the roots; everything found below them is appended after.
     init(roots: [(id: Int32, path: String)], rootDev: dev_t, options: ScanOptions, exclusions: [String: Set<String>],
@@ -209,6 +213,7 @@ private final class ParallelScan: @unchecked Sendable {
             nodes[Int(item.id)].ownCloneAware = out.cloneAware
             nodes[Int(item.id)].unreadable = !out.opened
             stats.merge(out.stats)
+            for name in out.mountPoints { mountPoints.append(MountPoint(parent: gid, name: name)) }
             let base = item.path == "/" ? "" : item.path
             for name in out.childDirs {
                 let id = Int32(nodes.count)
@@ -238,6 +243,8 @@ struct DirOutcome {
     var childDirs: [String] = []
     /// Child directories the caller may not list (no read or search permission); only with `Config.userAccess`.
     var deniedChildDirs: [String] = []
+    /// Child directories skipped because another volume is mounted on them (not with `crossDevices`).
+    var mountPoints: [String] = []
     /// Multiply-linked files whose claim was deferred (the claim closure returned nil).
     var deferredLinks: [(inode: UInt64, alloc: Int64, logical: Int64, cloneAware: Int64)] = []
     var stats = ScanStats()
@@ -409,7 +416,14 @@ struct DirReader {
                 // mount point, none per file. If lstat fails the device is unknown: not entered.
                 dev = Self.mountedDevice(dirPath, namePtr) ?? ~config.rootDev
             }
-            if dev != config.rootDev && !config.options.crossDevices { out.stats.mountsSkipped += 1; return }
+            if dev != config.rootDev && !config.options.crossDevices {
+                out.stats.mountsSkipped += 1
+                // Recorded so that an update finds the folder again after an unmount (no event marks it).
+                if mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT) != 0, let namePtr {
+                    out.mountPoints.append(String(cString: namePtr.assumingMemoryBound(to: CChar.self)))
+                }
+                return
+            }
             if flags & UInt32(SF_DATALESS) != 0 { out.stats.datalessDirs += 1; return }
             if let namePtr {
                 let name = String(cString: namePtr.assumingMemoryBound(to: CChar.self))

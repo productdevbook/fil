@@ -8,9 +8,29 @@ public enum Snapshot {
     /// 3: one flags byte per directory (bit 0: unreadable) after the parent id.
     /// 4: `uncertainBytes` (i64) in the header after `scanStart`.
     /// 5: firmlink aliases after `rootPath`; `ownCloneAware` (i64) per directory after `ownFiles`; `cloneAware` (i64)
-    /// per hard-link entry; the clone-family table at the end. Older versions are not read: a full scan
-    /// rebuilds what they lack.
-    private static let version: UInt32 = 5
+    /// per hard-link entry; the clone-family table at the end.
+    /// 6: byte 8 is the mode byte (bit 0 `privateSize`, bit 1 `crossDevices`); after the aliases the body is a list of
+    /// sections (`Section`), each `tag u32 | size u64 | payload`, ended by tag 0; adds the skipped mount points.
+    /// Older versions are not read: a full scan rebuilds what they lack.
+    private static let version: UInt32 = 6
+
+    /// Body sections of format 6. Each payload must be read exactly to its end. A reader skips an unknown tag without
+    /// the `mustUnderstand` bit (optional data added later, such as the full scan's statistics) and rejects the file
+    /// for an unknown tag with it (data a reader must not ignore). `nodes` comes first, as the others refer to its ids.
+    /// Every known section appears exactly once.
+    enum Section: UInt32 {
+        case end = 0
+        case nodes = 1
+        case hardlinks = 2
+        case cloneFamilies = 3
+        case mountPoints = 4
+        static let mustUnderstand: UInt32 = 0x8000_0000
+    }
+
+    /// Header byte 8: bit 0 `privateSize`, bit 1 `crossDevices`, other bits 0. A snapshot is used only in its own mode.
+    static func modeByte(privateSize: Bool, crossDevices: Bool) -> UInt8 {
+        (privateSize ? 1 : 0) | (crossDevices ? 2 : 0)
+    }
 
     /// - Parameter directory: where snapshots live; the default is `FIL_SNAPSHOT_DIR` or the user's cache folder.
     public static func url(for rootPath: String, in directory: URL? = nil) -> URL {
@@ -29,14 +49,17 @@ public enum Snapshot {
             .appendingPathComponent("com.vucod.Fil/snapshots", isDirectory: true)
     }
 
-    // Header layout: magic u32 | version u32 | privateSize u8 | rootDev i32 | eventId u64 | scanStart i64 |
-    // uncertainBytes i64 | volumeUUID | rootPath | aliases | nodes | hard links | clone families
+    // Header layout: magic u32 | version u32 | mode u8 | rootDev i32 | eventId u64 | scanStart i64 |
+    // uncertainBytes i64 | volumeUUID | rootPath | aliases | sections (nodes, hard links, clone families,
+    // mount points, end). Chapter 03 §6.2.
     private static let eventIdOffset = 13
 
     /// Records a new event id and scan start in an existing snapshot without rewriting the tree.
     /// Valid only when the tree is unchanged since it was loaded or saved. Returns false if the file
-    /// is missing or not ours; the caller then does a full `save`.
+    /// is missing or not ours, or an update changed the tree (a mount or unmount changes it without an event);
+    /// the caller then does a full `save`.
     public static func advance(_ tree: DiskTree, in directory: URL? = nil) -> Bool {
+        guard !tree.changedSinceSave else { return false }
         let fd = open(url(for: tree.rootPath, in: directory).path, O_RDWR)
         guard fd >= 0 else { return false }
         defer { close(fd) }
@@ -46,7 +69,7 @@ public enum Snapshot {
         defer { w.free() }
         w.put(magic)
         w.put(version)
-        w.put(UInt8(tree.privateSize ? 1 : 0))
+        w.put(modeByte(privateSize: tree.privateSize, crossDevices: tree.crossDevices))
         guard Array(w.bytes) == Array(head[0..<9]) else { return false }
         var f = Writer()
         defer { f.free() }
@@ -67,7 +90,7 @@ public enum Snapshot {
         var w = Writer(capacity: 1024 + tree.nodes.count * 60 + table.count * 48 + clones.count * 32)
         w.put(magic)
         w.put(version)
-        w.put(UInt8(tree.privateSize ? 1 : 0))
+        w.put(modeByte(privateSize: tree.privateSize, crossDevices: tree.crossDevices))
         w.put(Int32(tree.rootDev))
         w.put(tree.eventId)
         w.put(tree.scanStart)
@@ -79,6 +102,8 @@ public enum Snapshot {
             w.put(a.dataPath)
             w.put(a.source)
         }
+
+        var section = w.begin(.nodes)
         w.put(UInt32(tree.nodes.count))
         for n in tree.nodes {
             w.put(n.parent)
@@ -89,6 +114,9 @@ public enum Snapshot {
             w.put(n.ownCloneAware)
             w.put(n.name)
         }
+        w.end(section)
+
+        section = w.begin(.hardlinks)
         w.put(UInt32(table.count))
         for (inode, e) in table {
             w.put(inode)
@@ -99,6 +127,9 @@ public enum Snapshot {
             w.put(UInt32(e.others.count))
             for d in e.others { w.put(d) }
         }
+        w.end(section)
+
+        section = w.begin(.cloneFamilies)
         w.put(UInt32(clones.count))
         for (cid, e) in clones {
             w.put(cid)
@@ -108,22 +139,41 @@ public enum Snapshot {
             w.put(UInt32(e.others.count))
             for d in e.others { w.put(d) }
         }
+        w.end(section)
+
+        section = w.begin(.mountPoints)
+        w.put(UInt32(tree.mountPoints.count))
+        for m in tree.mountPoints {
+            w.put(m.parent)
+            w.put(m.name)
+        }
+        w.end(section)
+
+        w.put(Section.end.rawValue)
+        w.put(UInt64(0))
         t.lap("encode(\(w.count) bytes)")
         let data = w.takeData()
         let url = url(for: tree.rootPath, in: directory)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
+        tree.changedSinceSave = false
         t.lap("write")
     }
 
     /// Returns nil if there is no usable snapshot (missing, other format, other scan mode).
-    public static func load(rootPath: String, privateSize: Bool, in directory: URL? = nil) -> DiskTree? {
+    public static func load(rootPath: String, options: ScanOptions, in directory: URL? = nil) -> DiskTree? {
+        load(rootPath: rootPath, privateSize: options.privateSize, crossDevices: options.crossDevices, in: directory)
+    }
+
+    /// Returns nil if there is no usable snapshot (missing, other format, other scan mode).
+    public static func load(rootPath: String, privateSize: Bool, crossDevices: Bool = false,
+                            in directory: URL? = nil) -> DiskTree? {
         var t = Timings.Lap("load")
         guard let data = try? Data(contentsOf: url(for: rootPath, in: directory), options: .alwaysMapped) else { return nil }
         return data.withUnsafeBytes { raw -> DiskTree? in
             var r = Reader(raw)
             guard r.get(UInt32.self) == magic, r.get(UInt32.self) == version,
-                  r.get(UInt8.self) == (privateSize ? 1 : 0) else { return nil }
+                  r.get(UInt8.self) == modeByte(privateSize: privateSize, crossDevices: crossDevices) else { return nil }
             let dev = dev_t(r.get(Int32.self))
             let eventId = r.get(UInt64.self)
             let scanStart = r.get(Int64.self)
@@ -134,56 +184,44 @@ public enum Snapshot {
             guard r.ok, aliasCount <= (raw.count - r.offset) / 8 else { return nil }
             var aliases: [FirmlinkTable.Alias] = []
             for _ in 0..<aliasCount { aliases.append(FirmlinkTable.Alias(dataPath: r.getString(), source: r.getString())) }
-            let count = Int(r.get(UInt32.self))
-            // Every record takes at least 41 bytes: a corrupt count must not drive the allocation below.
-            guard r.ok, count <= (raw.count - r.offset) / 41 else { return nil }
+
             var nodes: [DirNode] = []
-            // Headroom for the directories the next updates append.
-            nodes.reserveCapacity(count + count / 16 + 1024)
-            for i in 0..<count {
-                // Fixed part of a record: parent i32, flags u8, ownAlloc i64, ownLogical i64, ownFiles i64,
-                // ownCloneAware i64, name length u32.
-                guard let n = r.getNode(), i == 0 ? n.parent == -1 : (n.parent >= 0 && Int(n.parent) < i) else {
-                    return nil
-                }
-                nodes.append(n)
-            }
-            t.lap("nodes(\(count))")
-            let linkCount = Int(r.get(UInt32.self))
             var table: [UInt64: HardlinkRegistry.Entry] = [:]
-            table.reserveCapacity(linkCount)
-            for _ in 0..<linkCount {
-                let inode = r.get(UInt64.self)
-                var e = HardlinkRegistry.Entry(owner: r.get(Int32.self), alloc: r.get(Int64.self),
-                                               logical: r.get(Int64.self), cloneAware: r.get(Int64.self))
-                let others = Int(r.get(UInt32.self))
-                guard r.ok, e.owner >= 0, e.owner < count, others <= count else { return nil }
-                for _ in 0..<others { e.others.append(r.get(Int32.self)) }
-                guard r.ok, e.others.allSatisfy({ $0 >= 0 && $0 < count }) else { return nil }
-                table[inode] = e
-            }
-            guard r.ok, !nodes.isEmpty else { return nil }
-            t.lap("hardlinks(\(linkCount))")
-            let cloneCount = Int(r.get(UInt32.self))
-            guard r.ok, cloneCount <= (raw.count - r.offset) / 24 else { return nil }
             var families: [UInt64: CloneRegistry.Entry] = [:]
-            families.reserveCapacity(cloneCount)
-            for _ in 0..<cloneCount {
-                let cid = r.get(UInt64.self)
-                var e = CloneRegistry.Entry(owner: r.get(Int32.self), original: r.get(Int32.self), alloc: r.get(Int64.self))
-                let others = Int(r.get(UInt32.self))
-                guard r.ok, e.owner >= 0, e.owner < count, e.original >= -1, e.original < count,
-                      others <= (raw.count - r.offset) / 4 else { return nil }
-                e.others.reserveCapacity(others)
-                for _ in 0..<others { e.others.append(r.get(Int32.self)) }
-                guard r.ok, e.others.allSatisfy({ $0 >= 0 && $0 < count }) else { return nil }
-                families[cid] = e
+            var mountPoints: [MountPoint] = []
+            var seen = Set<UInt32>()
+            while true {
+                let tag = r.get(UInt32.self)
+                let size = r.get(UInt64.self)
+                guard r.ok, size <= UInt64(raw.count - r.offset) else { return nil }
+                let sectionEnd = r.offset + Int(size)
+                if tag == Section.end.rawValue { break }
+                guard seen.insert(tag).inserted else { return nil }
+                guard let section = Section(rawValue: tag) else {
+                    // Optional data of a later writer is skipped; data it marks as required rejects the file.
+                    guard tag & Section.mustUnderstand == 0 else { return nil }
+                    r.offset = sectionEnd
+                    continue
+                }
+                // The other sections refer to node ids.
+                guard section == .nodes || !nodes.isEmpty else { return nil }
+                let ok: Bool
+                switch section {
+                case .nodes: ok = r.getNodes(into: &nodes)
+                case .hardlinks: ok = r.getHardlinks(into: &table, nodeCount: nodes.count)
+                case .cloneFamilies: ok = r.getCloneFamilies(into: &families, nodeCount: nodes.count)
+                case .mountPoints: ok = r.getMountPoints(into: &mountPoints, nodeCount: nodes.count)
+                case .end: ok = false
+                }
+                guard ok, r.ok, r.offset == sectionEnd else { return nil }
+                t.lap("\(section)")
             }
-            guard r.ok else { return nil }
-            t.lap("clones(\(cloneCount))")
-            let tree = DiskTree(rootPath: rootPath, rootDev: dev, privateSize: privateSize, nodes: nodes,
-                                eventId: eventId, volumeUUID: uuid, scanStart: scanStart, hardlinks: HardlinkRegistry(table),
-                                clones: CloneRegistry(families), aliases: aliases)
+            let required: [Section] = [.nodes, .hardlinks, .cloneFamilies, .mountPoints]
+            guard r.ok, required.allSatisfy({ seen.contains($0.rawValue) }) else { return nil }
+            let tree = DiskTree(rootPath: rootPath, rootDev: dev, privateSize: privateSize, crossDevices: crossDevices,
+                                nodes: nodes, eventId: eventId, volumeUUID: uuid, scanStart: scanStart,
+                                hardlinks: HardlinkRegistry(table), clones: CloneRegistry(families), aliases: aliases,
+                                mountPoints: mountPoints)
             tree.uncertainBytes = max(uncertainBytes, 0)
             tree.computeTotals()
             t.lap("computeTotals")
@@ -223,6 +261,20 @@ private struct Writer {
             if let src = bytes.baseAddress { (base + count).copyMemory(from: src, byteCount: bytes.count) }
             count += bytes.count
         }
+    }
+
+    /// Writes a section header whose size `end` fills in; returns where the size goes.
+    mutating func begin(_ section: Snapshot.Section) -> Int {
+        put(section.rawValue)
+        let at = count
+        put(UInt64(0))
+        return at
+    }
+
+    /// Sets the size of the section begun at `sizeOffset` to the bytes written since.
+    func end(_ sizeOffset: Int) {
+        let size = UInt64(count - sizeOffset - 8)
+        (base + sizeOffset).storeBytes(of: size.littleEndian, as: UInt64.self)
     }
 
     var bytes: UnsafeRawBufferPointer { UnsafeRawBufferPointer(start: base, count: count) }
@@ -265,6 +317,73 @@ private struct Reader {
         n.name = String(decoding: UnsafeRawBufferPointer(start: p + 41, count: len), as: UTF8.self)
         offset += len
         return n
+    }
+
+    /// Fixed part of a record: parent i32, flags u8, ownAlloc i64, ownLogical i64, ownFiles i64, ownCloneAware i64,
+    /// name length u32. Node 0 is the root (parent -1); every other parent is an earlier node (no dead nodes).
+    mutating func getNodes(into nodes: inout [DirNode]) -> Bool {
+        let count = Int(get(UInt32.self))
+        // Every record takes at least 41 bytes: a corrupt count must not drive the allocation below.
+        guard ok, count > 0, count <= (raw.count - offset) / 41 else { return false }
+        // Headroom for the directories the next updates append.
+        nodes.reserveCapacity(count + count / 16 + 1024)
+        for i in 0..<count {
+            guard let n = getNode(), i == 0 ? n.parent == -1 : (n.parent >= 0 && Int(n.parent) < i) else { return false }
+            nodes.append(n)
+        }
+        return true
+    }
+
+    /// inode u64, owner i32, alloc i64, logical i64, cloneAware i64, others count u32, others i32 × n.
+    mutating func getHardlinks(into table: inout [UInt64: HardlinkRegistry.Entry], nodeCount count: Int) -> Bool {
+        let linkCount = Int(get(UInt32.self))
+        guard ok, linkCount <= (raw.count - offset) / 40 else { return false }
+        table.reserveCapacity(linkCount)
+        for _ in 0..<linkCount {
+            let inode = get(UInt64.self)
+            var e = HardlinkRegistry.Entry(owner: get(Int32.self), alloc: get(Int64.self),
+                                           logical: get(Int64.self), cloneAware: get(Int64.self))
+            let others = Int(get(UInt32.self))
+            guard ok, e.owner >= 0, e.owner < count, others <= count, others <= (raw.count - offset) / 4 else {
+                return false
+            }
+            for _ in 0..<others { e.others.append(get(Int32.self)) }
+            guard ok, e.others.allSatisfy({ $0 >= 0 && $0 < count }) else { return false }
+            table[inode] = e
+        }
+        return true
+    }
+
+    /// cloneID u64, owner i32, original i32 (-1 if unknown), alloc i64, others count u32, others i32 × n.
+    mutating func getCloneFamilies(into families: inout [UInt64: CloneRegistry.Entry], nodeCount count: Int) -> Bool {
+        let cloneCount = Int(get(UInt32.self))
+        guard ok, cloneCount <= (raw.count - offset) / 28 else { return false }
+        families.reserveCapacity(cloneCount)
+        for _ in 0..<cloneCount {
+            let cid = get(UInt64.self)
+            var e = CloneRegistry.Entry(owner: get(Int32.self), original: get(Int32.self), alloc: get(Int64.self))
+            let others = Int(get(UInt32.self))
+            guard ok, e.owner >= 0, e.owner < count, e.original >= -1, e.original < count,
+                  others <= (raw.count - offset) / 4 else { return false }
+            e.others.reserveCapacity(others)
+            for _ in 0..<others { e.others.append(get(Int32.self)) }
+            guard ok, e.others.allSatisfy({ $0 >= 0 && $0 < count }) else { return false }
+            families[cid] = e
+        }
+        return true
+    }
+
+    /// parent i32, name string (not empty).
+    mutating func getMountPoints(into mountPoints: inout [MountPoint], nodeCount count: Int) -> Bool {
+        let n = Int(get(UInt32.self))
+        guard ok, n <= (raw.count - offset) / 8 else { return false }
+        for _ in 0..<n {
+            let parent = get(Int32.self)
+            let name = getString()
+            guard ok, parent >= 0, parent < count, !name.isEmpty else { return false }
+            mountPoints.append(MountPoint(parent: parent, name: name))
+        }
+        return true
     }
 
     mutating func getString() -> String {

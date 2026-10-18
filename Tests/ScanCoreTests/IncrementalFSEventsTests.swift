@@ -204,12 +204,24 @@ struct IncrementalFSEventsTests {
                 try f.mk("a/b", bytes: 1234)
                 let baseline = try Scanner.scan(f.root)
                 try Snapshot.save(baseline, in: dir)
-                let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
-                guard case .success = Incremental.update(loaded) else {
+                var loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                guard case .success(var report) = Incremental.update(loaded) else {
                     Issue.record("update failed")
                     return
                 }
-                // Not asserted: `report.events` may count the fixture's own creation, which fseventsd numbers late.
+                // `report.events` may count the fixture's own creation, which fseventsd numbers late (sometimes over
+                // several updates). Such an update changed the tree: `advance` refuses it and the caller saves.
+                for _ in 0..<10 where report.events > 0 {
+                    #expect(!Snapshot.advance(loaded, in: dir))
+                    try Snapshot.save(loaded, in: dir)
+                    loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                    guard case .success(let next) = Incremental.update(loaded) else {
+                        Issue.record("update failed")
+                        return
+                    }
+                    report = next
+                }
+                try #require(report.events == 0, "fseventsd kept reporting the fixture's creation")
                 #expect(loaded.eventId >= baseline.eventId)
                 #expect(Snapshot.advance(loaded, in: dir))
                 let again = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
@@ -306,13 +318,15 @@ struct IncrementalFSEventsTests {
         }
     }
 
-    @Test("a disk image mounted inside the root after the snapshot is left out, as by a full scan and du -x",
-          .enabled(if: DiskImage.isAvailable, "hdiutil is not available"))
-    func mountAndUnmount() throws {
+    @Test("a disk image mounted inside the root is left out; the folder it covered is counted again after an unmount",
+          .enabled(if: DiskImage.isAvailable, "hdiutil is not available"),
+          arguments: [false, true])
+    func mountAndUnmount(fullScanWhileMounted: Bool) throws {
         try withSnapshotDir { dir in
             try Fixture.with("mount") { f in try withImage { image in
                 try f.mk("data/a", bytes: 300_000)
-                try f.mkdir("mnt")
+                try f.mk("mnt/under", bytes: 100_000)
+                try f.mk("mnt/deep/x", bytes: 50_000)
                 try Snapshot.save(try Scanner.scan(f.root), in: dir)
 
                 // FSEvents keeps no Mount event in its history: the update finds the mount in the mount table.
@@ -329,24 +343,27 @@ struct IncrementalFSEventsTests {
                 #expect(full.root.totalAlloc == f.duBytes(), "mounted: full scan vs du")
                 #expect(full.stats.mountsSkipped == 1)
                 #expect(mounted.node(at: f.path("mnt")) == nil)
-                try Snapshot.save(mounted, in: dir)
+                // Recorded by the update (the folder became a mount point) and by a full scan (its listing).
+                #expect(mounted.mountPoints == [MountPoint(parent: 0, name: "mnt")])
+                #expect(full.mountPoints == [MountPoint(parent: 0, name: "mnt")])
+                try Snapshot.save(fullScanWhileMounted ? full : mounted, in: dir)
 
+                // No event marks an unmount either: the recorded mount point is missing from the mount table.
                 image.detach()
                 let unmounted = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
+                #expect(unmounted.mountPoints == [MountPoint(parent: 0, name: "mnt")])
                 guard case .success = Incremental.update(unmounted) else {
                     Issue.record("update after unmount failed")
                     return
                 }
                 let fullAfter = try Scanner.scan(f.root)
                 let (a, b) = (Totals(unmounted), Totals(fullAfter))
-                #expect(a.alloc == b.alloc && a.files == b.files && a.cloneAware == b.cloneAware,
-                        "unmounted: incremental \(a) full \(b)")
+                #expect(a == b, "unmounted: incremental \(a) full \(b)")
                 #expect(fullAfter.root.totalAlloc == f.duBytes(), "unmounted: full scan vs du")
-                // Found only when something else under its parent changed (an event fseventsd numbered late, ...).
-                withKnownIssue("an unmount leaves no event and the snapshot does not record skipped mount points",
-                               isIntermittent: true) {
-                    #expect(a == b, "unmounted: the empty mount-point folder is not found again")
-                }
+                #expect(unmounted.node(at: f.path("mnt/deep")) != nil)
+                #expect(unmounted.mountPoints.isEmpty)
+                // The update changed the tree without an event: the snapshot is rewritten, not advanced.
+                #expect(!Snapshot.advance(unmounted, in: dir))
             } }
         }
     }
