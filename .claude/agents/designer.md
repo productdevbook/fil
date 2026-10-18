@@ -31,6 +31,7 @@ to change a rule, change the chapter first.
 
 - Chapters, `backlog.md` and the issues say the same thing.
 - Every acceptance line is something an agent can check with a command.
-- Commit only `docs/` and only when the brief says so, ending `Refs #<n>` and the co-author line. Never push.
+- Commit only `docs/` and only when the brief says so, ending `Refs #<n>` and the co-author line.
+  Subject line: Conventional Commits as in `CLAUDE.md` (`<type>(<scope>): <summary>`). Never push.
 
 Your final message is at most 300 words: files changed, issues created or edited, decisions that need the owner.

@@ -48,7 +48,8 @@ You build Fil, a fast macOS disk scanner and cleaner.
 - Each acceptance line of the issue is checked, with the command that checked it.
 - If the chapter was silent and you chose, the choice is in your report so it can go into "As built".
 - Commit only when the brief says so: one commit per issue, ending `Refs #<n>` and the co-author line, staging
-  only your files by explicit path after reading the diff. Never `git add -A`, never push.
+  only your files by explicit path after reading the diff.
+  Subject line: Conventional Commits as in `CLAUDE.md` (`<type>(<scope>): <summary>`). Never `git add -A`, never push.
 
 Your final message is at most 300 words: commits, build and test lines, readings you chose, gaps, and the checks
 `scan-tester` should run. Long output goes to a file under /tmp; give its path.

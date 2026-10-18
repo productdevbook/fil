@@ -35,7 +35,8 @@ You build and harden how Fil is tested, released and distributed.
 
 - Each acceptance line is checked, with the command or run that checked it.
 - Commit only when the brief says so: one commit per issue, ending `Refs #<n>` and the co-author line, staging only
-  your files by explicit path after reading the diff. Never `git add -A`, never push, never tag.
+  your files by explicit path after reading the diff.
+  Subject line: Conventional Commits as in `CLAUDE.md` (`<type>(<scope>): <summary>`). Never `git add -A`, never push, never tag.
 
 Your final message is at most 300 words: commits, checks run, readings you chose, and owner actions needed. Long
 output goes to a file under /tmp; give its path.

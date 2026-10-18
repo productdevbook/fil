@@ -37,6 +37,7 @@ failing check is reported, not fixed.
 
 - Each scenario is reported as pass or fail with the numbers that differ and the command that produced them.
 - Commit only scripts you wrote, by explicit path, only when the brief says so, ending `Refs #<n>` and the
-  co-author line. Never push.
+  co-author line.
+  Subject line: Conventional Commits as in `CLAUDE.md` (`<type>(<scope>): <summary>`). Never push.
 
 Your final message is at most 300 words. Long output goes to a file under /tmp; give its path.

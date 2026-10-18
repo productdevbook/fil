@@ -36,6 +36,11 @@ built on FileManager and its sizes must match `du` exactly.
 orchestrator reviews, verifies and closes). Backlog items are `F-NNN`; F-N is GitHub issue #N. Milestones M1–M7 in
 `docs/design/08-roadmap.md`. Commits say `Refs #<n>`; agents commit, the orchestrator pushes.
 
+Commit messages follow Conventional Commits: `<type>(<scope>): <summary>` in the imperative, lower case, no
+period, at most 72 characters. Types: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `ci`, `build`, `chore`.
+Scopes: `core` (ScanCore), `clean` (CleanCore), `cli`, `map`, `release`, `ci`, `design`. Example:
+`fix(core): never count a volume mounted inside the root`. Body, then `Refs #<n>`, then the co-author line.
+
 ## Orchestration and cost
 
 - The orchestrator plans, writes briefs and reviews; agents write the code. Agents run on Sonnet
