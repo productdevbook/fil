@@ -3,7 +3,7 @@ import Foundation
 import ScanCore
 
 // fil list [--home DIR] [--json] [--timings] [--no-color]
-// fil clean <candidate-id|rule-id>... [--home DIR] [--yes] [--timings] [--no-color]
+// fil clean <candidate-id|rule-id>... [--home DIR] [--yes] [--json] [--timings] [--no-color]
 func runCleanup(_ command: String, _ arguments: [String]) async throws {
     var args = CommandLineWords(arguments)
     var givenHome = NSHomeDirectory()
@@ -18,7 +18,7 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         case .option("--home"): givenHome = args.value(for: "--home")
         case .option("--timings"): timings = true
         case .option("--no-color"): noColor = true
-        case .option("--json") where isList: json = true
+        case .option("--json"): json = true
         case .option("--yes") where !isList: yes = true
         case .option(let a): unknownOption(a, command)
         case .operand(let a) where isList: usageError("unexpected argument '\(a)' for 'fil list'")
@@ -103,10 +103,7 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
                     "note": $0.note?.description as Any? ?? NSNull(), "removal": removalText($0.removal),
                 ]
             }
-            let data = try JSONSerialization.data(
-                withJSONObject: ["home": scan.home, "candidates": items],
-                options: [.prettyPrinted, .sortedKeys])
-            print(String(decoding: data, as: UTF8.self))
+            try printJSON(["home": scan.home, "candidates": items])
             return
         }
         func row(_ c: Candidate) -> String {
@@ -139,6 +136,10 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     do { resolution = try Cleanup.resolve(selectors, in: scan.candidates) } catch { fail("\(error)") }
     let chosen = resolution.chosen
     let leftOut = resolution.leftOut
+    if json && !yes {
+        try printJSON(cleanJSON(home: scan.home, dryRun: true, chosen.map { ($0, nil) }, leftOut: leftOut))
+        return
+    }
     if !yes {
         print(UI.bold("Would clean") + "  " + UI.tilde(scan.home))
         for c in chosen {
@@ -198,6 +199,20 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     canceller.attach(work)
     let (executed, interrupted) = await work.value
     interrupt.cancel()
+    if json {
+        // stdout holds only the JSON document; the reason for a non-zero exit goes to stderr.
+        try printJSON(cleanJSON(home: scan.home, dryRun: false, executed.map { ($0, $1) }, leftOut: leftOut))
+        let failed = executed.filter { if case .failed = $0.1 { true } else { false } }.count
+        if interrupted {
+            FileHandle.standardError.write(Data("fil: interrupted; the remaining items were not touched\n".utf8))
+            exit(130)
+        }
+        if failed != 0 {
+            FileHandle.standardError.write(Data("fil: \(failed) item\(failed == 1 ? "" : "s") failed\n".utf8))
+            exit(3)
+        }
+        return
+    }
     for (c, outcome) in executed {
         switch outcome {
         case .trashed(let url):
@@ -263,6 +278,62 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
         print(UI.red("\(failures) item\(failures == 1 ? "" : "s") failed."))
         exit(3)
     }
+}
+
+/// Prints `object` the way every `--json` output is printed: pretty, keys sorted, one trailing newline
+/// (chapter 05 §5.4).
+func printJSON(_ object: Any) throws {
+    let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+    print(String(decoding: data, as: UTF8.self))
+}
+
+/// The `clean --json` document (chapter 05 §6.4). `items` pairs each chosen candidate with its outcome; a nil
+/// outcome is a dry run. Keys are only ever added, never removed or retyped.
+func cleanJSON(home: String, dryRun: Bool, _ items: [(Candidate, Cleanup.Outcome?)], leftOut: [Candidate])
+    -> [String: Any]
+{
+    var trashBytes: Int64 = 0, commandBytes: Int64 = 0
+    var handled = 0, failed = 0
+    let rows: [[String: Any]] = items.map { c, outcome in
+        var argv: Any = NSNull()
+        var trashPath: Any = NSNull()
+        var error: Any = NSNull()
+        let removal: String
+        switch c.removal {
+        case .trash: removal = "trash"
+        case .command(let a): removal = a.joined(separator: " "); argv = a
+        case .none: removal = "info only"
+        }
+        let name: String
+        switch outcome {
+        case nil:
+            switch c.removal {
+            case .trash: name = "planned"; trashBytes += c.bytes; handled += 1
+            case .command: name = "planned"; commandBytes += c.bytes; handled += 1
+            case .none: name = "info-only"
+            }
+        case .trashed(let url)?:
+            name = "trashed"; trashPath = url.path; trashBytes += c.bytes; handled += 1
+        case .commandRan?: name = "ran"; commandBytes += c.bytes; handled += 1
+        case .commandShared?: name = "shared"; commandBytes += c.bytes; handled += 1
+        case .nothingToDo?: name = "nothing"
+        case .failed(let why)?: name = "failed"; error = why.description; failed += 1
+        }
+        return [
+            "id": c.id, "rule": c.ruleId, "path": c.path, "bytes": c.bytes, "safety": c.safety.rawValue,
+            "removal": removal, "argv": argv, "outcome": name, "trashPath": trashPath, "error": error,
+        ]
+    }
+    // Careful items of a named rule that were not chosen, each once.
+    var seen = Set(items.map { $0.0.id })
+    let left: [[String: Any]] = leftOut.compactMap { c in
+        guard seen.insert(c.id).inserted else { return nil }
+        return ["id": c.id, "rule": c.ruleId, "path": c.path, "bytes": c.bytes, "safety": c.safety.rawValue]
+    }
+    return [
+        "dryRun": dryRun, "home": home, "items": rows, "leftOut": left,
+        "totals": ["trashBytes": trashBytes, "commandBytes": commandBytes, "handled": handled, "failed": failed],
+    ]
 }
 
 extension Removal {

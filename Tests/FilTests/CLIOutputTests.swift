@@ -136,8 +136,8 @@ import Testing
             (["list", "--home"], "fil: --home needs a value\nRun 'fil help list' for usage.\n"),
             (["clean", "logs", "--home"], "fil: --home needs a value\nRun 'fil help clean' for usage.\n"),
             (
-                ["clean", "logs", "--json"],
-                "fil: unknown option --json for 'fil clean'\nRun 'fil help clean' for usage.\n"
+                ["clean", "logs", "--porcelain"],
+                "fil: unknown option --porcelain for 'fil clean'\nRun 'fil help clean' for usage.\n"
             ),
             (["scan", "--yes"], "fil: unknown option --yes for 'fil scan'\nRun 'fil help scan' for usage.\n"),
             (["scan", "--home", "x"], "fil: unknown option --home for 'fil scan'\nRun 'fil help scan' for usage.\n"),

@@ -64,10 +64,11 @@ let listHelp = """
     """
 
 let cleanHelp = """
-    Usage: fil clean <candidate-id|rule-id>... [--home DIR] [--yes] [--timings] [--no-color]
+    Usage: fil clean <candidate-id|rule-id>... [--home DIR] [--yes] [--json] [--timings] [--no-color]
 
       --home DIR   use DIR instead of the home folder
       --yes        clean for real (default: dry run)
+      --json       machine-readable output
       --timings    phase and rule timings on stderr
       --no-color   plain output (also when NO_COLOR is set or stdout is not a terminal)
 
