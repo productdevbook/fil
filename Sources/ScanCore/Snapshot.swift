@@ -36,12 +36,32 @@ public enum Snapshot {
         (privateSize ? 1 : 0) | (crossDevices ? 2 : 0)
     }
 
+    /// The snapshot of `rootPath` (the resolved root) scanned in one mode: one file per root and mode, so that runs in
+    /// different modes (`--private`) keep their own snapshots. Name: FNV-1a 64 of the root path's UTF-8 bytes, a NUL
+    /// byte and the mode byte, as lowercase hex without leading zeros, + `.bin` (chapter 03 §6.1).
     /// - Parameter directory: where snapshots live; the default is `FIL_SNAPSHOT_DIR` or the user's cache folder.
-    public static func url(for rootPath: String, in directory: URL? = nil) -> URL {
-        // FNV-1a of the root path: stable across runs, unlike Hasher.
-        var h: UInt64 = 0xcbf2_9ce4_8422_2325
-        for b in rootPath.utf8 { h = (h ^ UInt64(b)) &* 0x100_0000_01b3 }
+    public static func url(for rootPath: String, privateSize: Bool = false, crossDevices: Bool = false,
+                           in directory: URL? = nil) -> URL {
+        // FNV-1a: stable across runs, unlike Hasher. NUL cannot occur in a path, so no two keys share their bytes.
+        var h = fnv1a(rootPath.utf8)
+        for b in [0, modeByte(privateSize: privateSize, crossDevices: crossDevices)] { h = (h ^ UInt64(b)) &* fnvPrime }
         return (directory ?? Self.directory).appendingPathComponent(String(h, radix: 16) + ".bin")
+    }
+
+    static func url(for tree: DiskTree, in directory: URL?) -> URL {
+        url(for: tree.rootPath, privateSize: tree.privateSize, crossDevices: tree.crossDevices, in: directory)
+    }
+
+    /// Name used up to #33: the root path alone, shared by every mode. `save` removes such a file.
+    static func legacyURL(for rootPath: String, in directory: URL?) -> URL {
+        (directory ?? Self.directory).appendingPathComponent(String(fnv1a(rootPath.utf8), radix: 16) + ".bin")
+    }
+
+    private static let fnvPrime: UInt64 = 0x100_0000_01b3
+    private static func fnv1a(_ bytes: some Sequence<UInt8>) -> UInt64 {
+        var h: UInt64 = 0xcbf2_9ce4_8422_2325
+        for b in bytes { h = (h ^ UInt64(b)) &* fnvPrime }
+        return h
     }
 
     /// `FIL_SNAPSHOT_DIR` overrides the default cache location (used by tests).
@@ -64,7 +84,7 @@ public enum Snapshot {
     /// the caller then does a full `save`.
     public static func advance(_ tree: DiskTree, in directory: URL? = nil) -> Bool {
         guard !tree.changedSinceSave else { return false }
-        let fd = open(url(for: tree.rootPath, in: directory).path, O_RDWR)
+        let fd = open(url(for: tree, in: directory).path, O_RDWR)
         guard fd >= 0 else { return false }
         defer { close(fd) }
         var head = [UInt8](repeating: 0, count: eventIdOffset)
@@ -167,9 +187,11 @@ public enum Snapshot {
         w.put(UInt64(0))
         t.lap("encode(\(w.count) bytes)")
         let data = w.takeData()
-        let url = url(for: tree.rootPath, in: directory)
+        let url = url(for: tree, in: directory)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
+        // A snapshot under the name of before #33 is never read again; drop it rather than leave it in the cache.
+        unlink(legacyURL(for: tree.rootPath, in: directory).path)
         tree.changedSinceSave = false
         t.lap("write")
     }
@@ -183,7 +205,8 @@ public enum Snapshot {
     public static func load(rootPath: String, privateSize: Bool, crossDevices: Bool = false,
                             in directory: URL? = nil) -> DiskTree? {
         var t = Timings.Lap("load")
-        guard let data = try? Data(contentsOf: url(for: rootPath, in: directory), options: .alwaysMapped) else { return nil }
+        let url = url(for: rootPath, privateSize: privateSize, crossDevices: crossDevices, in: directory)
+        guard let data = try? Data(contentsOf: url, options: .alwaysMapped) else { return nil }
         return data.withUnsafeBytes { raw -> DiskTree? in
             var r = Reader(raw)
             guard r.get(UInt32.self) == magic, r.get(UInt32.self) == version,

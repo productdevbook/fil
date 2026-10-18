@@ -8,6 +8,21 @@ import Testing
 struct SnapshotCLITests {
     let cli = ErrorHandlingTests()
 
+    @Test func plainAndPrivateRunsKeepTheirOwnSnapshots() throws {
+        let dir = try ErrorHandlingTests.tempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let root = dir + "/root", snap = dir + "/snap"
+        try FileManager.default.createDirectory(atPath: root + "/a", withIntermediateDirectories: true)
+        try Data(count: 4096).write(to: URL(fileURLWithPath: root + "/a/file"))
+        var modes: [String] = []
+        for i in 0..<6 {
+            let r = try cli.run(["scan", root, "--porcelain"] + (i % 2 == 1 ? ["--private"] : []), snapshotDir: snap)
+            modes.append(r.stdout.split(separator: " ").first.map(String.init) ?? r.stdout)
+        }
+        #expect(modes == ["mode=full", "mode=full"] + Array(repeating: "mode=incremental", count: 4))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: snap).filter { $0.hasSuffix(".bin") }.count == 2)
+    }
+
     @Test func incrementalRunShowsFullScanStatsLabelled() throws {
         let dir = try ErrorHandlingTests.tempDir()
         defer {

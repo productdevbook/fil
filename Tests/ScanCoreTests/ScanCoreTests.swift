@@ -130,12 +130,47 @@ struct FullScanTests {
                 #expect(crossing.crossDevices)
 
                 try Snapshot.save(try Scanner.scan(f.root), in: dir)
-                #expect(Snapshot.load(rootPath: f.root, options: ScanOptions(crossDevices: true), in: dir) == nil)
                 let plain = try #require(Snapshot.load(rootPath: f.root, options: ScanOptions(), in: dir))
                 #expect(!plain.crossDevices)
-                // advance compares the mode byte: a tree of the other mode never rewrites this file's header.
-                #expect(!Snapshot.advance(crossing, in: dir))
+                #expect(Snapshot.advance(crossing, in: dir))
                 #expect(Snapshot.advance(plain, in: dir))
+
+                // The mode byte is still checked: a file of the other mode under this mode's name is not used, and
+                // advance never rewrites its header.
+                let plainURL = Snapshot.url(for: f.root, in: dir)
+                let crossingURL = Snapshot.url(for: f.root, crossDevices: true, in: dir)
+                try FileManager.default.removeItem(at: crossingURL)
+                try FileManager.default.copyItem(at: plainURL, to: crossingURL)
+                #expect(Snapshot.load(rootPath: f.root, options: ScanOptions(crossDevices: true), in: dir) == nil)
+                #expect(!Snapshot.advance(crossing, in: dir))
+            }
+        }
+    }
+
+    @Test("one snapshot per root and mode: each mode keeps its own file; the pre-#33 name is removed")
+    func snapshotPerMode() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("a/b", bytes: 4096)
+                let modes: [ScanOptions] = [ScanOptions(), ScanOptions(privateSize: true),
+                                            ScanOptions(crossDevices: true),
+                                            ScanOptions(privateSize: true, crossDevices: true)]
+                let names = Set(modes.map {
+                    Snapshot.url(for: f.root, privateSize: $0.privateSize, crossDevices: $0.crossDevices, in: dir)
+                        .lastPathComponent
+                })
+                #expect(names.count == 4)
+                // FNV-1a 64 of "/", NUL, mode byte 0: fixed so that the name never changes by accident.
+                #expect(Snapshot.url(for: "/", in: dir).lastPathComponent == "ef6d1917e79753ae.bin")
+
+                let legacy = dir.appendingPathComponent(legacyName(f.root))
+                try Data("old".utf8).write(to: legacy)
+                for o in modes { try Snapshot.save(try Scanner.scan(f.root, options: o), in: dir) }
+                #expect(!FileManager.default.fileExists(atPath: legacy.path))
+                for o in modes {
+                    let t = try #require(Snapshot.load(rootPath: f.root, options: o, in: dir))
+                    #expect(t.privateSize == o.privateSize && t.crossDevices == o.crossDevices)
+                }
             }
         }
     }
@@ -222,4 +257,11 @@ struct FullScanTests {
             }
         }
     }
+}
+
+/// The file name snapshots had before #33: FNV-1a 64 of the root path alone.
+private func legacyName(_ rootPath: String) -> String {
+    var h: UInt64 = 0xcbf2_9ce4_8422_2325
+    for b in rootPath.utf8 { h = (h ^ UInt64(b)) &* 0x100_0000_01b3 }
+    return String(h, radix: 16) + ".bin"
 }

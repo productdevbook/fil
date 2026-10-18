@@ -633,6 +633,13 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   (`private(set)` would need `Scanner.swift` to mutate through `DiskTree` methods); the busy flag is
   `DiskTree.acquire`/`release` over a `Mutex<Bool>`, taken by `Incremental.update` and `Snapshot.save`, not by
   `advance` (it only reads `eventId`/`scanStart` and the mode).
+- #33 (2026-10-18): file name as in §6.1 [Change]: FNV-1a 64 over the resolved root path's UTF-8 bytes, then a 0
+  byte and the mode byte (§6.5), lowercase hex without leading zeros, `.bin`; `Snapshot.url(for:privateSize:
+  crossDevices:in:)` (defaults: plain mode, so `CleanCore`'s use for the directory is unchanged). Each mode has its own
+  file; `load` still compares the mode byte (rule 4), which now only rejects a file whose name and contents disagree.
+  `save` unlinks the pre-#33 file of the same root (hash of the path alone) so the old snapshot does not stay in the
+  cache; it was never readable by the new name. Checked: `fil scan X` / `fil scan X --private` alternating is
+  `incremental` from the third run on.
 
 ## Glossary additions
 
