@@ -161,10 +161,11 @@ func runCleanup(_ command: String, _ arguments: [String]) async throws {
     // the execute task; that stops the running command (SIGTERM, then SIGKILL).
     // The handler is installed before the task exists, so a Ctrl-C in between is not lost.
     let canceller = TaskCanceller()
-    signal(SIGINT, SIG_IGN)
+    // Source first, then SIG_IGN: a Ctrl-C in the setup gap takes the default action instead of being lost.
     let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
     interrupt.setEventHandler { canceller.cancel() }
     interrupt.resume()
+    signal(SIGINT, SIG_IGN)
     let work = Task { await Cleanup.executeReporting(chosen, home: scan.home) }
     canceller.attach(work)
     let (executed, interrupted) = await work.value

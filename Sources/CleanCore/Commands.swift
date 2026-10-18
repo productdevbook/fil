@@ -85,6 +85,10 @@ private final class ChildPid: @unchecked Sendable {
     private var pid: pid_t = 0
     func set(_ p: pid_t) { lock.withLock { pid = p } }
     var value: pid_t { lock.withLock { pid } }
+    private var stop = false
+    /// Set when a stop (timeout or cancellation) began, i.e. when we are about to send SIGTERM.
+    func markStopping() { lock.withLock { stop = true } }
+    var stopping: Bool { lock.withLock { stop } }
 }
 
 /// Runs one command to completion. Returns nil when it was stopped (timeout or cancellation); a command that
@@ -112,12 +116,18 @@ private func collect(_ argv: [String], environment: [Environment.Key: String?], 
         if pid > 0 { _ = kill(-pid, SIGKILL) }
     }
     do {
-        let r = try await run(configuration, input: .none, output: .string(limit: 16 << 20),
-                              error: .string(limit: 1 << 20)) { execution in
-            child.set(execution.processIdentifier.value)
+        let r = try await withTaskCancellationHandler {
+            try await run(configuration, input: .none, output: .string(limit: 16 << 20),
+                          error: .string(limit: 1 << 20)) { execution in
+                child.set(execution.processIdentifier.value)
+            }
+        } onCancel: {
+            child.markStopping()
         }
         if Task.isCancelled { killLeftovers() }
-        if case .signaled = r.terminationStatus, Task.isCancelled { return nil }
+        // Once we sent the stop, whatever the tool does with SIGTERM (exit 0, exit 143, its own status, a
+        // signal) is the stop outcome, not a result of its own.
+        if child.stopping { return nil }
         guard r.terminationStatus.isSuccess else {
             let err = r.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
             let line = err.split(separator: "\n").first.map(String.init) ?? ""

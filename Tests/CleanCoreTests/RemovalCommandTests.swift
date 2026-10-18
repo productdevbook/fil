@@ -147,4 +147,32 @@ struct RemovalCommandTests {
         #expect(results.count == 1)
         #expect(!stopped)
     }
+
+    @Test("a tool that traps SIGTERM and exits with its own status is still a timeout")
+    func trappedTermTimesOut() async throws {
+        for (status, sleepFor) in [(3, "21.111"), (0, "21.222")] {
+            let runner = SystemCommandRunner(gracePeriod: .seconds(1))
+            let r = await runner.run(["/bin/sh", "-c", "trap 'exit \(status)' TERM; /bin/sleep \(sleepFor)"],
+                                     timeout: .milliseconds(400))
+            #expect(r == .timedOut, "exit \(status) after TERM")
+        }
+    }
+
+    @Test("a tool that traps SIGTERM and exits with its own status is still an interruption")
+    func trappedTermIsInterrupted() async throws {
+        for (status, sleepFor) in [(3, "22.111"), (0, "22.222")] {
+            try await Fixture.withAsync { f in
+                let item = command("trap", ["/bin/sh", "-c", "trap 'exit \(status)' TERM; /bin/sleep \(sleepFor)"], home: f.root)
+                let home = f.root
+                let work = Task { await Cleanup.executeReporting([item], home: home) }
+                let started = try await waitUntilRunning("sleep \(sleepFor)")
+                #expect(started)
+                work.cancel()
+                let (results, stopped) = await work.value
+                #expect(stopped, "exit \(status) after TERM")
+                guard case .failed(let why) = results[0].1 else { Issue.record("exit \(status): expected a failure"); return }
+                #expect(why == .system("interrupted; the command was stopped"))
+            }
+        }
+    }
 }

@@ -180,6 +180,8 @@ public enum Cleanup {
                 switch await runner.run(argv, timeout: removalTimeout) {
                 case .success: outcome = .commandRan
                 case .failed(let why):
+                    // A failure while the task is cancelled is the Ctrl-C stop, not the tool's own failure.
+                    if Task.isCancelled { stoppedEarly = true }
                     outcome = .failed(.system("\(((argv.first ?? "") as NSString).lastPathComponent) failed: \(why)"))
                 case .timedOut:
                     if Task.isCancelled {
