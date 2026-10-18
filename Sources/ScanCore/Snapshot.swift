@@ -26,7 +26,8 @@ public enum Snapshot {
         case cloneFamilies = 3
         case mountPoints = 4
         /// Optional: the last full scan's `ScanStats` (8 × i64 in `ScanStats.merge` order) and its start, i64 ns.
-        /// Without it the tree has no last-known counters (`DiskTree.fullScanStart == nil`).
+        /// Without it the tree has no last-known counters (`DiskTree.fullScanStart == nil`). At least 72 bytes: values a
+        /// later writer appends are skipped.
         case stats = 5
         static let mustUnderstand: UInt32 = 0x8000_0000
     }
@@ -286,9 +287,12 @@ public enum Snapshot {
                 case .cloneFamilies: ok = r.getCloneFamilies(into: &families, nodeCount: nodes.count)
                 case .mountPoints: ok = r.getMountPoints(into: &mountPoints, nodeCount: nodes.count)
                 case .stats:
+                    // At least the 9 values known today; a later writer may append counters, which are skipped.
+                    guard size >= 72 else { return .failure(.corrupt) }
                     let v = (0..<8).map { _ in r.get(Int64.self) }
                     stats = (ScanStats(stored: v), r.get(Int64.self))
                     ok = r.ok
+                    r.offset = sectionEnd
                 case .end: ok = false
                 }
                 guard ok, r.ok, r.offset == sectionEnd else { return .failure(.corrupt) }

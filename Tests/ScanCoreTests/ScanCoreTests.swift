@@ -236,6 +236,23 @@ struct FullScanTests {
                 let good = try Data(contentsOf: url)
                 let at = good.count - 12 - 12 - 72
                 #expect(good[at] == 5)
+
+                // A later writer may append counters: a longer section is read for its first 72 bytes, the rest skipped.
+                func withStatsSize(_ size: UInt64, extra: Int) -> Data {
+                    var d = good.prefix(at + 4)
+                    withUnsafeBytes(of: size.littleEndian) { d.append(contentsOf: $0) }
+                    d.append(contentsOf: good[(at + 12)..<(at + 12 + min(72, Int(size)))])
+                    d.append(contentsOf: [UInt8](repeating: 0xAB, count: extra))
+                    return d + good.suffix(12)
+                }
+                try withStatsSize(88, extra: 16).write(to: url)
+                let longer = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
+                #expect(longer.stats.openErrors == 1 && longer.stats.hardlinkDupes == 1)
+                #expect(longer.fullScanStart == tree.scanStart)
+                // Shorter than the 9 values is corrupt.
+                try withStatsSize(64, extra: 0).write(to: url)
+                #expect(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree == nil)
+
                 try (good.prefix(at) + good.suffix(12)).write(to: url)
                 let bare = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir).tree)
                 #expect(bare.fullScanStart == nil)

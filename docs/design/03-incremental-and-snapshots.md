@@ -637,6 +637,8 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   modes: unreadable folders of the tree that still exist (`lstat` succeeds; `openErrors` also counted folders deleted
   mid-scan). Full scan: `skipped  denied 1 · errors 0 · …`; update:
   `skipped  denied 1 · as of full scan at 12:05: errors 0 · …`; update without stored stats: `skipped  denied 1`.
+- #15 review fix: the stats section may grow without a version bump. A reader requires `size ≥ 72`, reads the 9
+  values it knows and skips to the section's end; a shorter section is `corrupt`.
 - #33 (2026-10-18): file name as in §6.1 [Change]: FNV-1a 64 over the resolved root path's UTF-8 bytes, then a 0
   byte and the mode byte (§6.5), lowercase hex without leading zeros, `.bin`; `Snapshot.url(for:privateSize:
   crossDevices:in:)` (defaults: plain mode, so `CleanCore`'s use for the directory is unchanged). Each mode has its own
