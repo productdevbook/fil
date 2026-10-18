@@ -40,5 +40,13 @@ ditto -c -k $DIST/$NAME/fil $DIST/$NAME.zip
 xcrun notarytool submit $DIST/$NAME.zip --keychain-profile $PROFILE --wait
 rm $DIST/$NAME.zip
 
+# "Accepted" comes minutes before Gatekeeper's online lookup finds the ticket; a release published
+# earlier is killed on first run. Wait until the ticket is visible.
+for i in {1..40}; do
+  codesign -v --check-notarization -R=notarized $DIST/$NAME/fil 2>/dev/null && break
+  (( i == 40 )) && { echo "notarization ticket not visible after 20 minutes" >&2; exit 1; }
+  sleep 30
+done
+
 tar -C $DIST/$NAME -czf $DIST/$NAME.tar.gz fil
 shasum -a 256 $DIST/$NAME.tar.gz | tee $DIST/$NAME.tar.gz.sha256
