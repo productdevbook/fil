@@ -246,6 +246,38 @@ struct IncompleteTests {
         }
     }
 
+    @Test("an incomplete update re-read keeps the children it did not list and adds the new ones it saw")
+    func incompleteRereadKeepsChildren() throws {
+        let faults: [(String, (Fixture) -> ScanOptions)] = [
+            ("bulk", { f in faulty { $0.bulk[f.path("x")] = [EIO] } }),
+            ("mid", { f in faulty { $0.bulk[f.path("x")] = [0, EIO] } }),
+            ("entry", { f in faulty { $0.entryError.insert(f.path("x")) } }),
+        ]
+        for (label, options) in faults {
+            try Fixture.with { f in
+                try f.mk("x/c1/file", bytes: 100_000)
+                try f.mk("x/c2/file", bytes: 200_000)
+                let tree = try Scanner.scan(f.root)
+                try f.mk("x/c3/file", bytes: 300_000)
+                var report = UpdateReport()
+                #expect(Incremental.applyTracked([EventHistory.Event(path: f.path("x"), mustScanSubDirs: false)],
+                                                 to: tree, options: options(f), report: &report) == nil)
+                let x = try #require(tree.node(at: f.path("x")))
+                #expect(tree.nodes[x].incomplete, "\(label)")
+                #expect(report.dirsRemoved == 0, "\(label)")
+                for c in ["c1", "c2"] {
+                    let id = try #require(tree.node(at: f.path("x/" + c)), "\(label) \(c)")
+                    #expect(tree.nodes[id].totalFiles == 1, "\(label) \(c)")
+                }
+                if label != "bulk" {
+                    // Seen in the listing (the injected error hides only the first entry, never all three).
+                    let seen = ["c1", "c2", "c3"].filter { tree.node(at: f.path("x/" + $0)) != nil }
+                    #expect(seen.count >= 2, "\(label)")
+                }
+            }
+        }
+    }
+
     @Test("the flag survives the snapshot and an update re-read sets or clears it")
     func snapshotAndUpdate() throws {
         try withSnapshotDir { dir in

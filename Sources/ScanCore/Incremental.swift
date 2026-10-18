@@ -253,7 +253,8 @@ public enum Incremental {
                 let key = ChildKey(name: n.name, raw: tree.rawNames.isEmpty ? nil : tree.rawNames[c])
                 known.insert(key)
                 if !onDisk.contains(key) {
-                    killRoots.append(c)
+                    // An incomplete listing proves nothing about what it did not list: the child keeps its last result.
+                    if !out.incomplete { killRoots.append(c) }
                     return
                 }
                 // A permission change shows up only as an event on the parent. A child we can no longer list is
