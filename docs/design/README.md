@@ -73,8 +73,9 @@ Approved by the owner with this design (2026-10-18):
   `macos-engineer` on #1: both passed; Opus gave cleaner system-error messages, Sonnet a smaller diff. Default
   Sonnet / medium; Opus for engine counting rules, concurrency, unclear bugs (as before). `release-engineer` on
   #39: identical results; Sonnet / medium. `designer` on #40: Opus clearly better (checked live repository state,
-  ordered steps by dependency, kept M7 items out of M3); Opus / high. `scan-tester`: Haiku, provisional until
-  its first real scenario (#4).
+  ordered steps by dependency, kept M7 items out of M3); Opus / high. `scan-tester` on the #4 verify.sh
+  scenario: both correct; Sonnet's diff smaller and clearer. Haiku runs and reports checks; Sonnet writes new
+  scenarios and scripts.
 
 ## Glossary and canonical IDs
 

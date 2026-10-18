@@ -56,6 +56,10 @@ settings and secrets only a person with admin rights can change).
 - **Acceptance**
   - Snapshot format 6: mode byte bit 1 = cross devices; version 5 files are rejected (full scan, no crash).
   - Loading with the other mode is rejected; test for both directions.
+  - The snapshot records the mount points the scan skipped inside the root; every update compares them with
+    `getfsstat` and re-reads the parent of any that is gone (finishes #4: after `hdiutil detach`, a non-empty
+    folder that was covered is counted). The `mountAndUnmount` test becomes a hard check with a non-empty folder,
+    and the `mount: detached` case in `scripts/verify.sh` passes.
 
 ### F-033 · One snapshot per root and mode
 

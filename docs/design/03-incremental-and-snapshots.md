@@ -556,6 +556,16 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
 
 ## As built
 
+- #4 (2026-10-18): two facts the chapter did not know. (1) `getattrlistbulk` returns, for a mount point, the
+  `ATTR_CMN_DEVID` of the covered directory, so the §8 check never skipped mount points and even `--full` entered
+  them. Listings now flag mount points (mount-status attribute) and take their device from one `lstat` each, as
+  `du -x` does; `fil scan / --full` no longer enters `/dev`, `/System/Volumes/VM`, `Preboot`, `/Volumes/*`, autofs,
+  NFS or cryptex mounts, so its total drops (correctly) and `mountsSkipped` rises. (2) FSEvents history never holds
+  Mount/Unmount events. `checkOwnDevice`/`EXDEV` is built as specified; each update also reads the mount table once
+  (`getfsstat`) and rescans tree folders that became mount points. "Unmount needs nothing more" is wrong: a folder
+  uncovered by an unmount is not seen until its parent gets an event, and its contents are missing. Fixed with
+  snapshot format 6 in #5 (skipped mount points recorded and compared with `getfsstat` on every update).
+
 ## Glossary additions
 
 - **event id** — FSEvents id stored in the tree (`DiskTree.eventId`); replay starts after it.
