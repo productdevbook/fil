@@ -447,11 +447,12 @@ struct TimeoutTests {
         try await Fixture.withAsync("tools") { f in
             let env = ToolEnvironment(
                 home: f.root, runner: SystemCommandRunner(), locate: { _ in "/bin/sleep" },
-                timeout: .milliseconds(300))
+                timeout: .seconds(1))
             let clock = ContinuousClock()
             let start = clock.now
             let answer = await CacheTools.discover(env)
-            #expect(clock.now - start < .milliseconds(1500))
+            // Three queries one after another would take at least 3 s; the margin is for slow CI runners.
+            #expect(clock.now - start < .milliseconds(2500))
             // `/bin/sleep --cache` and friends fail at once or time out; either way the defaults are used.
             #expect(answer.value["brew"] == [f.path("Library/Caches/Homebrew")])
             #expect(answer.value["npm"] == [f.path(".npm/_cacache")])
