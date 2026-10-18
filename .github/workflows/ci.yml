@@ -32,6 +32,9 @@ jobs:
           xcrun --show-sdk-version
           swift --version
 
+      - name: Format (swift-format lint)
+        run: swift format lint --strict --recursive Sources Tests
+
       - name: Build (release)
         run: swift build -c release
 
