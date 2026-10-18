@@ -1,9 +1,10 @@
 name: Release
 
-# Push a tag `vX.Y.Z` whose version matches Sources/fil/main.swift. The workflow builds, signs and
+# Push a tag `vX.Y.Z` whose version matches Sources/fil/main.swift. The workflow tests, builds, signs and
 # notarizes `fil`, publishes the GitHub release and updates the cask in productdevbook/homebrew-tap.
 # Only tag pushes run it, so pull requests never see the signing secrets. A manual run (Actions tab)
-# builds, signs and notarizes the current version without publishing anything.
+# tests, builds, signs and notarizes the current version and uploads the tarball as an artifact; it
+# publishes nothing (jobs `publish` and `tap` are skipped).
 on:
   push:
     tags: ["v*"]
@@ -16,21 +17,43 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+# Same image as ci.yml: the only hosted one with the macOS 27 SDK.
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.1_Release_Candidate.app/Contents/Developer
+
 jobs:
-  release:
-    # Same image as ci.yml: the only hosted one with the macOS 27 SDK.
+  # Nothing is signed unless the release build and the unit tests pass on this commit.
+  test:
     runs-on: xcode-27
-    timeout-minutes: 45
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_27.1_Release_Candidate.app/Contents/Developer
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Version
+        id: version
         run: |
           if [[ $GITHUB_REF_TYPE == tag ]]; then V=${GITHUB_REF_NAME#v}
           else V=$(sed -n 's/^let version = "\(.*\)"$/\1/p' Sources/fil/main.swift); fi
-          echo "VERSION=$V" >> $GITHUB_ENV
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Test
+        run: swift test
+
+  build:
+    needs: test
+    runs-on: xcode-27
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+    outputs:
+      sha256: ${{ steps.sum.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Import the Developer ID certificate
         env:
@@ -59,14 +82,48 @@ jobs:
           scripts/release.sh "$VERSION"
           rm "$FIL_NOTARY_KEY"
 
+      - name: Checksum
+        id: sum
+        run: echo "sha256=$(cut -d' ' -f1 "dist/fil-$VERSION-arm64.tar.gz.sha256")" >> "$GITHUB_OUTPUT"
+
+      # For a tag, `publish` downloads this; for a manual run it is the result to inspect.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            dist/fil-${{ env.VERSION }}-arm64.tar.gz
+            dist/fil-${{ env.VERSION }}-arm64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove the signing keychain
+        if: always()
+        run: security delete-keychain $RUNNER_TEMP/signing.keychain-db || true
+
+  publish:
+    needs: [test, build]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: dist
+
+      - name: Verify the checksum
+        run: cd dist && sha256sum -c "fil-$VERSION-arm64.tar.gz.sha256"
+
       - name: Publish the GitHub release
-        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           NAME=fil-$VERSION-arm64
           SHA=$(cut -d' ' -f1 dist/$NAME.tar.gz.sha256)
           gh release create "$GITHUB_REF_NAME" dist/$NAME.tar.gz dist/$NAME.tar.gz.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
             --title "fil $VERSION" --verify-tag --generate-notes \
             --notes "Signed with a Developer ID and notarized by Apple.
 
@@ -76,12 +133,19 @@ jobs:
 
           SHA-256 ($NAME.tar.gz): \`$SHA\`"
 
+  tap:
+    needs: [test, build, publish]
+    if: github.ref_type == 'tag'
+    runs-on: xcode-27
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+      SHA: ${{ needs.build.outputs.sha256 }}
+    steps:
       - name: Update the Homebrew cask
-        if: github.ref_type == 'tag'
         env:
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
         run: |
-          SHA=$(cut -d' ' -f1 dist/fil-$VERSION-arm64.tar.gz.sha256)
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/tap_key && chmod 600 ~/.ssh/tap_key
           export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
@@ -93,7 +157,3 @@ jobs:
             commit -am "fil $VERSION"
           git push origin HEAD
           rm ~/.ssh/tap_key
-
-      - name: Remove the signing keychain
-        if: always()
-        run: security delete-keychain $RUNNER_TEMP/signing.keychain-db || true

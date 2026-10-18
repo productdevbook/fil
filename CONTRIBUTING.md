@@ -38,3 +38,11 @@ Changes to the scan engine should include a before/after benchmark and a compari
 Every contributor must sign the [CLA](CLA.md) before a PR can be merged. The CLA Assistant bot comments on your first PR with a link; sign once and it applies to later contributions.
 
 Why: this repository is GPL-3.0, but the author also ships the same engine inside the proprietary Fil desktop app. The CLA gives the author the right to relicense contributions for that purpose. You keep the copyright in your work.
+
+## Releasing (maintainer)
+
+1. Update `let version` in `Sources/fil/main.swift` and move the `## [Unreleased]` entries in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`.
+2. Locally: `swift test`, `scripts/verify.sh`, `scripts/verify-clean.sh` (all must end with every check passed).
+3. Commit `fil X.Y.Z` on `main`, push, and wait for CI `build-and-test` to pass.
+4. `git tag -a vX.Y.Z -m "fil X.Y.Z" && git push origin vX.Y.Z`. The release workflow runs the tests, then signs, notarizes, publishes and updates the Homebrew cask.
+5. After the workflow: `brew update && brew upgrade --cask fil && fil --version`.
