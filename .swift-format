@@ -3,5 +3,12 @@
   "indentation": { "spaces": 4 },
   "lineLength": 120,
   "maximumBlankLines": 1,
-  "respectsExistingLineBreaks": true
+  "respectsExistingLineBreaks": true,
+  "rules": {
+    "DoNotUseSemicolons": false,
+    "OneVariableDeclarationPerLine": false,
+    "OneCasePerLine": false,
+    "UseLetInEveryBoundCaseVariable": false,
+    "ReplaceForEachWithForLoop": false
+  }
 }
