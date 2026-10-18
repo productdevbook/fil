@@ -5,18 +5,19 @@ import TestSupport
 
 /// What the scan engine reports for a tree: root totals plus every live directory by path.
 struct Totals: Equatable, CustomStringConvertible {
-    var alloc: Int64, logical: Int64, files: Int64, dirs: Int64
+    var alloc: Int64, logical: Int64, files: Int64, dirs: Int64, cloneAware: Int64
     var perDir: [String: [Int64]]
     var unreadable: Set<String>
 
     init(_ tree: DiskTree) {
         let r = tree.root
         alloc = r.totalAlloc; logical = r.totalLogical; files = r.totalFiles; dirs = r.totalDirs + 1
+        cloneAware = r.totalCloneAware
         perDir = [:]
         unreadable = []
         for i in tree.nodes.indices where !tree.nodes[i].isDead {
             let n = tree.nodes[i]
-            perDir[tree.path(of: i)] = [n.totalAlloc, n.totalLogical, n.totalFiles, n.totalDirs]
+            perDir[tree.path(of: i)] = [n.totalAlloc, n.totalLogical, n.totalFiles, n.totalDirs, n.totalCloneAware]
             if n.unreadable { unreadable.insert(tree.path(of: i)) }
         }
     }
@@ -25,9 +26,10 @@ struct Totals: Equatable, CustomStringConvertible {
     /// so for those the per-directory split of two correct scans can differ.
     func sameRoot(as other: Totals) -> Bool {
         alloc == other.alloc && logical == other.logical && files == other.files && dirs == other.dirs
+            && cloneAware == other.cloneAware
     }
 
-    var description: String { "alloc=\(alloc) logical=\(logical) files=\(files) dirs=\(dirs)" }
+    var description: String { "alloc=\(alloc) logical=\(logical) files=\(files) dirs=\(dirs) cloneAware=\(cloneAware)" }
 }
 
 /// Where a test keeps its snapshots: always an explicit private folder, never the user's cache.

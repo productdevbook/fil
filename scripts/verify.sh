@@ -42,16 +42,18 @@ run_scan() {
 }
 run_ok() { [[ $R_RC -eq 0 ]]; }
 
-# parse_porcelain OUTPUT: sets P_mode P_alloc P_logical P_files P_dirs.
-# Returns 1 unless OUTPUT is exactly one line in the porcelain format.
+# parse_porcelain OUTPUT: sets P_mode P_alloc P_logical P_files P_dirs P_cloneaware P_shared.
+# Returns 1 unless OUTPUT is exactly one line in the porcelain format (fields are only ever appended).
 parse_porcelain() {
-  local re='^mode=(full|incremental) alloc=([0-9]+) logical=([0-9]+) files=([0-9]+) dirs=([0-9]+)$'
+  local re='^mode=(full|incremental) alloc=([0-9]+) logical=([0-9]+) files=([0-9]+) dirs=([0-9]+) cloneaware=([0-9]+) shared=([0-9]+)$'
   [[ $1 =~ $re ]] || return 1
   P_mode=${BASH_REMATCH[1]}
   P_alloc=${BASH_REMATCH[2]}
   P_logical=${BASH_REMATCH[3]}
   P_files=${BASH_REMATCH[4]}
   P_dirs=${BASH_REMATCH[5]}
+  P_cloneaware=${BASH_REMATCH[6]}
+  P_shared=${BASH_REMATCH[7]}
 }
 
 add_diff() { DIFFS="${DIFFS:+$DIFFS; }$*"; }
@@ -91,8 +93,8 @@ probe() {
 # WAIT: seconds to sleep after CHANGE before the incremental run (default FSEVENTS_WAIT).
 run_scenario() {
   local name=$1 expect=$2 setup=$3 change=$4 wait=${5:-$FSEVENTS_WAIT}
-  local d du_b inc_mode inc_alloc inc_logical inc_files inc_dirs
-  local full_alloc full_logical full_files full_dirs
+  local d du_b inc_mode inc_alloc inc_logical inc_files inc_dirs inc_ca inc_shared
+  local full_alloc full_logical full_files full_dirs full_ca full_shared
   TOTAL=$((TOTAL + 1))
   DIFFS=""
   PASS_TEXT=""
@@ -120,7 +122,7 @@ run_scenario() {
     end_scenario "$name"; return
   fi
   inc_mode=$P_mode; inc_alloc=$P_alloc; inc_logical=$P_logical
-  inc_files=$P_files; inc_dirs=$P_dirs
+  inc_files=$P_files; inc_dirs=$P_dirs; inc_ca=$P_cloneaware; inc_shared=$P_shared
 
   run_scan "$d" --full
   if ! run_ok || ! parse_porcelain "$R_OUT" || [[ $P_mode != full ]]; then
@@ -128,7 +130,7 @@ run_scenario() {
     end_scenario "$name"; return
   fi
   full_alloc=$P_alloc; full_logical=$P_logical
-  full_files=$P_files; full_dirs=$P_dirs
+  full_files=$P_files; full_dirs=$P_dirs; full_ca=$P_cloneaware; full_shared=$P_shared
 
   du_b=$(( $(du -skx "$d" | awk '{print $1}') * 1024 ))
 
@@ -139,10 +141,19 @@ run_scenario() {
   [[ $inc_logical == "$full_logical" ]] || add_diff "logical inc=$inc_logical full=$full_logical"
   [[ $inc_files == "$full_files" ]]     || add_diff "files inc=$inc_files full=$full_files"
   [[ $inc_dirs == "$full_dirs" ]]       || add_diff "dirs inc=$inc_dirs full=$full_dirs"
+  [[ $inc_ca == "$full_ca" ]]           || add_diff "cloneaware inc=$inc_ca full=$full_ca"
+  [[ $inc_shared == "$full_shared" ]]   || add_diff "shared inc=$inc_shared full=$full_shared"
   [[ $full_alloc == "$du_b" ]]          || add_diff "alloc full=$full_alloc du=$du_b"
+  (( full_ca + full_shared == full_alloc )) || add_diff "cloneaware+shared=$((full_ca + full_shared)) alloc=$full_alloc"
+  if [[ -n ${EXPECT_SHARED:-} ]]; then
+    local want
+    want=$("$EXPECT_SHARED" "$d")
+    [[ $full_shared == "$want" ]] || add_diff "shared full=$full_shared want=$want"
+  fi
 
   if [[ $inc_mode == incremental ]]; then PASS_TEXT="(incremental)"; else PASS_TEXT="(full fallback)"; fi
   PASS_TEXT="$PASS_TEXT alloc=$full_alloc logical=$full_logical files=$full_files dirs=$full_dirs"
+  [[ $full_shared == 0 ]] || PASS_TEXT="$PASS_TEXT cloneaware=$full_ca shared=$full_shared"
   end_scenario "$name"
 }
 
@@ -213,6 +224,25 @@ change_hl_new_dir(){
   ln "$1/fresh/h1" "$1/fresh/h2"
 }
 
+# APFS clones (cp -c): du counts every clone, cloneaware counts each family once.
+# alloc_of FILE: allocated bytes of one file.
+alloc_of() { echo $(( $(stat -f %b "$1") * 512 )); }
+rand() { mkdir -p "$(dirname "$1")" && head -c "$2" /dev/urandom > "$1"; }
+
+setup_clone_new()   { mk "$1/base/x" 100; }
+change_clone_new()  { rand "$1/src/a" 300000; mkdir -p "$1/c1" "$1/c2"; cp -c "$1/src/a" "$1/c1/b"; cp -c "$1/src/a" "$1/c2/c"; }
+shared_clone_new()  { echo $(( 2 * $(alloc_of "$1/src/a") )); }
+
+setup_clone_old()   { rand "$1/src/a" 300000; mk "$1/dst/other" 10; }
+change_clone_old()  { cp -c "$1/src/a" "$1/dst/b"; mkdir -p "$1/fresh"; cp -c "$1/src/a" "$1/fresh/c"; }
+shared_clone_old()  { echo $(( 2 * $(alloc_of "$1/src/a") )); }
+
+setup_clone_pair()  { rand "$1/src/a" 300000; mkdir -p "$1/dst"; cp -c "$1/src/a" "$1/dst/b"; cp -c "$1/src/a" "$1/dst/c"; }
+change_clone_del_orig() { rm -- "$1/src/a"; }
+shared_clone_del_orig() { alloc_of "$1/dst/b"; }
+change_clone_grow() { head -c 1048576 /dev/zero >> "$1/dst/b"; }
+shared_clone_grow() { alloc_of "$1/dst/c"; }
+
 # ---------------------------------------------------------------- main
 
 # Snapshots go to a private temp dir, never to ~/Library/Caches/Fil.
@@ -245,6 +275,10 @@ run_scenario "hardlink: new file, 2 links"  incremental setup_hl_new_dir change_
 run_scenario "no wait: rapid changes"       incremental setup_rapid change_rapid 0
 run_scenario "hardlink: grow via link A"    incremental setup_hl_grow change_hl_grow_a
 run_scenario "hardlink: grow via link B"    incremental setup_hl_grow change_hl_grow_b
+EXPECT_SHARED=shared_clone_new run_scenario "clone: new file, 2 clones"      incremental setup_clone_new change_clone_new
+EXPECT_SHARED=shared_clone_old run_scenario "clone: old file, 2 new clones"  incremental setup_clone_old change_clone_old
+EXPECT_SHARED=shared_clone_del_orig run_scenario "clone: delete original" incremental setup_clone_pair change_clone_del_orig
+EXPECT_SHARED=shared_clone_grow run_scenario "clone: grow one clone"     incremental setup_clone_pair change_clone_grow
 
 echo
 echo "$((TOTAL - FAILS))/$TOTAL scenarios passed"

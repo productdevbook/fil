@@ -98,18 +98,29 @@ func runScan(_ arguments: [String]) throws {
     let r = scanned.root
     let s = scanned.stats
 
+    // Allocated bytes shared by full clones and counted once (du counts them per file). Not with --private,
+    // where `alloc` is already private bytes.
+    let shared = options.privateSize ? 0 : r.totalAlloc - r.totalCloneAware
+
     if porcelain {
+        // New fields are only ever appended, so existing parsers keep working.
         print("mode=\(usedIncremental ? "incremental" : "full") alloc=\(r.totalAlloc) logical=\(r.totalLogical) "
             + "files=\(r.totalFiles) dirs=\(r.totalDirs + 1)"
-            + (options.strictHardlinks ? "" : " uncertain=\(scanned.uncertainBytes)"))
+            + (options.strictHardlinks ? "" : " uncertain=\(scanned.uncertainBytes)")
+            + " cloneaware=\(r.totalCloneAware)" + (options.privateSize ? "" : " shared=\(shared)"))
         return
     }
 
     for p in unattributed { print("  unattributed hard link: \(p)") }
-    let total = r.totalAlloc
-    print(UI.bold(UI.tilde(scanned.rootPath)) + "  " + UI.bold(human(total)))
+    // Ranked and shown by real usage: clone-aware bytes, or private bytes with --private.
+    let size: (DirNode) -> Int64 = options.privateSize ? { $0.totalAlloc } : { $0.totalCloneAware }
+    let total = size(r)
+    print(UI.bold(UI.tilde(scanned.rootPath)) + "  " + UI.bold(human(total)) + UI.dim(options.privateSize ? " private" : " on disk"))
     print(UI.dim("\(human(r.totalLogical)) logical · \(count(r.totalFiles)) files · \(count(r.totalDirs + 1)) folders · "
         + "\(humanDuration(scanTime)) · \(summary)"))
+    if shared > 0 {
+        print(UI.dim("\(human(shared)) shared by clones, counted once (du without clone dedupe: \(human(r.totalAlloc)))"))
+    }
     if scanned.uncertainBytes > 0 {
         print(UI.yellow("\(human(scanned.uncertainBytes)) uncertain (hard links that may be counted twice)"))
     }
@@ -121,6 +132,7 @@ func runScan(_ arguments: [String]) throws {
         """))
         if !usedIncremental {
             print(UI.dim("skipped  denied \(s.openErrors) · errors \(s.entryErrors) · hardlinks \(s.hardlinkDupes) · mounts \(s.mountsSkipped) · cloud-dirs \(s.datalessDirs) (cloud files \(human(s.datalessLogical)))"))
+            print(UI.dim("         firmlinked data dirs \(s.firmlinksSkipped) · clone files counted once \(s.cloneDupes)"))
         }
     }
 
@@ -130,18 +142,18 @@ func runScan(_ arguments: [String]) throws {
     var biggestChild = [Int64](repeating: 0, count: nodes.count)
     for i in nodes.indices.dropFirst() {
         let p = Int(nodes[i].parent)
-        biggestChild[p] = max(biggestChild[p], nodes[i].totalAlloc)
+        biggestChild[p] = max(biggestChild[p], size(nodes[i]))
     }
     let ranked = nodes.indices.dropFirst()
-        .filter { !nodes[$0].isDead && nodes[$0].totalAlloc > total / 200 && biggestChild[$0] * 10 < nodes[$0].totalAlloc * 9 }
-        .sorted { nodes[$0].totalAlloc > nodes[$1].totalAlloc }
+        .filter { !nodes[$0].isDead && size(nodes[$0]) > total / 200 && biggestChild[$0] * 10 < size(nodes[$0]) * 9 }
+        .sorted { size(nodes[$0]) > size(nodes[$1]) }
         .prefix(top)
-    printTree(Array(ranked), nodes: nodes, total: total)
+    printTree(Array(ranked), nodes: nodes, total: total, size: size)
 }
 
 /// Prints `ids` as a tree: each directory sits under its nearest listed ancestor, children ordered by size.
 /// A name is the path relative to that ancestor, so skipped intermediate folders show as "a/b".
-private func printTree(_ ids: [Int], nodes: [DirNode], total: Int64) {
+private func printTree(_ ids: [Int], nodes: [DirNode], total: Int64, size: (DirNode) -> Int64) {
     let listed = Set(ids)
     var children: [Int: [Int]] = [:]
     var label: [Int: String] = [:]
@@ -155,20 +167,20 @@ private func printTree(_ ids: [Int], nodes: [DirNode], total: Int64) {
         children[max(p, 0), default: []].append(id)
         label[id] = parts.reversed().joined(separator: "/")
     }
-    for k in children.keys { children[k]!.sort { nodes[$0].totalAlloc > nodes[$1].totalAlloc } }
+    for k in children.keys { children[k]!.sort { size(nodes[$0]) > size(nodes[$1]) } }
 
     print("\n" + UI.bold("Largest folders"))
     let fixed = 9 + 2 + 20 + 2 + 4 + 2  // size, bar, percent, gaps
     let termWidth = UI.width
 
     func walk(_ id: Int, prefix: String, last: Bool, depth: Int) {
-        let size = nodes[id].totalAlloc
-        let frac = Double(size) / Double(total)
+        let bytes = size(nodes[id])
+        let frac = Double(bytes) / Double(total)
         let guide = depth == 0 ? "" : prefix + (last ? "└─ " : "├─ ")
         let budget = max(8, termWidth - fixed - guide.count)
         let name = UI.truncate(label[id] ?? nodes[id].name, budget)
         let pct = frac < 0.005 ? "<1%" : String(format: "%.0f%%", locale: nil, frac * 100)
-        print(UI.share(UI.lpad(human(size), 9), frac) + "  " + UI.share(UI.bar(frac), frac) + "  "
+        print(UI.share(UI.lpad(human(bytes), 9), frac) + "  " + UI.share(UI.bar(frac), frac) + "  "
             + UI.lpad(pct, 4) + "  " + UI.dim(guide) + name)
         let kids = children[id] ?? []
         let childPrefix = depth == 0 ? "" : prefix + (last ? "   " : "│  ")

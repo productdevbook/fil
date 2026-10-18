@@ -8,7 +8,7 @@ import Synchronization
 public final class ScanProgress: Sendable {
     public let dirs = Atomic<Int64>(0)
     public let files = Atomic<Int64>(0)
-    /// On-disk (allocated) bytes counted so far.
+    /// Clone-aware on-disk bytes counted so far (`DirNode.ownCloneAware`).
     public let bytes = Atomic<Int64>(0)
 
     public init() {}
@@ -34,10 +34,25 @@ public enum Scanner {
         let eventId = FSEventsGetCurrentEventId()
         let tree = DiskTree(rootPath: path, rootDev: st.st_dev, privateSize: options.privateSize,
                             nodes: [DirNode(parent: -1, name: path)], eventId: eventId,
-                            volumeUUID: volumeUUID(st.st_dev), scanStart: scanStart, hardlinks: HardlinkRegistry())
+                            volumeUUID: volumeUUID(st.st_dev), scanStart: scanStart, hardlinks: HardlinkRegistry(),
+                            clones: CloneRegistry(), aliases: options.firmlinks.aliases(for: path))
         _ = rescanSubtrees([0], in: tree, options: options, progress: progress)
+        _ = applyPreferredOriginals(tree)
         tree.computeTotals()
         return tree
+    }
+
+    /// Moves each clone family to the directory holding its original (deterministic attribution).
+    /// Returns the directories whose own sizes changed.
+    static func applyPreferredOriginals(_ tree: DiskTree) -> [Int32] {
+        var changed: [Int32] = []
+        for m in tree.clones.preferOriginals() {
+            tree.nodes[Int(m.from)].ownCloneAware -= m.alloc
+            tree.nodes[Int(m.to)].ownCloneAware += m.alloc
+            changed.append(m.from)
+            changed.append(m.to)
+        }
+        return changed
     }
 
     /// Scans the subtrees under existing nodes `ids` in one parallel pass. Their old descendants must
@@ -47,14 +62,15 @@ public enum Scanner {
                                progress: ScanProgress? = nil) -> [Int32: Int32] {
         guard !ids.isEmpty else { return [:] }
         let job = ParallelScan(roots: ids.map { ($0, tree.path(of: Int($0))) }, rootDev: tree.rootDev,
-                               options: options, hardlinks: tree.hardlinks, idBase: Int32(tree.nodes.count),
-                               progress: progress)
+                               options: options, exclusions: tree.exclusions, hardlinks: tree.hardlinks,
+                               clones: tree.clones, idBase: Int32(tree.nodes.count), progress: progress)
         job.run()
         let rootCount = Int32(ids.count)
         for (i, id) in ids.enumerated() {
             tree.nodes[Int(id)].ownAlloc = job.nodes[i].ownAlloc
             tree.nodes[Int(id)].ownLogical = job.nodes[i].ownLogical
             tree.nodes[Int(id)].ownFiles = job.nodes[i].ownFiles
+            tree.nodes[Int(id)].ownCloneAware = job.nodes[i].ownCloneAware
             tree.nodes[Int(id)].unreadable = job.nodes[i].unreadable
         }
         let base = Int32(tree.nodes.count)
@@ -97,6 +113,7 @@ private final class ParallelScan: @unchecked Sendable {
     let options: ScanOptions
     let config: DirReader.Config
     let hardlinks: HardlinkRegistry
+    let clones: CloneRegistry
     let rootIds: [Int32]
     let idBase: Int32
     let progress: ScanProgress?
@@ -111,12 +128,13 @@ private final class ParallelScan: @unchecked Sendable {
     var failedRoots: [(id: Int32, errno: Int32)] = []
 
     /// Local ids 0..<roots.count are the roots; everything found below them is appended after.
-    init(roots: [(id: Int32, path: String)], rootDev: dev_t, options: ScanOptions,
-         hardlinks: HardlinkRegistry, idBase: Int32, progress: ScanProgress?) {
+    init(roots: [(id: Int32, path: String)], rootDev: dev_t, options: ScanOptions, exclusions: [String: Set<String>],
+         hardlinks: HardlinkRegistry, clones: CloneRegistry, idBase: Int32, progress: ScanProgress?) {
         self.options = options
         self.progress = progress
-        self.config = DirReader.Config(rootDev: rootDev, options: options)
+        self.config = DirReader.Config(rootDev: rootDev, options: options, exclusions: exclusions)
         self.hardlinks = hardlinks
+        self.clones = clones
         self.rootIds = roots.map(\.id)
         self.idBase = idBase
         nodes = roots.map { DirNode(parent: -1, name: $0.path) }
@@ -163,17 +181,24 @@ private final class ParallelScan: @unchecked Sendable {
             cond.unlock()
 
             let gid = globalId(item.id)
-            let out = reader.read(item.path) { inode, alloc, logical, name in
+            var out = reader.read(item.path) { inode, alloc, logical, cloneAware, name in
                 self.hardlinks.vet(inode, alloc: alloc, dirPath: item.path, name: name)
-                return self.hardlinks.claim(inode, by: gid, alloc: alloc, logical: logical)
+                return self.hardlinks.claim(inode, by: gid, alloc: alloc, logical: logical, cloneAware: cloneAware)
             }
-            progress?.add(files: out.files, bytes: out.alloc)
+            if !out.cloneMembers.isEmpty {
+                // One lock per directory, not per file.
+                let c = clones.claim(out.cloneMembers, by: gid)
+                out.cloneAware += c.bytes
+                out.stats.cloneDupes += c.dupes
+            }
+            progress?.add(files: out.files, bytes: out.cloneAware)
 
             cond.lock()
             if item.id < rootIds.count && out.isGone { failedRoots.append((item.id, out.openError)) }
             nodes[Int(item.id)].ownAlloc = out.alloc
             nodes[Int(item.id)].ownLogical = out.logical
             nodes[Int(item.id)].ownFiles = out.files
+            nodes[Int(item.id)].ownCloneAware = out.cloneAware
             nodes[Int(item.id)].unreadable = !out.opened
             stats.merge(out.stats)
             let base = item.path == "/" ? "" : item.path
@@ -198,11 +223,15 @@ struct DirOutcome {
     var alloc: Int64 = 0
     var logical: Int64 = 0
     var files: Int64 = 0
+    /// Clone-aware bytes of the files counted here, without the full clones in `cloneMembers` (claimed by the caller).
+    var cloneAware: Int64 = 0
+    /// Full-clone files counted here (not hard-linked); the caller claims them in the `CloneRegistry`.
+    var cloneMembers: [CloneMember] = []
     var childDirs: [String] = []
     /// Child directories the caller may not list (no read or search permission); only with `Config.userAccess`.
     var deniedChildDirs: [String] = []
     /// Multiply-linked files whose claim was deferred (the claim closure returned nil).
-    var deferredLinks: [(inode: UInt64, alloc: Int64, logical: Int64)] = []
+    var deferredLinks: [(inode: UInt64, alloc: Int64, logical: Int64, cloneAware: Int64)] = []
     var stats = ScanStats()
     var opened = true
     /// errno of the failed `open`, 0 if it opened.
@@ -222,6 +251,15 @@ struct DirReader {
         /// Also report child directories we lack permission to list (ATTR_CMN_USERACCESS); incremental re-reads use
         /// it because FSEvents reports a permission change on the parent, not on the directory itself.
         var userAccess = false
+        /// Directory path -> child directories not to descend into (data-volume twins of firmlinks).
+        var exclusions: [String: Set<String>] = [:]
+
+        init(rootDev: dev_t, options: ScanOptions, userAccess: Bool = false, exclusions: [String: Set<String>] = [:]) {
+            self.rootDev = rootDev
+            self.options = options
+            self.userAccess = userAccess
+            self.exclusions = exclusions
+        }
     }
 
     static let bufSize = 256 * 1024
@@ -235,8 +273,9 @@ struct DirReader {
 
     func deallocate() { buf.deallocate() }
 
-    /// `claim` decides whether a multiply-linked inode is counted here; returning nil defers it.
-    func read(_ path: String, claim: (UInt64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?) -> DirOutcome {
+    /// `claim(inode, alloc, logical, cloneAware, name)` decides whether a multiply-linked inode is counted here;
+    /// returning nil defers it.
+    func read(_ path: String, claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?) -> DirOutcome {
         var out = DirOutcome()
         let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else {
@@ -255,11 +294,11 @@ struct DirReader {
         al.fileattr = attrgroup_t(ATTR_FILE_LINKCOUNT) | attrgroup_t(ATTR_FILE_ALLOCSIZE)
             | attrgroup_t(ATTR_FILE_DATALENGTH)
         if config.userAccess { al.commonattr |= attrgroup_t(ATTR_CMN_USERACCESS) }
-        var opts = UInt64(FSOPT_NOFOLLOW)
-        if config.options.privateSize {
-            al.forkattr = attrgroup_t(ATTR_CMNEXT_PRIVATESIZE)
-            opts |= UInt64(FSOPT_ATTR_CMN_EXTENDED)
-        }
+        // Clone id and extended flags are inode fields: cheap, unlike PRIVATESIZE, which walks the extents.
+        al.forkattr = attrgroup_t(ATTR_CMNEXT_CLONEID) | attrgroup_t(ATTR_CMNEXT_EXT_FLAGS)
+        if config.options.privateSize { al.forkattr |= attrgroup_t(ATTR_CMNEXT_PRIVATESIZE) }
+        let opts = UInt64(FSOPT_NOFOLLOW) | UInt64(FSOPT_ATTR_CMN_EXTENDED)
+        let skip = config.exclusions.isEmpty ? nil : config.exclusions[path]
 
         while true {
             let count = getattrlistbulk(fd, &al, buf, DirReader.bufSize, opts)
@@ -270,7 +309,7 @@ struct DirReader {
             var entry = UnsafeRawPointer(buf)
             for _ in 0..<count {
                 let length = Int(entry.loadUnaligned(as: UInt32.self))
-                parseEntry(entry + 4, into: &out, claim: claim)
+                parseEntry(entry + 4, into: &out, skip: skip, claim: claim)
                 entry += length
             }
         }
@@ -279,8 +318,8 @@ struct DirReader {
 
     // Fields are packed in sys/attr.h bit order; ERROR comes right after RETURNED_ATTRS.
     @inline(__always)
-    private func parseEntry(_ start: UnsafeRawPointer, into out: inout DirOutcome,
-                            claim: (UInt64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?) {
+    private func parseEntry(_ start: UnsafeRawPointer, into out: inout DirOutcome, skip: Set<String>?,
+                            claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?) {
         var f = start
         let returned = f.loadUnaligned(as: attribute_set_t.self)
         f += MemoryLayout<attribute_set_t>.size
@@ -328,6 +367,7 @@ struct DirReader {
             if flags & UInt32(SF_DATALESS) != 0 { out.stats.datalessDirs += 1; return }
             if let namePtr {
                 let name = String(cString: namePtr.assumingMemoryBound(to: CChar.self))
+                if let skip, skip.contains(name) { out.stats.firmlinksSkipped += 1; return }
                 if access & UInt32(R_OK | X_OK) != UInt32(R_OK | X_OK) { out.deniedChildDirs.append(name) }
                 out.childDirs.append(name)
             }
@@ -350,8 +390,21 @@ struct DirReader {
             logical = f.loadUnaligned(as: Int64.self)
             f += 8
         }
-        if returned.forkattr & attrgroup_t(ATTR_CMNEXT_PRIVATESIZE) != 0 {
+        // Fork (CMNEXT) fields follow in bit order: PRIVATESIZE, CLONEID, EXT_FLAGS.
+        let fork = returned.forkattr
+        let realAlloc = alloc
+        if fork & attrgroup_t(ATTR_CMNEXT_PRIVATESIZE) != 0 {
             alloc = f.loadUnaligned(as: Int64.self)
+            f += 8
+        }
+        var cloneID: UInt64 = 0
+        if fork & attrgroup_t(ATTR_CMNEXT_CLONEID) != 0 {
+            cloneID = f.loadUnaligned(as: UInt64.self)
+            f += 8
+        }
+        var extFlags: UInt64 = 0
+        if fork & attrgroup_t(ATTR_CMNEXT_EXT_FLAGS) != 0 {
+            extFlags = f.loadUnaligned(as: UInt64.self)
             f += 8
         }
 
@@ -361,16 +414,22 @@ struct DirReader {
             return
         }
         if links > 1 && type == UInt32(VREG.rawValue) {
-            switch claim(fileID, alloc, logical, namePtr?.assumingMemoryBound(to: CChar.self)) {
+            // A hard-linked file counts once with its full size; it is not deduplicated as a clone.
+            switch claim(fileID, alloc, logical, realAlloc, namePtr?.assumingMemoryBound(to: CChar.self)) {
             case nil:
-                out.deferredLinks.append((fileID, alloc, logical))
+                out.deferredLinks.append((fileID, alloc, logical, realAlloc))
                 return
             case false?:
                 out.stats.hardlinkDupes += 1
                 return
             case true?:
-                break
+                out.cloneAware += realAlloc
             }
+        } else if extFlags & UInt64(EF_SHARES_ALL_BLOCKS) != 0 && cloneID != 0 && type == UInt32(VREG.rawValue) {
+            out.cloneMembers.append(CloneMember(cloneID: cloneID, alloc: realAlloc, isOriginal: cloneID == fileID))
+        } else {
+            // Not a full clone: the whole allocation (a partial clone's shared blocks cannot be attributed; see spec).
+            out.cloneAware += realAlloc
         }
         out.alloc += alloc
         out.logical += logical

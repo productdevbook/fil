@@ -17,8 +17,9 @@ struct Scenario: Sendable, CustomTestStringConvertible {
     let setup: @Sendable (Fixture) throws -> Void
     let change: @Sendable (Fixture) throws -> Void
     var testDescription: String { name }
-    /// Hard-link scenarios compare the root only (see `Totals.sameRoot`).
-    var rootOnly: Bool { name.hasPrefix("hardlink") }
+    /// Hard-link scenarios compare the root only (see `Totals.sameRoot`); so does a clone family without its original,
+    /// which belongs to whichever member's directory claimed it first.
+    var rootOnly: Bool { name.hasPrefix("hardlink") || name == "clone: delete the original" }
 
     func same(_ a: Totals, _ b: Totals) -> Bool { rootOnly ? a.sameRoot(as: b) : a == b }
 
@@ -81,7 +82,37 @@ let scenarios: [Scenario] = [
     Scenario("hardlink: grow via link B", setup: { f in
         try f.mk("own/file", bytes: 40000); try f.link("own/file", to: "peer/alias")
     }, change: { f in try f.append("peer/alias", bytes: 1 << 20) }),
+    // APFS full clones: each family is counted once in the clone-aware size, whatever the update touched.
+    Scenario("clone: new file and its clone", setup: { f in try f.mk("base/x", bytes: 100) }, change: { f in
+        try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b")
+    }),
+    Scenario("clone: old file cloned into a new dir", setup: { f in try f.mk("x/a", bytes: 300_000) }, change: { f in
+        try f.clone("x/a", to: "y/b")
+    }),
+    Scenario("clone: old file cloned into an old dir", setup: { f in
+        try f.mk("x/a", bytes: 300_000); try f.mk("y/other", bytes: 10)
+    }, change: { f in try f.clone("x/a", to: "y/b") }),
+    Scenario("clone: delete the original", setup: { f in
+        try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b"); try f.clone("x/a", to: "z/c")
+    }, change: { f in try f.remove("x/a") }),
+    Scenario("clone: delete a clone", setup: { f in
+        try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b")
+    }, change: { f in try f.remove("y/b") }),
+    Scenario("clone: grow a clone", setup: { f in
+        try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b")
+    }, change: { f in try f.append("y/b", bytes: 1 << 20) }),
+    Scenario("clone: move the original", setup: { f in
+        try f.mk("x/a", bytes: 300_000); try f.clone("x/a", to: "y/b"); try f.mkdir("w")
+    }, change: { f in try f.move("x/a", to: "w/a") }),
 ]
+
+extension Fixture {
+    /// An APFS clone of `from` at `to` (clonefile(2), like `cp -c`); parent directories are created.
+    func clone(_ from: String, to: String) throws {
+        try mkdir((to as NSString).deletingLastPathComponent)
+        guard clonefile(path(from), path(to), 0) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    }
+}
 
 enum UpdateOutcome { case incremental(DiskTree, UpdateReport), fellBack(UpdateFailure) }
 
@@ -174,7 +205,7 @@ struct IncrementalFSEventsTests {
                 let baseline = try Scanner.scan(f.root)
                 try Snapshot.save(baseline, in: dir)
                 let loaded = try #require(Snapshot.load(rootPath: f.root, privateSize: false, in: dir))
-                guard case .success(let report) = Incremental.update(loaded) else {
+                guard case .success = Incremental.update(loaded) else {
                     Issue.record("update failed")
                     return
                 }

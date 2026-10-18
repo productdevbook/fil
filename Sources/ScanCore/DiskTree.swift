@@ -15,11 +15,15 @@ public struct DirNode: Sendable {
     public var ownAlloc: Int64 = 0
     public var ownLogical: Int64 = 0
     public var ownFiles: Int64 = 0
+    /// Clone-aware allocated bytes: like `ownAlloc` (always from ATTR_FILE_ALLOCSIZE, also with `privateSize`), but
+    /// each APFS full-clone family is counted once, in the directory that owns it (`CloneRegistry`).
+    public var ownCloneAware: Int64 = 0
     /// Including subdirectories (filled by `computeTotals`).
     public var totalAlloc: Int64 = 0
     public var totalLogical: Int64 = 0
     public var totalFiles: Int64 = 0
     public var totalDirs: Int64 = 0
+    public var totalCloneAware: Int64 = 0
 
     public var isDead: Bool { parent == DirNode.dead }
 }
@@ -32,13 +36,18 @@ public struct ScanOptions: Sendable {
     /// Incremental updates: a multiply-linked file older than the tree and unknown to it fails the update
     /// (strict), or is counted where it was found and added to `DiskTree.uncertainBytes` (tolerant).
     public var strictHardlinks: Bool
+    /// Firmlinks of the volume group; a scan that covers both a firmlink and its data-volume directory
+    /// descends only through the firmlink. Injectable for tests.
+    public var firmlinks: FirmlinkTable
 
     // Measured on M-series + APFS: throughput plateaus around 8 threads (kernel-bound beyond that).
-    public init(threads: Int = 8, privateSize: Bool = false, crossDevices: Bool = false, strictHardlinks: Bool = true) {
+    public init(threads: Int = 8, privateSize: Bool = false, crossDevices: Bool = false, strictHardlinks: Bool = true,
+                firmlinks: FirmlinkTable = .system) {
         self.threads = max(1, threads)
         self.strictHardlinks = strictHardlinks
         self.privateSize = privateSize
         self.crossDevices = crossDevices
+        self.firmlinks = firmlinks
     }
 }
 
@@ -49,6 +58,10 @@ public struct ScanStats: Sendable {
     public var datalessDirs = 0        // iCloud/Dropbox placeholder dirs — never downloaded or entered
     public var datalessLogical: Int64 = 0
     public var mountsSkipped = 0
+    /// Data-volume directories not entered because the scan reaches them through their firmlink.
+    public var firmlinksSkipped = 0
+    /// Full-clone files whose blocks were already counted for another member of their clone family.
+    public var cloneDupes = 0
 
     public init() {}
 
@@ -59,6 +72,8 @@ public struct ScanStats: Sendable {
         datalessDirs += o.datalessDirs
         datalessLogical += o.datalessLogical
         mountsSkipped += o.mountsSkipped
+        firmlinksSkipped += o.firmlinksSkipped
+        cloneDupes += o.cloneDupes
     }
 }
 
@@ -71,6 +86,8 @@ final class HardlinkRegistry: @unchecked Sendable {
         var owner: Int32
         var alloc: Int64
         var logical: Int64
+        /// Allocated size counted in `ownCloneAware` (hard-linked files are never deduplicated as clones).
+        var cloneAware: Int64
         /// Other directories where a link was seen (never contains `owner`).
         var others: [Int32] = []
     }
@@ -91,16 +108,16 @@ final class HardlinkRegistry: @unchecked Sendable {
     private var unattributedInodes: Set<UInt64> = []
     private(set) var unattributedAlloc: Int64 = 0
     /// Non-nil only during an incremental update; see `trackDrift`.
-    private var drift: [Int32: (alloc: Int64, logical: Int64)]?
+    private var drift: [Int32: (alloc: Int64, logical: Int64, cloneAware: Int64)]?
 
     init(_ table: [UInt64: Entry] = [:]) { self.table = table }
 
     /// Records a link to `inode` seen in `dir`. True if `dir` should count the size (it is, or just became, the owner).
-    func claim(_ inode: UInt64, by dir: Int32, alloc: Int64, logical: Int64) -> Bool {
+    func claim(_ inode: UInt64, by dir: Int32, alloc: Int64, logical: Int64, cloneAware: Int64) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         guard let i = table.index(forKey: inode) else {
-            table[inode] = Entry(owner: dir, alloc: alloc, logical: logical)
+            table[inode] = Entry(owner: dir, alloc: alloc, logical: logical, cloneAware: cloneAware)
             return true
         }
         let owner = table.values[i].owner
@@ -109,16 +126,20 @@ final class HardlinkRegistry: @unchecked Sendable {
             table.values[i].owner = dir
             table.values[i].alloc = alloc
             table.values[i].logical = logical
+            table.values[i].cloneAware = cloneAware
             if !table.values[i].others.isEmpty { table.values[i].others.removeAll { $0 == dir } }
             return true
         }
         if !table.values[i].others.contains(dir) { table.values[i].others.append(dir) }
         // Sizes differ only when the file changed since the owner counted it (incremental updates).
-        if table.values[i].alloc != alloc || table.values[i].logical != logical {
-            drift?[owner, default: (0, 0)].alloc += alloc - table.values[i].alloc
-            drift?[owner, default: (0, 0)].logical += logical - table.values[i].logical
+        let e = table.values[i]
+        if e.alloc != alloc || e.logical != logical || e.cloneAware != cloneAware {
+            drift?[owner, default: (0, 0, 0)].alloc += alloc - e.alloc
+            drift?[owner, default: (0, 0, 0)].logical += logical - e.logical
+            drift?[owner, default: (0, 0, 0)].cloneAware += cloneAware - e.cloneAware
             table.values[i].alloc = alloc
             table.values[i].logical = logical
+            table.values[i].cloneAware = cloneAware
         }
         return false
     }
@@ -131,7 +152,7 @@ final class HardlinkRegistry: @unchecked Sendable {
     }
 
     /// Returns, per owner directory, how much its counted size must change, and stops recording.
-    func takeDrift() -> [Int32: (alloc: Int64, logical: Int64)] {
+    func takeDrift() -> [Int32: (alloc: Int64, logical: Int64, cloneAware: Int64)] {
         lock.lock()
         defer { lock.unlock() }
         let out = drift ?? [:]
@@ -210,12 +231,12 @@ final class HardlinkRegistry: @unchecked Sendable {
 
     /// Gives every ownerless inode to another live directory that still links it, or drops it if none is left.
     /// Returns the sizes each new owner must now count.
-    func resolveOrphans() -> [(dir: Int32, alloc: Int64, logical: Int64)] {
+    func resolveOrphans() -> [(dir: Int32, alloc: Int64, logical: Int64, cloneAware: Int64)] {
         lock.lock()
         defer { lock.unlock() }
         guard hasOrphans else { return [] }
         hasOrphans = false
-        var moved: [(dir: Int32, alloc: Int64, logical: Int64)] = []
+        var moved: [(dir: Int32, alloc: Int64, logical: Int64, cloneAware: Int64)] = []
         var gone: [UInt64] = []
         var i = table.startIndex
         while i != table.endIndex {
@@ -223,7 +244,8 @@ final class HardlinkRegistry: @unchecked Sendable {
                 if let next = table.values[i].others.first {
                     table.values[i].others.removeFirst()
                     table.values[i].owner = next
-                    moved.append((next, table.values[i].alloc, table.values[i].logical))
+                    let e = table.values[i]
+                    moved.append((next, e.alloc, e.logical, e.cloneAware))
                 } else {
                     gone.append(table.keys[i])
                 }
@@ -274,11 +296,19 @@ public final class DiskTree: @unchecked Sendable {
     /// update met without a record (counted where met; another link may still count them as single-link files).
     /// Grows with tolerant updates, kept in the snapshot, 0 after a full scan.
     public internal(set) var uncertainBytes: Int64 = 0
+    /// Data-volume directories this tree reaches through a firmlink instead (`FirmlinkTable.aliases(for:)`).
+    public let aliases: [FirmlinkTable.Alias]
+    let exclusions: [String: Set<String>]
     let hardlinks: HardlinkRegistry
+    let clones: CloneRegistry
     fileprivate let links = ChildLinks()
 
     init(rootPath: String, rootDev: dev_t, privateSize: Bool, nodes: [DirNode],
-         eventId: UInt64, volumeUUID: String, scanStart: Int64, hardlinks: HardlinkRegistry) {
+         eventId: UInt64, volumeUUID: String, scanStart: Int64, hardlinks: HardlinkRegistry,
+         clones: CloneRegistry, aliases: [FirmlinkTable.Alias]) {
+        self.aliases = aliases
+        self.exclusions = aliases.exclusions
+        self.clones = clones
         self.rootPath = rootPath
         self.rootDev = rootDev
         self.privateSize = privateSize
@@ -309,6 +339,7 @@ public final class DiskTree: @unchecked Sendable {
                 nodes[i].totalAlloc = nodes[i].ownAlloc
                 nodes[i].totalLogical = nodes[i].ownLogical
                 nodes[i].totalFiles = nodes[i].ownFiles
+                nodes[i].totalCloneAware = nodes[i].ownCloneAware
                 nodes[i].totalDirs = 0
             }
             for i in nodes.indices.dropFirst().reversed() where !nodes[i].isDead {
@@ -316,6 +347,7 @@ public final class DiskTree: @unchecked Sendable {
                 nodes[p].totalAlloc += nodes[i].totalAlloc
                 nodes[p].totalLogical += nodes[i].totalLogical
                 nodes[p].totalFiles += nodes[i].totalFiles
+                nodes[p].totalCloneAware += nodes[i].totalCloneAware
                 nodes[p].totalDirs += nodes[i].totalDirs + 1
             }
         }
@@ -344,6 +376,7 @@ public final class DiskTree: @unchecked Sendable {
             n.totalAlloc = n.ownAlloc
             n.totalLogical = n.ownLogical
             n.totalFiles = n.ownFiles
+            n.totalCloneAware = n.ownCloneAware
             n.totalDirs = 0
             var c = first[id]
             while c >= 0 {
@@ -352,6 +385,7 @@ public final class DiskTree: @unchecked Sendable {
                     n.totalAlloc += child.totalAlloc
                     n.totalLogical += child.totalLogical
                     n.totalFiles += child.totalFiles
+                    n.totalCloneAware += child.totalCloneAware
                     n.totalDirs += child.totalDirs + 1
                 }
                 c = next[Int(c)]
@@ -359,6 +393,7 @@ public final class DiskTree: @unchecked Sendable {
             nodes[id].totalAlloc = n.totalAlloc
             nodes[id].totalLogical = n.totalLogical
             nodes[id].totalFiles = n.totalFiles
+            nodes[id].totalCloneAware = n.totalCloneAware
             nodes[id].totalDirs = n.totalDirs
         }
         for i in (firstNew..<nodes.count).reversed() where !nodes[i].isDead { recompute(i) }
@@ -383,6 +418,7 @@ public final class DiskTree: @unchecked Sendable {
         nodes.removeSubrange(kept...)
         links.reset()
         hardlinks.remap(map)
+        clones.remap(map)
     }
 }
 

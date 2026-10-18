@@ -33,7 +33,10 @@ Usage: fil scan [DIR] [-j N] [--private] [--full] [--top N] [--naive] [--porcela
   -v, --verbose         show timing details and skipped-entry counts
   --no-color            plain output (also when NO_COLOR is set or stdout is not a terminal)
 
-Output is styled only on a terminal. --porcelain output never changes.
+Sizes are on-disk bytes with each APFS clone family counted once; a scan of / counts each firmlinked
+directory once (see docs/specs/accounting.md). Output is styled only on a terminal. --porcelain fields
+are only ever appended: alloc= stays du-compatible, cloneaware= is the clone-aware size and shared= the
+bytes du counts again for clones (not with --private).
 """
 
 let listHelp = """

@@ -33,6 +33,8 @@ public enum UpdateFailure: Error, Sendable, CustomStringConvertible {
     /// A file with several hard links, older than the tree, that the tree has no record of: it was counted
     /// somewhere as a single-link file. Paths of the first such files found.
     case unattributedHardLink(paths: [String])
+    /// The firmlinks that decide which data-volume directories the tree skips differ from the snapshot's.
+    case firmlinksChanged
 
     public var description: String {
         switch self {
@@ -45,6 +47,7 @@ public enum UpdateFailure: Error, Sendable, CustomStringConvertible {
         case .unattributedHardLink(let paths):
             "unattributed hard link: \(paths.prefix(5).joined(separator: ", "))"
                 + (paths.count > 5 ? " (+\(paths.count - 5) more)" : "")
+        case .firmlinksChanged: "firmlinks changed"
         }
     }
 }
@@ -64,6 +67,7 @@ public enum Incremental {
         }
         // Device numbers are assigned at mount time and may differ after a reboot.
         tree.rootDev = st.st_dev
+        guard options.firmlinks.aliases(for: tree.rootPath) == tree.aliases else { return .failure(.firmlinksChanged) }
 
         var report = UpdateReport()
         var t = Timings.Lap("update")
@@ -80,13 +84,7 @@ public enum Incremental {
         t.lap("history(\(history.events.count) events)")
 
         let applyStart = ContinuousClock.now
-        tree.hardlinks.beginUpdate(cutoff: tree.scanStart, strict: options.strictHardlinks)
-        tree.hardlinks.trackDrift()
-        defer {
-            tree.hardlinks.endUpdate()
-            _ = tree.hardlinks.takeDrift()
-        }
-        if let why = apply(history.events, to: tree, options: options, report: &report) { return .failure(why) }
+        if let why = applyTracked(history.events, to: tree, options: options, report: &report) { return .failure(why) }
         t.lap("apply")
         tree.eventId = history.barrierId
         tree.scanStart = startWallClock
@@ -99,6 +97,20 @@ public enum Incremental {
         return .success(report)
     }
 
+    /// `apply` with the registries in update mode. Tests call it directly with chosen events.
+    static func applyTracked(_ events: [EventHistory.Event], to tree: DiskTree, options: ScanOptions,
+                             report: inout UpdateReport) -> UpdateFailure? {
+        tree.hardlinks.beginUpdate(cutoff: tree.scanStart, strict: options.strictHardlinks)
+        tree.hardlinks.trackDrift()
+        tree.clones.beginUpdate()
+        defer {
+            tree.hardlinks.endUpdate()
+            _ = tree.hardlinks.takeDrift()
+            _ = tree.clones.takeCreated()
+        }
+        return apply(events, to: tree, options: options, report: &report)
+    }
+
     /// Replays `events` on `tree`. Work is proportional to the changed directories and their ancestors,
     /// not to the size of the tree: child lists are kept on the tree, totals are fixed up along ancestor chains.
     private static func apply(_ events: [EventHistory.Event], to tree: DiskTree, options: ScanOptions,
@@ -109,13 +121,14 @@ public enum Incremental {
         let firstNew = tree.nodes.count
         tree.syncLinks()
         let prefixes = rootPrefixes(tree.rootPath)
+        let aliases = tree.aliases
         t.lap("links")
 
         // 1. Map each event to the nearest directory we know; a new directory is found by re-reading its parent.
         var full = Set<Int32>()
         var shallow = Set<Int32>()
         for e in events {
-            guard let comps = relativeComponents(e.path, prefixes: prefixes) else { continue }
+            guard let comps = relativeComponents(e.path, prefixes: prefixes, aliases: aliases) else { continue }
             var id: Int32 = 0
             for c in comps {
                 guard let child = tree.child(of: id, named: String(c)) else { break }
@@ -148,7 +161,8 @@ public enum Incremental {
         var unreadable: [Int32] = []        // kept, but a full scan would not know what is inside
         var readable: [Int32] = []          // unreadable children that can be listed again
         var newDirs: [Int32] = []
-        var pendingLinks: [(dir: Int32, inode: UInt64, alloc: Int64, logical: Int64)] = []
+        var pendingLinks: [(dir: Int32, inode: UInt64, alloc: Int64, logical: Int64, cloneAware: Int64)] = []
+        var pendingClones: [(dir: Int32, members: [CloneMember])] = []
         for (id, out) in zip(reread, outcomes) {
             guard out.opened else {
                 if id == 0 { return .rootUnreadable(errno: out.openError) }
@@ -159,6 +173,7 @@ public enum Incremental {
                     tree.nodes[Int(id)].ownAlloc = 0
                     tree.nodes[Int(id)].ownLogical = 0
                     tree.nodes[Int(id)].ownFiles = 0
+                    tree.nodes[Int(id)].ownCloneAware = 0
                     tree.nodes[Int(id)].unreadable = true
                     tree.stats.openErrors += 1
                     changed.append(id)
@@ -169,6 +184,7 @@ public enum Incremental {
             tree.nodes[Int(id)].ownAlloc = out.alloc
             tree.nodes[Int(id)].ownLogical = out.logical
             tree.nodes[Int(id)].ownFiles = out.files
+            tree.nodes[Int(id)].ownCloneAware = out.cloneAware
             tree.nodes[Int(id)].unreadable = false
             changed.append(id)
             var knownNames = Set<String>()
@@ -190,6 +206,7 @@ public enum Incremental {
                     tree.nodes[Int(c)].ownAlloc = 0
                     tree.nodes[Int(c)].ownLogical = 0
                     tree.nodes[Int(c)].ownFiles = 0
+                    tree.nodes[Int(c)].ownCloneAware = 0
                     tree.nodes[Int(c)].unreadable = true
                     changed.append(c)
                     unreadable.append(c)
@@ -201,7 +218,8 @@ public enum Incremental {
                 newDirs.append(Int32(tree.nodes.count))
                 tree.nodes.append(DirNode(parent: id, name: name))
             }
-            for l in out.deferredLinks { pendingLinks.append((id, l.inode, l.alloc, l.logical)) }
+            for l in out.deferredLinks { pendingLinks.append((id, l.inode, l.alloc, l.logical, l.cloneAware)) }
+            if !out.cloneMembers.isEmpty { pendingClones.append((id, out.cloneMembers)) }
         }
         t.lap("diff")
 
@@ -235,13 +253,18 @@ public enum Incremental {
         t.lap("dead")
         // Every record of a re-read, rescanned or removed directory is dropped; the re-read puts back what is still there.
         tree.hardlinks.forget { Int($0) < affected.count && affected[Int($0)] }
+        tree.clones.forget { Int($0) < affected.count && affected[Int($0)] }
         t.lap("forget")
 
         for l in pendingLinks where !tree.nodes[Int(l.dir)].isDead
-            && tree.hardlinks.claim(l.inode, by: l.dir, alloc: l.alloc, logical: l.logical) {
+            && tree.hardlinks.claim(l.inode, by: l.dir, alloc: l.alloc, logical: l.logical, cloneAware: l.cloneAware) {
             tree.nodes[Int(l.dir)].ownAlloc += l.alloc
             tree.nodes[Int(l.dir)].ownLogical += l.logical
+            tree.nodes[Int(l.dir)].ownCloneAware += l.cloneAware
             tree.nodes[Int(l.dir)].ownFiles += 1
+        }
+        for c in pendingClones where !tree.nodes[Int(c.dir)].isDead {
+            tree.nodes[Int(c.dir)].ownCloneAware += tree.clones.claim(c.members, by: c.dir).bytes
         }
 
         // 4. Walk new directories and flagged subtrees in one parallel pass.
@@ -261,17 +284,32 @@ public enum Incremental {
         for (dir, d) in tree.hardlinks.takeDrift() where !tree.nodes[Int(dir)].isDead {
             tree.nodes[Int(dir)].ownAlloc += d.alloc
             tree.nodes[Int(dir)].ownLogical += d.logical
+            tree.nodes[Int(dir)].ownCloneAware += d.cloneAware
             changed.append(dir)
         }
 
-        // 6. An inode whose owner lost its link while another directory still has one moves to that directory.
+        // 6. An inode whose owner lost its link while another directory still has one moves to that directory;
+        // likewise a clone family whose owner lost its member.
         for m in tree.hardlinks.resolveOrphans() {
             tree.nodes[Int(m.dir)].ownAlloc += m.alloc
             tree.nodes[Int(m.dir)].ownLogical += m.logical
+            tree.nodes[Int(m.dir)].ownCloneAware += m.cloneAware
             tree.nodes[Int(m.dir)].ownFiles += 1
             changed.append(m.dir)
         }
-        t.lap("links+orphans")
+        for m in tree.clones.resolveOrphans() {
+            tree.nodes[Int(m.dir)].ownCloneAware += m.alloc
+            changed.append(m.dir)
+        }
+        // 7. A family that is new to the tree although its original was already there: the original was cloned
+        // after the snapshot and its directory, not re-read, still counts it as a plain file. That directory
+        // becomes the owner; the member's directory stops counting it. Costs two syscalls per such family.
+        tree.syncLinks()
+        let adopted = adoptOriginals(tree.clones.takeCreated(), in: tree, prefixes: prefixes,
+                                     settled: { Int($0) < firstNew && !affected[Int($0)] })
+        changed += adopted
+        changed += Scanner.applyPreferredOriginals(tree)
+        t.lap("links+orphans(\(adopted.count) clone originals adopted)")
 
         tree.updateTotals(changed: changed, firstNew: firstNew)
         t.lap("totals")
@@ -283,7 +321,8 @@ public enum Incremental {
     /// table under its lock; every claim is deferred (the closure returns nil) and made after `forget`, on one thread.
     private static func readDirectories(_ paths: [String], tree: DiskTree, options: ScanOptions) -> [DirOutcome] {
         guard !paths.isEmpty else { return [] }
-        let config = DirReader.Config(rootDev: tree.rootDev, options: options, userAccess: true)
+        let config = DirReader.Config(rootDev: tree.rootDev, options: options, userAccess: true,
+                                      exclusions: tree.exclusions)
         let hardlinks = tree.hardlinks
         var results = [DirOutcome](repeating: DirOutcome(), count: paths.count)
         let nextIndex = Atomic<Int>(0)
@@ -299,7 +338,7 @@ public enum Incremental {
                     guard k < paths.count else { break }
                     let dirPath = paths[k]
                     var t0 = Timings.enabled ? Timings.Lap("apply") : nil
-                    out[k] = reader.read(dirPath) { inode, alloc, _, name in
+                    out[k] = reader.read(dirPath) { inode, alloc, _, _, name in
                         hardlinks.vet(inode, alloc: alloc, dirPath: dirPath, name: name)
                         return nil
                     }
@@ -312,20 +351,88 @@ public enum Incremental {
         return results
     }
 
+    /// For each family in `created` whose original file was not seen by this update: if the original is a single-link
+    /// full clone of the family in a listed (not unreadable) directory that `settled` says was not re-read, that directory
+    /// becomes the owner (it counts the file already) and the previous owner stops counting it.
+    private static func adoptOriginals(_ created: [UInt64], in tree: DiskTree, prefixes: [String],
+                                       settled: (Int32) -> Bool) -> [Int32] {
+        guard !created.isEmpty else { return [] }
+        var fs = statfs()
+        guard statfs(tree.rootPath, &fs) == 0 else { return [] }
+        var fsid = fs.f_fsid
+        var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        var changed: [Int32] = []
+        for cid in Set(created) {
+            guard let e = tree.clones.entry(cid), e.original < 0, e.owner >= 0 else { continue }
+            guard fsgetpath(&buf, buf.count, &fsid, cid) > 0 else { continue }
+            let path = buf.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+            guard isSingleLinkClone(path, cloneID: cid),
+                  let comps = relativeComponents(path, prefixes: prefixes, aliases: tree.aliases), !comps.isEmpty
+            else { continue }
+            var dir: Int32 = 0
+            var found = true
+            for c in comps.dropLast() {
+                guard let child = tree.child(of: dir, named: String(c)) else { found = false; break }
+                dir = child
+            }
+            guard found, !tree.nodes[Int(dir)].isDead, !tree.nodes[Int(dir)].unreadable, settled(dir),
+                  let moved = tree.clones.adopt(cid, by: dir) else { continue }
+            tree.nodes[Int(moved.previous)].ownCloneAware -= moved.alloc
+            changed.append(moved.previous)
+        }
+        return changed
+    }
+
+    /// `path` is a regular file with one link, the original of clone family `cloneID`, sharing all its blocks.
+    private static func isSingleLinkClone(_ path: String, cloneID: UInt64) -> Bool {
+        var al = attrlist()
+        al.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
+        al.commonattr = attrgroup_t(ATTR_CMN_RETURNED_ATTRS) | attrgroup_t(ATTR_CMN_OBJTYPE) | attrgroup_t(ATTR_CMN_FILEID)
+        al.fileattr = attrgroup_t(ATTR_FILE_LINKCOUNT)
+        al.forkattr = attrgroup_t(ATTR_CMNEXT_CLONEID) | attrgroup_t(ATTR_CMNEXT_EXT_FLAGS)
+        var buf = [UInt8](repeating: 0, count: 128)
+        let ok = buf.withUnsafeMutableBytes { raw -> Bool in
+            guard getattrlist(path, &al, raw.baseAddress, raw.count,
+                              UInt32(FSOPT_NOFOLLOW) | UInt32(FSOPT_ATTR_CMN_EXTENDED)) == 0 else { return false }
+            var f = UnsafeRawPointer(raw.baseAddress!) + 4
+            let returned = f.loadUnaligned(as: attribute_set_t.self)
+            f += MemoryLayout<attribute_set_t>.size
+            let want = attrgroup_t(ATTR_CMN_OBJTYPE) | attrgroup_t(ATTR_CMN_FILEID)
+            let wantFork = attrgroup_t(ATTR_CMNEXT_CLONEID) | attrgroup_t(ATTR_CMNEXT_EXT_FLAGS)
+            guard returned.commonattr & want == want, returned.fileattr & attrgroup_t(ATTR_FILE_LINKCOUNT) != 0,
+                  returned.forkattr & wantFork == wantFork else { return false }
+            let type = f.loadUnaligned(as: UInt32.self)
+            let fileID = (f + 4).loadUnaligned(as: UInt64.self)
+            let links = (f + 12).loadUnaligned(as: UInt32.self)
+            let cid = (f + 16).loadUnaligned(as: UInt64.self)
+            let ext = (f + 24).loadUnaligned(as: UInt64.self)
+            return type == UInt32(VREG.rawValue) && links == 1 && fileID == cloneID && cid == cloneID
+                && ext & UInt64(EF_SHARES_ALL_BLOCKS) != 0
+        }
+        return ok
+    }
+
     /// FSEvents may report a path through the Data volume's firmlink rather than the path we scanned.
-    fileprivate static func rootPrefixes(_ root: String) -> [String] {
+    static func rootPrefixes(_ root: String) -> [String] {
         var out = [root]
         if let real = realpath(root, nil) {
             out.append(String(cString: real))
             free(real)
         }
-        out.append("/System/Volumes/Data" + root)
+        // Only a twin outside the tree: for "/" or "/System" this path is a real directory of the tree itself
+        // (events there must keep their own path), not another view of the root.
+        let twin = "/System/Volumes/Data" + (root == "/" ? "" : root)
+        if !FirmlinkTable.isInside(twin, root, orEqual: true) { out.append(twin) }
         return Array(Set(out.map { $0 == "/" ? "" : $0 }))
     }
 
-    private static func relativeComponents(_ path: String, prefixes: [String]) -> [Substring]? {
+    /// Components of `path` below the tree's root, or nil when it is outside. A data-volume path the tree reaches
+    /// through a firmlink is first rewritten to the firmlink path.
+    static func relativeComponents(_ path: String, prefixes: [String],
+                                   aliases: [FirmlinkTable.Alias] = []) -> [Substring]? {
         var p = Substring(path)
         while p.count > 1 && p.hasSuffix("/") { p = p.dropLast() }
+        if !aliases.isEmpty { p = aliases.translate(p) }
         for prefix in prefixes {
             if p == prefix || (prefix.isEmpty && p == "/") { return [] }
             if p.hasPrefix(prefix + "/") {
@@ -338,7 +445,7 @@ public enum Incremental {
 
 // MARK: - FSEvents history replay
 
-private final class EventHistory: @unchecked Sendable {
+final class EventHistory: @unchecked Sendable {
     struct Event {
         let path: String
         let mustScanSubDirs: Bool
