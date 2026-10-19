@@ -436,6 +436,9 @@ struct DirReader {
         /// Allocation unit of the volume (`Scanner.allocationUnit(of:)`): a record without `ALLOCSIZE` counts its data
         /// length rounded up to it. Decided by the volume, read once per scan or update, never per file.
         var allocUnit: Int64 = 0
+        /// Directory path -> names of its children that are firmlink sources (`/` -> `Users`, ...). Their listed id is
+        /// the sealed system volume's, so they get none (0, never compared): a system update may change it.
+        let firmlinkNames: [String: Set<String>]
         #if DEBUG
             let faults: DirFaults
         #endif
@@ -450,6 +453,12 @@ struct DirReader {
             self.userAccess = userAccess
             self.exclusions = exclusions
             self.checkOwnDevice = checkOwnDevice
+            var names: [String: Set<String>] = [:]
+            for l in options.firmlinks.links {
+                let source = l.source as NSString
+                names[source.deletingLastPathComponent, default: []].insert(source.lastPathComponent)
+            }
+            firmlinkNames = names
             #if DEBUG
                 faults = options.faults
             #endif
@@ -531,6 +540,7 @@ struct DirReader {
         if config.options.privateSize { al.forkattr |= attrgroup_t(ATTR_CMNEXT_PRIVATESIZE) }
         let opts = UInt64(FSOPT_NOFOLLOW) | UInt64(FSOPT_ATTR_CMN_EXTENDED)
         let skip = config.exclusions.isEmpty ? nil : config.exclusions[path]
+        let firmlinked = config.firmlinkNames.isEmpty ? nil : config.firmlinkNames[path]
 
         #if DEBUG
             var faultCall = 0
@@ -573,7 +583,8 @@ struct DirReader {
             for _ in 0..<count {
                 let length = Int(entry.loadUnaligned(as: UInt32.self))
                 parseEntry(
-                    entry + 4, into: &out, dirPath: path, dirCPath: cPath, skip: skip, unit: unit, batch: &links)
+                    entry + 4, into: &out, dirPath: path, dirCPath: cPath, skip: skip, firmlinked: firmlinked,
+                    unit: unit, batch: &links)
                 entry += length
             }
         }
@@ -607,7 +618,7 @@ struct DirReader {
     @inline(__always)
     private func parseEntry(
         _ start: UnsafeRawPointer, into out: inout DirOutcome, dirPath: String, dirCPath: [CChar]?,
-        skip: Set<String>?, unit: Int64, batch: inout LinkBatch
+        skip: Set<String>?, firmlinked: Set<String>?, unit: Int64, batch: inout LinkBatch
     ) {
         var f = start
         let returned = f.loadUnaligned(as: attribute_set_t.self)
@@ -724,11 +735,11 @@ struct DirReader {
                 if dirAlloc != 0 { out.childAllocs.append((out.childDirs.count, dirAlloc)) }
                 // Entered mount point: the attributes above are the covered folder's; the read asks the volume itself.
                 // Its listed id is the covered folder's, not the mounted root's (`/System/Volumes/Data` on the same
-                // device): unknown (0), never compared.
+                // device): unknown (0), never compared. Likewise a firmlink's (`Config.firmlinkNames`).
                 let isMount = mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT) != 0
                 if isMount { out.crossedMounts.append(out.childDirs.count) }
                 out.childDirs.append(name)
-                out.childIDs.append(isMount ? 0 : fileID)
+                out.childIDs.append(isMount || firmlinked?.contains(name) == true ? 0 : fileID)
             }
             return
         }

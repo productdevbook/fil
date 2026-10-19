@@ -60,28 +60,30 @@ struct FolderIdentityTests {
         }
     }
 
-    @Test("a firmlink, whose listed id is never its lstat inode, is kept by an incomplete re-read")
-    func firmlinkKept() throws {
+    @Test("a firmlink source has no identity: a re-read of its parent, complete or not, never replaces it")
+    func firmlinkUnknown() throws {
         try Fixture.with { f in
             try f.mk("P/C/file", bytes: 300_000)
-            for firmlink in [false, true] {
-                let tree = try Scanner.scan(f.root)
-                let c = try #require(tree.node(at: f.path("P/C")))
-                // As `/` lists `/Users`: the system volume's id, not the data-volume folder's inode.
-                tree.nodes[c].fileID &+= 1
-                var options = bulkEIO(f.path("P"))
-                if firmlink {
-                    options.firmlinks = FirmlinkTable.parse(f.path("P/C") + "\tP/C", dataRoot: "/nonexistent-fil")
-                }
+            try f.mk("P/D/file", bytes: 5000)
+            // As `/` lists `/Users`: with the sealed system volume's id, which a system update may change.
+            var options = ScanOptions()
+            options.firmlinks = FirmlinkTable.parse(f.path("P/C") + "\tP/C", dataRoot: "/nonexistent-fil")
+            let tree = try Scanner.scan(f.root, options: options)
+            let c = try #require(tree.node(at: f.path("P/C")))
+            #expect(tree.nodes[c].fileID == 0)
+            #expect(tree.nodes[try #require(tree.node(at: f.path("P/D")))].fileID == inode(f.path("P/D")))
+            for incomplete in [true, false] {
+                var faulty = options
+                if incomplete { faulty.faults.bulk[f.path("P")] = [EIO] }
                 var report = UpdateReport()
                 #expect(
                     Incremental.applyTracked(
                         [EventHistory.Event(path: f.path("P"), mustScanSubDirs: false)],
-                        to: tree, options: options, report: &report) == nil)
-                #expect(report.dirsRemoved == (firmlink ? 0 : 1))
-                #expect(tree.node(at: f.path("P/C")).map { $0 == c } == firmlink)
-                #expect(tree.root.totalAlloc == f.duBytes())
+                        to: tree, options: faulty, report: &report) == nil)
+                #expect(report.dirsRemoved == 0, "incomplete: \(incomplete)")
+                #expect(tree.node(at: f.path("P/C")) == c && tree.nodes[c].fileID == 0, "incomplete: \(incomplete)")
             }
+            #expect(tree.root.totalAlloc == f.duBytes())
         }
     }
 

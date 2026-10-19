@@ -230,9 +230,7 @@ public enum Incremental {
         // too, so that the folder under its new name is found.
         for id in retry {
             shallow.insert(id)
-            if id != 0 && !stillSameDirectory(id, in: tree, options.firmlinks) {
-                shallow.insert(tree.nodes[Int(id)].parent)
-            }
+            if id != 0 && !stillSameDirectory(id, in: tree) { shallow.insert(tree.nodes[Int(id)].parent) }
         }
         func underFull(_ id: Int32, includingSelf: Bool) -> Bool {
             var i = includingSelf ? id : tree.nodes[Int(id)].parent
@@ -318,7 +316,7 @@ public enum Incremental {
                         killRoots.append(c)
                         return
                     }
-                    if n.fileID != 0 && now != n.fileID && !isFirmlink(c, in: tree, options.firmlinks) {
+                    if n.fileID != 0 && now != n.fileID {
                         killRoots.append(c)
                         recreated.append((c, now))
                     }
@@ -573,18 +571,10 @@ public enum Incremental {
     }
 
     /// `c`'s path still holds a directory on the tree's volume, and the same one when its identity is known.
-    private static func stillSameDirectory(_ c: Int32, in tree: DiskTree, _ firmlinks: FirmlinkTable) -> Bool {
+    private static func stillSameDirectory(_ c: Int32, in tree: DiskTree) -> Bool {
         guard let now = directoryID(c, in: tree) else { return false }
         let id = tree.nodes[Int(c)].fileID
-        return id == 0 || now == id || isFirmlink(c, in: tree, firmlinks)
-    }
-
-    /// `c` is a firmlink (`/Users`): its parent's listing gives the system volume's id for it, while `lstat` gives the
-    /// data-volume folder's, so the two never match. Its identity is checked only against listings.
-    private static func isFirmlink(_ c: Int32, in tree: DiskTree, _ firmlinks: FirmlinkTable) -> Bool {
-        guard !firmlinks.links.isEmpty else { return false }
-        let path = tree.path(of: Int(c))
-        return firmlinks.links.contains { $0.source == path }
+        return id == 0 || now == id
     }
 
     /// Reads each directory once with up to `options.threads` workers; results are in input order.
