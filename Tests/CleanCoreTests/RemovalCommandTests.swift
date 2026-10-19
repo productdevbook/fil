@@ -4,7 +4,11 @@ import Testing
 import TestSupport
 
 // Removal commands run through the CommandRunner with a timeout (chapter 04 §7.3, #14). The "hanging tool" is
-// /bin/sleep with an odd duration; the timeout is injected so the tests take about a second.
+// /bin/sleep with an odd duration; the timeout is injected so the tests take about a second. Each duration ends in
+// digits unique to this test process, so `pgrep` never sees another run's sleeps (parallel test runs share a machine).
+
+/// `/bin/sleep` argument `<whole>.<digits unique to this process>`.
+private func sleepArg(_ whole: Int) -> String { "\(whole).\(getpid())\(whole)" }
 
 private func command(_ id: String, _ argv: [String], home: String) -> Candidate {
     Candidate(id: id, ruleId: "r", path: home + "/" + id, bytes: 1, safety: .safe, removal: .command(argv: argv))
@@ -53,7 +57,7 @@ struct RemovalCommandTests {
     @Test("a hanging removal command fails as timedOut, is killed, and the next item still runs")
     func hangingCommandTimesOut() async throws {
         try await Fixture.withAsync { f in
-            let hang = command("hang", ["/bin/sleep", "27.1828"], home: f.root)
+            let hang = command("hang", ["/bin/sleep", sleepArg(27)], home: f.root)
             let next = command("next", ["/usr/bin/true"], home: f.root)
             let clock = ContinuousClock()
             let start = clock.now
@@ -63,7 +67,8 @@ struct RemovalCommandTests {
             #expect(why == .timedOut(seconds: 1))
             #expect(why.description == "timed out after 1 s; the command was stopped")
             guard case .commandRan = results[1].1 else { Issue.record("the next item did not run"); return }
-            let alive = try running("sleep 27.1828"); #expect(alive == false, "the hung process is still running")
+            let alive = try running("sleep " + sleepArg(27))
+            #expect(alive == false, "the hung process is still running")
         }
     }
 
@@ -91,17 +96,17 @@ struct RemovalCommandTests {
     @Test("cancelling the task stops the running command and the later items")
     func cancellationStopsCommand() async throws {
         try await Fixture.withAsync { f in
-            let hang = command("hang", ["/bin/sleep", "29.9792"], home: f.root)
+            let hang = command("hang", ["/bin/sleep", sleepArg(29)], home: f.root)
             let next = command("next", ["/usr/bin/true"], home: f.root)
             let home = f.root
             let work = Task { await Cleanup.execute([hang, next], home: home) }
-            let started = try await waitUntilRunning("sleep 29.9792")
+            let started = try await waitUntilRunning("sleep " + sleepArg(29))
             #expect(started)
             work.cancel()
             let results = await work.value
             #expect(results.count == 1)
             guard case .failed = results[0].1 else { Issue.record("expected a failure"); return }
-            let stillAlive = try running("sleep 29.9792");
+            let stillAlive = try running("sleep " + sleepArg(29));
             #expect(stillAlive == false, "the command is still running after cancel")
         }
     }
@@ -109,12 +114,12 @@ struct RemovalCommandTests {
     @Test("a helper that ignores SIGTERM does not survive the stop")
     func helperIgnoringTermIsKilled() async throws {
         // The leader dies on SIGTERM; the helper keeps running (and keeps the pipes open) unless the group is killed.
-        let script = "(trap '' TERM; exec /bin/sleep 23.1415) & wait"
+        let script = "(trap '' TERM; exec /bin/sleep \(sleepArg(23))) & wait"
         let runner = SystemCommandRunner(gracePeriod: .seconds(1))
         let r = await runner.run(["/bin/sh", "-c", script], timeout: .milliseconds(400))
         #expect(r == .timedOut)
         try await Task.sleep(for: .milliseconds(200))
-        let alive = try running("sleep 23.1415")
+        let alive = try running("sleep " + sleepArg(23))
         #expect(alive == false, "the helper survived")
     }
 
