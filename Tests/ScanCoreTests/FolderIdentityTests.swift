@@ -165,4 +165,35 @@ struct FolderIdentityTests {
             }
         }
     }
+
+    @Test("a mount point entered with --cross-devices has no identity: its listed id is the covered folder's")
+    func mountPointUnknown() throws {
+        guard DiskImage.isAvailable else { try Test.cancel("no hdiutil") }
+        try Fixture.with("image") { box in
+            try box.mk("src/inner/file", bytes: 200_000)
+            guard let image = DiskImage(from: box.path("src"), at: box.path("vol.dmg")) else {
+                try Test.cancel("hdiutil create failed")
+            }
+            defer { image.detach() }
+            try Fixture.with("mount") { f in
+                try f.mk("mnt/under", bytes: 100_000)
+                try f.mk("plain/file", bytes: 5000)
+                guard image.attach(at: f.path("mnt")) else { try Test.cancel("hdiutil attach failed") }
+                let options = ScanOptions(crossDevices: true)
+                let tree = try Scanner.scan(f.root, options: options)
+                let mnt = try #require(tree.node(at: f.path("mnt")))
+                #expect(tree.nodes[mnt].fileID == 0)
+                let inner = try #require(tree.node(at: f.path("mnt/inner")))
+                #expect(tree.nodes[inner].fileID == inode(f.path("mnt/inner")))
+                // A re-read of the parent leaves it unknown and keeps it.
+                var report = UpdateReport()
+                #expect(
+                    Incremental.applyTracked(
+                        [EventHistory.Event(path: f.root, mustScanSubDirs: false)],
+                        to: tree, options: options, report: &report) == nil)
+                #expect(report.dirsRemoved == 0)
+                #expect(tree.node(at: f.path("mnt")) == mnt && tree.nodes[mnt].fileID == 0)
+            }
+        }
+    }
 }

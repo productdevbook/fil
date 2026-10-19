@@ -723,9 +723,12 @@ struct DirReader {
                 }
                 if dirAlloc != 0 { out.childAllocs.append((out.childDirs.count, dirAlloc)) }
                 // Entered mount point: the attributes above are the covered folder's; the read asks the volume itself.
-                if mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT) != 0 { out.crossedMounts.append(out.childDirs.count) }
+                // Its listed id is the covered folder's, not the mounted root's (`/System/Volumes/Data` on the same
+                // device): unknown (0), never compared.
+                let isMount = mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT) != 0
+                if isMount { out.crossedMounts.append(out.childDirs.count) }
                 out.childDirs.append(name)
-                out.childIDs.append(fileID)
+                out.childIDs.append(isMount ? 0 : fileID)
             }
             return
         }
