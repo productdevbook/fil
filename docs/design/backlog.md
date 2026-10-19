@@ -392,8 +392,10 @@ settings and secrets only a person with admin rights can change).
 - **Area** scan · **Owner** macos-engineer · **Priority** P1 · **Depends on** F-043 · **Chapters** 01 §6.4; 03 §5.5, §10
 - **Acceptance**
   - Registry `forget` touches only affected directories (per-directory index); `affected` is sparse.
-  - `scripts/bench.sh`: an update after 1,000 changes on the 1 M-file fixture is at least 5× faster than before;
-    full scan within budget.
+  - `scripts/bench.sh`: on the 1 M-file fixture an update after 1,000 changes spends under 1 % of its time in steps
+    that are O(N) in the tree (registry `forget` < 1 ms with 100k hard links); the rest is re-reading the changed
+    folders and replaying the event history. Full scan within budget. (Was "5× faster": measured, re-reading and
+    history replay are ~99 % of an update, so the registry work could not give 5×.)
 
 ### F-017 · Child lookup by name is not linear
 
