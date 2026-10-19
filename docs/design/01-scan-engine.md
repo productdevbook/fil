@@ -545,6 +545,33 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
 
 ## As built
 
+- #43 (2026-10-19): `scripts/bench.sh` builds a deterministic fixture of 1,000,000 file names under
+  `/private/tmp/fil-bench.*` (37 s with `mkdir -p`/`touch`/`cp`/`ln` batched by `xargs`): 40% in wide folders (2,000
+  files each), 30% in 16-deep chains, 30% in a three-level tree; one file in eight holds 1-8 KB; 5,000 plain 1-64 KB
+  files, 3,000 `cp -c` clones, 2,000 files with two extra hard links each, four sparse files (2-16 GB). It counts
+  996,000 files (4,000 names are extra links) and 21,018 folders. It runs `--full -j 8 --top 0 --porcelain` 3x
+  interleaved with `du -skx` (alloc must equal du x 1024), then 3 rounds of 1,000 changes (300 deletes, 300 appends,
+  400 adds), each followed by an incremental update (must report `mode=incremental` and equal `--full`). Options
+  `--files N`, `--keep`, `--reuse DIR`, `--fil PATH`. Baseline: `main` at 7571e5a plus this script, release build,
+  Mac15,10 (14 cores, 36 GB), macOS 27.0 (26A428). **The machine was not quiet**: other agents ran simulators and
+  builds, the 1-minute load average was 9-15 during the runs (above the limit of 4; 11 minutes of waiting never
+  brought it below), so read the times as pessimistic. The two complete runs agree within 3%.
+
+  | Metric | Fresh fixture | Reused fixture |
+  |---|---|---|
+  | Full scan, median of 3 | 1.86 s (1.86 / 1.87 / 1.81) | 1.88 s (1.90 / 1.88 / 1.88) |
+  | Files per second | 535k | 530k |
+  | Incremental update after 1,000 changes, median of 3 | 0.42 s (0.71 / 0.42 / 0.34) | 0.32 s (0.47 / 0.32 / 0.28) |
+  | Peak RSS (full) | 15 MB | 15 MB |
+  | Snapshot | 1,007,507 bytes | 1,007,507 bytes |
+  | alloc = du x 1024; incremental = `--full` | all equal | all equal |
+
+  Against section 12: 1.46 M files `--full -j 8` <= 7.5 s: within (1.9 s for 0.996 M files, about 2.8 s scaled; the
+  fixture is mostly empty files, so a real tree such as `~/work` stays the better check); throughput >= 190k files/s:
+  within (530k); memory (96 bytes per folder + 256 KB per worker): within (15 MB, 21k folders); `fil scan / --full`
+  <= 60 s: not measured (the harness stays inside its fixture); per-file and per-directory costs and `--private`: not
+  measurable from outside (code review or `FIL_TIMINGS`). The incremental figure has no budget line. Elapsed time
+  includes process start and snapshot load and save.
 - #48 (2026-10-18): the request carries `ATTR_DIR_ALLOCSIZE` and `ATTR_DIR_DATALENGTH` (after `MOUNTSTATUS` in bit
   order). `DirOutcome.childAllocs` holds the non-zero folder allocations by child index (empty on APFS and HFS+: no
   allocation); `WorkItem.selfAlloc` carries one to the child's read, `DirOutcome.selfAlloc` is the `fstat`
