@@ -659,6 +659,23 @@ timeouts, concurrency, simctl, Docker), `SelectionTests.swift`.
 | `list --json` schema | `Tests/FilTests` | §9 |
 | argument parsing and exit codes; `NO_COLOR` / `--no-color` / non-TTY output | `Tests/FilTests` | CLI (#21) |
 
+**[Change]** (#50) The concurrency test ("queries run concurrently: three hanging tools cost one timeout, not
+three", `ToolTests.swift:445-460`) never runs a hanging tool. It locates every tool at `/bin/sleep`, so each query
+is `/bin/sleep --cache` and the like, which exits at once with a usage error: the test takes about 30 ms locally
+and would pass with the queries run one after another. On CI the process launches alone took 1.77 s against the
+old 1.5 s bound; commit `8687439` widened it to 2.5 s with a 1 s timeout to unblock v0.2.0. Reason for the change:
+the test must prove §5.3's claim that hanging tools cost one timeout, not one each.
+
+- The fake tool is a script the test writes into the fixture (`#!/bin/sh` then `exec /bin/sleep 60`, mode 755)
+  and `locate` returns for every tool name. It ignores its arguments and sleeps far longer than the timeout; the
+  process-group SIGKILL of §5.1 ends it.
+- `CacheTools.discover` runs all seven cache queries (`brew`, `npm`, `pnpm`, `yarn`, `go`, `pip3`, `uv`) with
+  timeout `T` = 1 s. Run one after another they take at least 7 × `T`.
+- Checks: every one of the seven tools has a note ending `timed out after 1 s; using the default location`;
+  elapsed ≥ `T` (the tools really hung); elapsed < 3.5 s (half the serial minimum, so a slow runner has 2.5 s of
+  launch overhead before the test fails, and serial queries can never pass); defaults are used as before.
+- The test name says seven tools, not three.
+
 ## As built
 
 ## Glossary additions

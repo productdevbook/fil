@@ -53,7 +53,10 @@ Items: F-019.
 
 **Goal:** `fil` installs with shell completions and a man page.
 
-Items: F-027, F-045.
+Items: F-027, F-045, F-050.
+
+F-050 (concurrent tool query test) is placed here because M2, where the test was written, is closed and `fil`
+already behaves correctly: only the test's proof is missing. It is not scan speed, so it does not belong in M5.
 
 ## Orders that cannot change
 
@@ -100,5 +103,5 @@ Every agent file gets `disallowedTools: Agent` and only that: no list of unrelat
 | M4 · Scriptable CLI | 6 | F-009, F-010, F-012, F-026, F-041, F-042 | 0 | 0 | 6 | 0 | 0 | 0 |
 | M5 · Scales | 6 | F-016–F-018, F-043, F-044, F-049 | 6 | 0 | 0 | 0 | 0 | 0 |
 | M6 · Map | 1 | F-019 | 0 | 0 | 0 | 1 | 0 | 0 |
-| M7 · Finishing touches | 2 | F-027, F-045 | 0 | 0 | 1 | 0 | 1 | 0 |
-| **Total** | **47 (+1 withdrawn, 1 not used)** | F-001–F-049 | 19 | 6 | 10 | 1 | 9 | 2 |
+| M7 · Finishing touches | 3 | F-027, F-045, F-050 | 0 | 1 | 1 | 0 | 1 | 0 |
+| **Total** | **48 (+1 withdrawn, 1 not used)** | F-001–F-050 | 19 | 7 | 10 | 1 | 9 | 2 |

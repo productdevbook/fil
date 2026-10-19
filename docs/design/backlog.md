@@ -463,3 +463,17 @@ settings and secrets only a person with admin rights can change).
     `man/fil.1`; the cask template installs them with `zsh_completion`, `bash_completion`, `fish_completion`,
     `manpage`.
   - A `workflow_dispatch` artifact shows the files; `brew audit` passes.
+
+### F-050 · The concurrent tool query test uses tools that really hang
+
+- **Area** clean · **Owner** macos-engineer · **Priority** P2 · **Depends on** — · **Chapters** 04 §5.1, §5.3, §11
+- **Why M7:** M2, where the test was written (#21), is closed. The test passes today and `fil` behaves correctly;
+  only the proof is missing, so nothing user-facing waits for it. M5 is about scan speed against the F-043 budget,
+  which this test is not part of; M7 holds the remaining polish.
+- **Acceptance**
+  - `grep -n '"/bin/sleep"' Tests/CleanCoreTests/ToolTests.swift` finds nothing; the test writes a fixture script
+    (`exec /bin/sleep 60`, mode 755) that `locate` returns for every tool.
+  - The test checks that all seven cache tools have a note ending `timed out after 1 s; using the default
+    location`, that elapsed ≥ 1 s, and that elapsed < 3.5 s (half of 7 queries × 1 s in a row).
+  - `swift test --filter CleanCoreTests.TimeoutTests` passes five times in a row.
+  - With `CacheTools.discover` changed locally to await each query in turn (not committed), the test fails.
