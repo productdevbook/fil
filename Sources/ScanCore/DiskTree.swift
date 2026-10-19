@@ -640,20 +640,76 @@ public final class DiskTree: @unchecked Sendable {
 /// First-child / next-sibling lists over `nodes`, kept across updates: appended nodes are linked by `syncLinks`,
 /// dead nodes stay in their old parent's list and are skipped (their `parent` no longer matches).
 /// Built in one pass without hashing; rebuilt only after `compact` renumbers the nodes.
+/// A child's id is larger than every id appended before it, so each list runs from the newest child to the oldest.
 fileprivate final class ChildLinks: @unchecked Sendable {
     let lock = NSLock()
     var first: [Int32] = []
     var next: [Int32] = []
+    /// Name indexes of the directories in which a lookup walked more than `DiskTree.nameIndexThreshold` siblings.
+    var names: [Int32: NameIndex] = [:]
 
     func reset() {
         lock.lock()
         first = []
         next = []
+        names = [:]
         lock.unlock()
     }
 }
 
+/// The children of one directory by name: open addressing with linear probing over child ids. The hash is Swift's
+/// `String` hash, which canonically equivalent spellings (NFC and NFD `é`) share, so one probe sequence finds both a
+/// byte-equal and an equivalent name, and a `Substring` hashes like the `String` it spells: a lookup allocates nothing.
+/// Children are only added (by `syncLinks`); a dead one stays until the table is rebuilt, and a lookup skips it because
+/// its `parent` no longer matches. Names never change in place: a rename is a dead node plus a new one.
+fileprivate struct NameIndex {
+    /// Child id per slot, -1 when empty; `hashes` holds its name's hash.
+    private(set) var ids: [Int32]
+    private(set) var hashes: [Int]
+    /// Occupied slots, dead children included.
+    private var used = 0
+
+    init(capacityFor count: Int) {
+        // At most half full when built; grown (rebuilt) past 3/4.
+        var capacity = 64
+        while capacity < 2 * count { capacity *= 2 }
+        ids = [Int32](repeating: -1, count: capacity)
+        hashes = [Int](repeating: 0, count: capacity)
+    }
+
+    var isFull: Bool { 4 * used >= 3 * ids.count }
+
+    mutating func insert(_ id: Int32, hash: Int) {
+        let mask = ids.count - 1
+        var i = hash & mask
+        while ids[i] >= 0 { i = (i + 1) & mask }
+        ids[i] = id
+        hashes[i] = hash
+        used += 1
+    }
+
+    /// Calls `body` with each child id stored under `hash`.
+    func forEach(hash: Int, _ body: (Int32) -> Void) {
+        let mask = ids.count - 1
+        var i = hash & mask
+        while ids[i] >= 0 {
+            if hashes[i] == hash { body(ids[i]) }
+            i = (i + 1) & mask
+        }
+    }
+}
+
+@inline(__always)
+private func nameHash(_ name: some StringProtocol) -> Int {
+    var h = Hasher()
+    h.combine(name)
+    return h.finalize()
+}
+
 extension DiskTree {
+    /// A lookup that walks more siblings than this builds the directory's name index (`NameIndex`).
+    static let nameIndexThreshold = 32
+
     /// Links every node appended since the last call. Must not run concurrently with a mutation of `nodes`.
     func syncLinks() {
         links.lock.lock()
@@ -678,7 +734,32 @@ extension DiskTree {
                 }
             }
         }
+        // New children of an indexed directory go into its index (none in most updates: no index exists).
+        guard !links.names.isEmpty else { return }
+        var rebuilt = Set<Int32>()  // a rebuild takes every child already linked, the ones still to come included
+        for i in max(start, 1)..<nodes.count {
+            let p = nodes[i].parent
+            guard p >= 0, links.names[p] != nil, !rebuilt.contains(p) else { continue }
+            if links.names[p]!.isFull {
+                buildNameIndex(p)
+                rebuilt.insert(p)
+            } else {
+                links.names[p]!.insert(Int32(i), hash: nameHash(nodes[i].name))
+            }
+        }
     }
+
+    /// (Re)builds the name index of `id` from its live children.
+    private func buildNameIndex(_ id: Int32) {
+        var children: [Int32] = []
+        forEachChild(of: id) { children.append($0) }
+        var index = NameIndex(capacityFor: children.count)
+        for c in children { index.insert(c, hash: nameHash(nodes[Int(c)].name)) }
+        links.names[id] = index
+    }
+
+    /// `id` has a name index (tests).
+    func hasNameIndex(of id: Int32) -> Bool { links.names[id] != nil }
 
     /// Calls `body` with every live child of `id`. Requires `syncLinks` since the last append.
     func forEachChild(of id: Int32, _ body: (Int32) -> Void) {
@@ -692,19 +773,42 @@ extension DiskTree {
     /// The live child of `id` called `name`. Requires `syncLinks` since the last append.
     /// Names are compared by their UTF-8 bytes first: `String` equality treats NFC and NFD forms as one name, and both
     /// can exist side by side on some volumes. A path from outside the listing (an event, a typed path) may use another
-    /// normalization than the disk; when no name matches byte for byte, a canonically equal one is taken.
-    func child(of id: Int32, named name: String) -> Int32? {
+    /// normalization than the disk; when no name matches byte for byte, a canonically equal one is taken. Among several
+    /// matches the newest child wins (the first in its list).
+    /// A directory with many children gets a name index the first time a lookup walks more than `nameIndexThreshold`
+    /// siblings; from then on a lookup there costs one hash of `name` and a short probe. Allocates no `String`.
+    func child(of id: Int32, named name: some StringProtocol) -> Int32? {
+        if let index = links.names[id] {
+            var exact: Int32 = -1
+            var equivalent: Int32 = -1
+            index.forEach(hash: nameHash(name)) { c in
+                guard nodes[Int(c)].parent == id, c > exact else { return }
+                if nodes[Int(c)].name.utf8.elementsEqual(name.utf8) {
+                    exact = c
+                } else if c > equivalent && nodes[Int(c)].name == name {
+                    equivalent = c
+                }
+            }
+            return exact >= 0 ? exact : equivalent >= 0 ? equivalent : nil
+        }
+        var exact: Int32?
         var equivalent: Int32?
+        var walked = 0
         var c = links.first[Int(id)]
         while c >= 0 {
+            walked += 1
             let n = nodes[Int(c)]
             if n.parent == id {
-                if n.name.utf8.elementsEqual(name.utf8) { return c }
+                if n.name.utf8.elementsEqual(name.utf8) {
+                    exact = c
+                    break
+                }
                 if equivalent == nil && n.name == name { equivalent = c }
             }
             c = links.next[Int(c)]
         }
-        return equivalent
+        if walked > Self.nameIndexThreshold { buildNameIndex(id) }
+        return exact ?? equivalent
     }
 
     /// Node id of the directory at `path` (absolute, inside `rootPath`), or nil when it is not in the tree.
@@ -719,7 +823,7 @@ extension DiskTree {
         syncLinksLocked()
         var cur: Int32 = 0
         for c in comps {
-            guard let n = child(of: cur, named: String(c)) else { return nil }
+            guard let n = child(of: cur, named: c) else { return nil }
             cur = n
         }
         return Int(cur)

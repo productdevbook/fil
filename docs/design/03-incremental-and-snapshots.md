@@ -688,7 +688,7 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   snapshot and `computeTotals` (load), the first `syncLinks` after a load, and `compact`, encoding and the atomic
   write (`save`). On the 1 M-file fixture (21 k folders) these are 1.6 + 0.5 + 0.5 ms (load), 0.3 ms (links) and
   1.7 ms (save), about 1% of the update. Profile of one bench update after 1,000 changes (`FIL_TIMINGS=1`, load 4.5):
-  history 181 ms, `apply.map` 22 ms (sibling walks, #17), `apply.reread(481)` 329 ms, everything else under 1 ms. The
+  history 181 ms, `apply.map` 22 ms (mostly path handling), `apply.reread(481)` 329 ms, everything else under 1 ms. The
   cost is listing the changed folders again: 1,000 changes spread over the tree touch about 480 folders, and most of
   them are 2,000-file folders, so about 40% of the tree's entries are listed again. Directory-level events give no
   cheaper way to do this, and `DirNode` keeps no per-file sizes. So the issue's "5x faster" target is not met on
@@ -700,6 +700,13 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   | Full scan, 0.996 M files | 1.88 s (1.93 / 1.88 / 1.86) | 1.87 s (1.87 / 1.91 / 1.87) |
   | Update after 1,000 changes | 0.46 s (0.54 / 0.46 / 0.40) | 0.41 s (0.37 / 0.41 / 0.41) |
   | Incremental = `--full`, alloc = `du` | 9 of 9 | 9 of 9 |
+
+- #17 (2026-10-19): §5.1 is built with a hash table over child ids instead of `[String: Int32]` (chapter 01 As
+  built: NFC and NFD siblings stay apart, lookups allocate nothing). On the 1 M-file bench fixture `apply.map` is
+  10-13 ms for about 500 events with or without the index (`FIL_TIMINGS=1`, #16 and #17 alternating): its folders
+  hold at most about 940 children, and the time goes to path handling, not to lookups. `scripts/bench.sh --wide` adds
+  the §10-style check for this issue: 10,000 events in one folder of 100,000 subfolders take 0.51 s (median; 9.24 s
+  before).
 
 ## Glossary additions
 

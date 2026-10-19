@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Scan benchmark for fil: full scan (3x, interleaved with du -skx) and incremental update after 1,000 changes
 # (3 rounds), on a generated fixture of at least 1 M files. Budget: docs/design/01-scan-engine.md section 12.
-# Usage: scripts/bench.sh [--files N] [--keep] [--reuse DIR] [--fil PATH]
+# Usage: scripts/bench.sh [--files N] [--wide] [--keep] [--reuse DIR] [--fil PATH]
 #   --files N    fixture size in files (default 1000000)
+#   --wide       instead: one folder of 100,000 subfolders, 3 updates of 10,000 events each (budget: < 1 s each)
 #   --keep       keep the bench directory (fixture, snapshots) on exit
 #   --reuse DIR  use an earlier kept /private/tmp/fil-bench.* directory whose marker says it is complete
 #   --fil PATH   fil binary (default .build/release/fil)
@@ -18,14 +19,18 @@ PREFIX=/private/tmp/fil-bench.
 FSEVENTS_WAIT=4
 JOBS=8
 FIXTURE_VERSION=2
+WIDE=0
+WIDE_CHILDREN=100000
+WIDE_EVENTS=10000
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --files) FILES=${2:?--files needs a number}; shift 2 ;;
+    --wide) WIDE=1; shift ;;
     --keep) KEEP=1; shift ;;
     --reuse) REUSE=${2:?--reuse needs a directory}; KEEP=1; shift 2 ;;
     --fil) FIL=${2:?--fil needs a path}; shift 2 ;;
-    -h|--help) sed -n '2,10p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -136,7 +141,9 @@ build_fixture() {
 
 T0=$SECONDS
 FIXTURE_NOTE=reused
-if [[ -f $MARKER && "$(cat "$MARKER")" == "version=$FIXTURE_VERSION files=$FILES" ]]; then
+if [[ $WIDE -eq 1 ]]; then
+  : # the wide fixture is built below
+elif [[ -f $MARKER && "$(cat "$MARKER")" == "version=$FIXTURE_VERSION files=$FILES" ]]; then
   echo "fixture: reusing $FIX"
 else
   echo "fixture: building $FILES files under $FIX"
@@ -145,7 +152,7 @@ else
   FIXTURE_NOTE=built
 fi
 FIXTURE_SECS=$((SECONDS - T0))
-echo "fixture: $FIXTURE_NOTE in ${FIXTURE_SECS}s, load: $(sysctl -n vm.loadavg)"
+[[ $WIDE -eq 1 ]] || echo "fixture: $FIXTURE_NOTE in ${FIXTURE_SECS}s, load: $(sysctl -n vm.loadavg)"
 
 # ---------------------------------------------------------------- measuring
 
@@ -164,6 +171,70 @@ parse() {
   P_mode=${BASH_REMATCH[1]} P_alloc=${BASH_REMATCH[2]} P_logical=${BASH_REMATCH[3]}
   P_files=${BASH_REMATCH[4]} P_dirs=${BASH_REMATCH[5]}
 }
+
+# ---------------------------------------------------------------- --wide: child lookup in a folder of 100,000
+
+# One folder with WIDE_CHILDREN subfolders. Each round adds one file in WIDE_EVENTS of them (every tenth, shifted per
+# round), so the update replays WIDE_EVENTS events whose paths all resolve through the wide folder (issue #17).
+if [[ $WIDE -eq 1 ]]; then
+  WFIX="$BENCH/wide/fixture"
+  WMARKER="$BENCH/wide/complete"
+  T0=$SECONDS
+  if [[ -f $WMARKER && "$(cat "$WMARKER")" == "children=$WIDE_CHILDREN" ]]; then
+    echo "wide fixture: reusing $WFIX"
+  else
+    echo "wide fixture: building $WIDE_CHILDREN subfolders under $WFIX/w"
+    rm -rf -- "$BENCH/wide"
+    mkdir -p "$WFIX/w"
+    awk -v d="$WFIX/w" -v n="$WIDE_CHILDREN" 'BEGIN { for (i = 0; i < n; i++) printf "%s/c%06d\n", d, i }' |
+      xargs -n 4000 -P 4 mkdir
+    printf 'children=%s\n' "$WIDE_CHILDREN" > "$WMARKER"
+  fi
+  echo "wide fixture: ready in $((SECONDS - T0))s, load: $(sysctl -n vm.loadavg)"
+  find "$WFIX/w" -name 'benchwide-*' -type f -delete
+  echo "--- updates ($WIDE_EVENTS events in a folder of $WIDE_CHILDREN subfolders, 3 rounds, each compared with --full)"
+  WIDE_T=()
+  for r in 1 2 3; do
+    "$FIL" scan "$WFIX" --full -j "$JOBS" --top 0 --porcelain > /dev/null
+    sleep "$FSEVENTS_WAIT"
+    awk -v d="$WFIX/w" -v n="$WIDE_EVENTS" -v step="$((WIDE_CHILDREN / WIDE_EVENTS))" -v r="$r" \
+      'BEGIN { for (k = 0; k < n; k++) printf "%s/c%06d/benchwide-r%d\n", d, k * step + r - 1, r }' |
+      xargs -n 4000 touch
+    sleep "$FSEVENTS_WAIT"
+    timed "$FIL" scan "$WFIX" -j "$JOBS" --top 0 --porcelain
+    parse "$T_OUT" || continue
+    inc_mode=$P_mode inc_alloc=$P_alloc inc_files=$P_files inc_dirs=$P_dirs inc_logical=$P_logical
+    full_out=$("$FIL" scan "$WFIX" --full -j "$JOBS" --top 0 --porcelain)
+    parse "$full_out" || continue
+    du_kb=$(du -skx "$WFIX" | awk '{ print $1 }')
+    verdict=ok
+    if [[ $inc_mode != incremental ]]; then
+      verdict=FELL-BACK
+      fail "wide update $r ran as $inc_mode, not incremental"
+    fi
+    if [[ $inc_alloc -ne $P_alloc || $inc_files -ne $P_files || $inc_dirs -ne $P_dirs || $inc_logical -ne $P_logical ]]; then
+      verdict=DIFFERS
+      fail "wide update $r: incremental alloc/logical/files/dirs $inc_alloc/$inc_logical/$inc_files/$inc_dirs, full $P_alloc/$P_logical/$P_files/$P_dirs"
+    fi
+    if [[ $inc_alloc -ne $((du_kb * 1024)) ]]; then
+      verdict=MISMATCH
+      fail "wide update $r: alloc $inc_alloc != du*1024 $((du_kb * 1024))"
+    fi
+    WIDE_T+=("$T_REAL")
+    echo "update $r: ${T_REAL}s mode=$inc_mode files=$inc_files dirs=$inc_dirs (full: $P_files, $P_dirs) $verdict"
+  done
+  [[ ${#WIDE_T[@]} -gt 0 ]] || { echo "RESULT: no measurements"; exit 1; }
+  wide_med=$(printf '%s\n' "${WIDE_T[@]}" | median)
+  echo
+  echo "=== medians"
+  echo "machine:           $(sysctl -n hw.model), $(sysctl -n hw.ncpu) cpu, $(($(sysctl -n hw.memsize) / 1073741824)) GB, macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
+  echo "load average:      $(sysctl -n vm.loadavg)"
+  echo "wide update:       ${wide_med} s ($WIDE_EVENTS events, $WIDE_CHILDREN subfolders; budget < 1 s)"
+  if awk -v t="$wide_med" 'BEGIN { exit !(t >= 1) }'; then fail "wide update median ${wide_med}s is not under 1 s"; fi
+  if [[ $FAILS -gt 0 ]]; then echo "RESULT: $FAILS check(s) FAILED"; exit 1; fi
+  echo "RESULT: all checks passed"
+  exit 0
+fi
 
 # Pre-clean for a kept fixture: put back files an earlier run deleted, drop its additions.
 xargs -n 500 touch < "$LISTS/victims.txt"

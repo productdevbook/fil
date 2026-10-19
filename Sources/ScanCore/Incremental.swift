@@ -214,7 +214,7 @@ public enum Incremental {
             guard let comps = relativeComponents(e.path, prefixes: prefixes, aliases: aliases) else { continue }
             var id: Int32 = 0
             for c in comps {
-                guard let child = tree.child(of: id, named: String(c)) else { break }
+                guard let child = tree.child(of: id, named: c) else { break }
                 id = child
             }
             if e.mustScanSubDirs { full.insert(id) } else { shallow.insert(id) }
@@ -513,7 +513,7 @@ public enum Incremental {
             var parent: Int32 = 0
             var found = true
             for c in comps.dropLast() {
-                guard let child = tree.child(of: parent, named: String(c)) else {
+                guard let child = tree.child(of: parent, named: c) else {
                     found = false
                     break
                 }
@@ -522,7 +522,7 @@ public enum Incremental {
             guard found else { continue }
             let name = String(last)
             current.insert(MountPoint(parent: parent, name: name))
-            guard let id = tree.child(of: parent, named: name) else { continue }
+            guard let id = tree.child(of: parent, named: last) else { continue }
             var st = stat()
             if lstat(path, &st) == 0 && st.st_dev == tree.rootDev { continue }
             out.mounted.append(id)
@@ -608,7 +608,7 @@ public enum Incremental {
             var dir: Int32 = 0
             var found = true
             for c in comps.dropLast() {
-                guard let child = tree.child(of: dir, named: String(c)) else { found = false; break }
+                guard let child = tree.child(of: dir, named: c) else { found = false; break }
                 dir = child
             }
             guard found, !tree.nodes[Int(dir)].isDead, !tree.nodes[Int(dir)].unreadable, settled(dir),

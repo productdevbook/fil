@@ -577,6 +577,27 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
   <= 60 s: not measured (the harness stays inside its fixture); per-file and per-directory costs and `--private`: not
   measurable from outside (code review or `FIL_TIMINGS`). The incremental figure has no budget line. Elapsed time
   includes process start and snapshot load and save.
+- #17 (2026-10-19): built as §5.5 / chapter 03 §5.1, with one reading. The index is not a `[String: Int32]`. A
+  `String` key would merge NFC and NFD siblings into one entry and needs a `String` per lookup. Instead,
+  `ChildLinks.names[parent]` is a `NameIndex`: open addressing with linear probing over child ids, keyed by Swift's
+  `String` hash of the name. Canonically equivalent spellings share that hash, and a `Substring` hashes like the
+  `String` it spells. So one probe sequence finds the byte-equal child (preferred) and the canonically equal one
+  (fallback), exactly as the sibling walk did: the newest match wins, and a lookup allocates nothing.
+  `child(of:named:)` takes `some StringProtocol`; `node(at:)`, the event mapping, `mountChanges` and `adoptOriginals`
+  pass `Substring` components. The index is built the first time a lookup walks more than 32 siblings
+  (`DiskTree.nameIndexThreshold`), also when that walk found its name. `syncLinks` inserts appended children into
+  existing indexes and rebuilds an index from the live children past 3/4 full. Dead children stay in the table until
+  that rebuild and are skipped by their `parent`. A rename is a dead node plus a new one, so names never change in
+  place. `compact` drops every index. Raw-byte names (#6) are looked up by their display form, as before. Memory:
+  `DirNode` is unchanged (96 bytes). An index costs 12 bytes per slot, 2 to 4 slots per child, only for folders with
+  more than 32 children that a lookup walked, and only in updated or looked-up trees (about 3 MB for 100 k children).
+  A full scan builds none. `scripts/bench.sh --wide`: one folder of 100,000 subfolders and 10,000 events per update
+  (budget < 1 s), baseline `f2be7c9` and #17 alternating, 2 runs of 3 updates each, load average 3-8. Before:
+  9.24 s median of the incremental updates (10.21 / 9.22 / 9.20 / 9.27). After: 0.51 s (0.56 / 0.48 / 0.51 / 0.52 /
+  0.51), of which `apply.map` takes 55-61 ms for 10,000 events (`FIL_TIMINGS=1`). Three of the 12 updates (2 with the
+  baseline, 1 with #17, each the first or last of a run) fell back to a full scan. The porcelain line does not say
+  why. Nine more runs with `-v` all stayed incremental; reading: FSEvents under load, unrelated to the lookup.
+  Main bench, same alternation, 3 runs each: full scan 1.89 s before, 1.85 s after; update 0.41 s in both.
 - #16 (2026-10-19): built as §6.4 with these readings. (1) The index is not a `[Int32: [UInt64]]` but
   `RegistryIndex`: one flat key array grouped by directory id (a counting sort, two passes) plus a small dictionary for
   keys recorded later. A dictionary of arrays cost more to build (6.6 ms for 100 k links) than the whole-table
