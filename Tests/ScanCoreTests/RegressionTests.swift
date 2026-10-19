@@ -202,6 +202,30 @@ struct UpdateFailureTests {
         }
     }
 
+    @Test("historyGap: a log that misses everything up to the pre-marker fails the update (#51)")
+    func historyGap() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("a/b", bytes: 5000)
+                let tree = try loadedTree(f.root, in: dir)
+                // New files in an existing folder: only the dropped events say that `a` must be read again.
+                for i in 0..<5 { try f.mk("a/new\(i)", bytes: 0) }
+                var o = ScanOptions()
+                o.faults.history.dropThroughPreMarker = true
+                o.faults.history.barrierLimit = 1
+                let result = Incremental.update(tree, options: o)
+                let full = try Scanner.scan(f.root)
+                guard case .historyGap? = failure(result) else {
+                    let got = failure(result).map { "\($0)" } ?? "success"
+                    Issue.record(
+                        "expected historyGap, got \(got): files \(tree.root.totalFiles), full \(full.root.totalFiles)")
+                    return
+                }
+                #expect(UpdateFailure.historyGap.description == "history gap (pre-marker event not delivered)")
+            }
+        }
+    }
+
     @Test("after a failed update the tree is released and can be updated again")
     func failureReleasesTheTree() throws {
         try withSnapshotDir { dir in

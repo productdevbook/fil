@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Scan benchmark for fil: full scan (3x, interleaved with du -skx) and incremental update after 1,000 changes
 # (3 rounds), on a generated fixture of at least 1 M files. Budget: docs/design/01-scan-engine.md section 12.
-# Usage: scripts/bench.sh [--files N] [--wide] [--links N] [--keep] [--reuse DIR] [--fil PATH]
+# Usage: scripts/bench.sh [--files N] [--wide] [--links N] [--rounds N] [--wait S] [--keep] [--reuse DIR] [--fil PATH]
 #   --files N    fixture size in files (default 1000000)
 #   --wide       instead: one folder of 100,000 subfolders, 3 updates of 10,000 events each (budget: < 1 s each)
 #   --links N    instead: N hard links (N/2 files of three names, 250 per folder), 5 full scans and 3 updates
+#   --rounds N   N update rounds instead of 3 (the change sets repeat); a full-scan fallback is allowed and counted,
+#                with its reason (FIL_TIMINGS), but an update that differs from --full still fails (issue #51)
+#   --wait S     seconds to let fseventsd settle before and after each round's changes (default 4; 0 under load
+#                is the #51 check)
 #   --keep       keep the bench directory (fixture, snapshots) on exit
 #   --reuse DIR  use an earlier kept /private/tmp/fil-bench.* directory whose marker says it is complete
 #   --fil PATH   fil binary (default .build/release/fil)
@@ -25,6 +29,7 @@ WIDE_CHILDREN=100000
 WIDE_EVENTS=10000
 LINKS=0
 LINKS_PER_DIR=250
+ROUNDS=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,13 +39,18 @@ while [[ $# -gt 0 ]]; do
     --reuse) REUSE=${2:?--reuse needs a directory}; KEEP=1; shift 2 ;;
     --fil) FIL=${2:?--fil needs a path}; shift 2 ;;
     --links) LINKS=${2:?--links needs a number}; shift 2 ;;
-    -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    --rounds) ROUNDS=${2:?--rounds needs a number}; shift 2 ;;
+    --wait) FSEVENTS_WAIT=${2:?--wait needs a number of seconds}; shift 2 ;;
+    -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 [[ $FILES =~ ^[0-9]+$ && $FILES -ge 20000 ]] || { echo "--files needs a number >= 20000" >&2; exit 2; }
 [[ $LINKS =~ ^[0-9]+$ && ($LINKS -eq 0 || $LINKS -ge 2000) ]] || { echo "--links needs a number >= 2000" >&2; exit 2; }
 [[ $WIDE -eq 0 || $LINKS -eq 0 ]] || { echo "--wide and --links are separate modes" >&2; exit 2; }
+[[ $ROUNDS =~ ^[0-9]+$ ]] || { echo "--rounds needs a number" >&2; exit 2; }
+[[ $ROUNDS -eq 0 || ($WIDE -eq 0 && $LINKS -eq 0) ]] || { echo "--rounds is for the default mode" >&2; exit 2; }
+[[ $FSEVENTS_WAIT =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "--wait needs a number of seconds" >&2; exit 2; }
 [[ -x $FIL ]] || { echo "no fil binary at $FIL (swift build -c release)" >&2; exit 2; }
 
 if [[ -n $REUSE ]]; then
@@ -354,25 +364,40 @@ done
 
 # ---------------------------------------------------------------- incremental updates
 
-# Round R: 300 deletes, 300 modifications (4 KB appended) and 400 additions, spread over the tree.
+# Round R uses change set K = 1..3: 300 deletes, 300 modifications (4 KB appended) and 400 additions, spread over the
+# tree. Added files are named after the round.
 apply_changes() {
-  local r=$1 lo=$(((r - 1) * 300 + 1)) hi=$((r * 300))
+  local r=$1 k=$2 lo=$((($2 - 1) * 300 + 1)) hi=$(($2 * 300))
   sed -n "${lo},${hi}p" "$LISTS/victims.txt" | xargs -n 500 rm -f
   sed -n "${lo},${hi}p" "$LISTS/mods.txt" |
     xargs -n 100 sh -c 'for f; do head -c 4096 /dev/zero >> "$f"; done' _
-  sed -n "$(((r - 1) * 400 + 1)),$((r * 400))p" "$LISTS/adddirs.txt" |
+  sed -n "$(((k - 1) * 400 + 1)),$((k * 400))p" "$LISTS/adddirs.txt" |
     awk -v r="$r" '{ printf "%s/benchadd-r%s-%d\n", $0, r, NR }' | xargs -n 500 touch
 }
 
-echo "--- incremental updates (3 rounds x 1,000 changes, each compared with --full)"
+NROUNDS=$((ROUNDS > 0 ? ROUNDS : 3))
+echo "--- incremental updates ($NROUNDS rounds x 1,000 changes, each compared with --full; wait ${FSEVENTS_WAIT}s)"
 INC_T=()
-for r in 1 2 3; do
+FELLBACK=0 DIFFERED=0 PRE_LIVE=0
+for r in $(seq 1 "$NROUNDS"); do
+  k=$(((r - 1) % 3 + 1))
+  # A repeated change set first puts back its deleted files and drops older additions.
+  if [[ $r -gt 3 ]]; then
+    sed -n "$(((k - 1) * 300 + 1)),$((k * 300))p" "$LISTS/victims.txt" | xargs -n 500 touch
+    find "$FIX" -name 'benchadd-*' -type f -delete
+  fi
   # Start every round from a fresh snapshot of the current tree.
   "$FIL" scan "$FIX" --full -j "$JOBS" --top 0 --porcelain > /dev/null
   sleep "$FSEVENTS_WAIT"
-  apply_changes "$r"
+  apply_changes "$r" "$k"
   sleep "$FSEVENTS_WAIT"
-  timed "$FIL" scan "$FIX" -j "$JOBS" --top 0 --porcelain
+  # The fallback reason and the pre-marker's phase come from FIL_TIMINGS, only in --rounds (it costs a little time).
+  FIL_TIMINGS=$((ROUNDS > 0 ? 1 : 0)) /usr/bin/time -l -o "$BENCH/out/time.txt" "$FIL" scan "$FIX" -j "$JOBS" --top 0 --porcelain \
+    > "$BENCH/out/inc.txt" 2> "$BENCH/out/inc-timings.txt" || true
+  T_OUT=$(cat "$BENCH/out/inc.txt")
+  T_REAL=$(awk '/ real / { print $1; exit }' "$BENCH/out/time.txt")
+  why=$(sed -n 's/^\[timing\] update\.failed //p' "$BENCH/out/inc-timings.txt" | head -1)
+  grep -q '^\[timing\] update\.premarker live' "$BENCH/out/inc-timings.txt" && PRE_LIVE=$((PRE_LIVE + 1))
   parse "$T_OUT" || continue
   inc_mode=$P_mode inc_alloc=$P_alloc inc_files=$P_files inc_dirs=$P_dirs inc_logical=$P_logical
   # --full replaces the snapshot, so it runs after the incremental one.
@@ -380,14 +405,17 @@ for r in 1 2 3; do
   parse "$full_out" || continue
   verdict=ok
   if [[ $inc_mode != incremental ]]; then
-    verdict=FELL-BACK
-    fail "update $r ran as $inc_mode, not incremental"
+    verdict="FELL-BACK (${why:-unknown})"
+    FELLBACK=$((FELLBACK + 1))
+    # With --rounds a reported fallback is allowed: it shows nothing stale as current.
+    [[ $ROUNDS -gt 0 ]] || fail "update $r ran as $inc_mode, not incremental"
   fi
   if [[ $inc_alloc -ne $P_alloc || $inc_files -ne $P_files || $inc_dirs -ne $P_dirs || $inc_logical -ne $P_logical ]]; then
     verdict=DIFFERS
+    DIFFERED=$((DIFFERED + 1))
     fail "update $r: incremental alloc/logical/files/dirs $inc_alloc/$inc_logical/$inc_files/$inc_dirs, full $P_alloc/$P_logical/$P_files/$P_dirs"
   fi
-  INC_T+=("$T_REAL")
+  [[ $inc_mode == incremental ]] && INC_T+=("$T_REAL")
   echo "update $r: ${T_REAL}s mode=$inc_mode files=$inc_files (full: $P_files) $verdict"
 done
 
@@ -407,6 +435,9 @@ echo "files in fixture:  $BASE_FILES"
 echo "full scan:         ${full_med} s"
 echo "files per second:  $fps"
 echo "incremental:       ${inc_med} s"
+if [[ $ROUNDS -gt 0 ]]; then
+  echo "update rounds:     $NROUNDS, fell back $FELLBACK, differed $DIFFERED, pre-marker live in $PRE_LIVE"
+fi
 echo "peak RSS:          $((${rss_med%.*} / 1048576)) MB"
 echo "snapshot size:     $((snap_bytes / 1048576)) MB ($snap_bytes bytes)"
 echo "fixture build:     ${FIXTURE_SECS} s ($FIXTURE_NOTE)"

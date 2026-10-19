@@ -853,6 +853,9 @@ struct DirReader {
         var dropHistoryDone = false
         /// The barrier event is never recognised, so the wait for it times out.
         var dropBarrier = false
+        /// Every pre-marker event and every event numbered below the pre-marker's is dropped, in any phase (HistoryDone
+        /// still arrives): a log that misses everything numbered before the stream started.
+        var dropThroughPreMarker = false
         /// OR-ed into the flags of every event of the replay (a `kFSEventStreamEventFlag...` lost-history flag).
         var extraFlags: FSEventStreamEventFlags = 0
     }

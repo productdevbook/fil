@@ -213,6 +213,9 @@ struct IncrementalFSEventsTests {
                     #expect(
                         s.same(Totals(tree), Totals(full)),
                         "\(s.name): incremental \(Totals(tree)) full \(Totals(full))")
+                case .fellBack(.historyGap):
+                    // fseventsd lost part of its log (seen under parallel test load, #51): a full scan is correct.
+                    break
                 case .fellBack(let why):
                     // Allowed only where the strict hard-link rule asks for a full scan.
                     #expect(s.mayFallBack, "\(s.name): update failed: \(why)")
@@ -232,6 +235,8 @@ struct IncrementalFSEventsTests {
                 try s.setup(f)
                 let options = ScanOptions(strictHardlinks: false)
                 let (outcome, full) = try scanChangeUpdate(f, dir: dir, options: options) { try s.change(f) }
+                // fseventsd lost part of its log (#51): a full scan is correct.
+                if case .fellBack(.historyGap) = outcome { return }
                 guard case .incremental(let tree, let report) = outcome else {
                     Issue.record("\(s.name): tolerant update failed: \(outcome)")
                     return

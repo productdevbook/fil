@@ -768,6 +768,31 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   from the first cluster) and is not detected, as before #49; network volumes never update incrementally. Snapshot: section 7 sits after the mount points and before stats, written when any
   node has a non-zero id; `count != nodes` is `corrupt`; a file without it loads with every `fileID = 0`. Tests:
   `FolderIdentityTests` (the incomplete-parent case fails on the old diff).
+- #51 (2026-10-19): §4.2 [Change] is built as specified: `pre/marker` before `FSEventStreamCreate`,
+  `streamFailed("pre-marker: …")`, `UpdateFailure.historyGap` (`-v`: `full scan (incremental not usable: history gap
+  (pre-marker event not delivered))`), and cleanup of `pre/marker` and `pre` before `barrier` and the directory. Facts the
+  chapter did not know, from logging every event of the stream: (1) fseventsd delivers the replay out of id order and
+  delivers some events twice, once in the history and again live. So a barrier-path event is the barrier only when it
+  is live, after the pre-marker, **and numbered above it**: the `mkdir` of `pre` can come again live after the
+  pre-marker. (2) `HistoryFaults.dropThroughPreMarker` drops by id, not by arrival: every pre-marker event and every
+  event numbered below the first one. Without the requirement, the test's update succeeds with 1 file instead of 6.
+  (3) The gap is real outside the bench. In a full `swift test` run (parallel suites plus a release build), one
+  replay returned only HistoryDone: no event of the fixture's changes, no pre-marker, then the barrier live. The
+  update failed with `historyGap`. Before #51 that run would have shown stale counts as current, and the same
+  scenario ("grow existing file") was seen to differ from the full scan. The strict and tolerant scenario tests in
+  `IncrementalFSEventsTests` now accept `historyGap` as a correct fallback.
+  Where it lives: the barrier directory is `$TMPDIR/Fil-fsevents.XXXXXX` (`/var/folders/…/T`), never under the
+  scanned root unless the root holds the temporary folder. It is removed on every return path; a process killed during
+  `fetch` leaves it behind, as before #51. `FIL_TIMINGS=1` prints `update.premarker history|live` and
+  `update.failed <why>`. `scripts/bench.sh --rounds N --wait S` runs N update rounds (the three change sets repeat)
+  and counts reported fallbacks, with their reason, as allowed. Measured: 30 rounds with `--wait 0` and `yes` × 28
+  (load average 47) gave 30 incremental updates equal to `--full`, 0 fallbacks, 0 `DIFFERS`. The pre-marker came
+  live in 18 of them. The baseline binary under the same load also gave 30 of 30, so on this machine the bench did not
+  reproduce the original miss. Cost of an idle update's history step, 30 runs alternating: median 24.0 ms before,
+  25.1 ms after.
+  Open: a pre-marker that comes live proves only the live part. A change numbered at or below the stream start
+  while the pre-marker is numbered after it could still be missing from the log. The logs above saw no such case;
+  they did see events below the start id delivered live.
 
 ## Glossary additions
 
