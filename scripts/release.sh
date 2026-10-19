@@ -41,6 +41,17 @@ codesign --force --options runtime --timestamp --sign "$IDENTITY" \
 codesign --verify --strict --verbose=2 "$STAGE/fil"
 [[ "$("$STAGE/fil" --version)" == "fil $VERSION" ]] || { echo "version check failed" >&2; exit 1; }
 
+# Completions come from the signed binary itself, so they match what ships; the zsh one is named _fil
+# because zsh looks that name up on fpath. The man page is a source file.
+mkdir -p "$STAGE/completions" "$STAGE/man"
+"$STAGE/fil" completion zsh > "$STAGE/completions/_fil"
+"$STAGE/fil" completion bash > "$STAGE/completions/fil.bash"
+"$STAGE/fil" completion fish > "$STAGE/completions/fil.fish"
+for f in _fil fil.bash fil.fish; do
+  [[ -s "$STAGE/completions/$f" ]] || { echo "completions/$f is empty" >&2; exit 1; }
+done
+cp man/fil.1 "$STAGE/man/fil.1"
+
 # notarytool takes a zip; a bare Mach-O cannot be stapled, Gatekeeper checks the ticket online.
 ditto -c -k "$STAGE/fil" "$DIST/$NAME.zip"
 xcrun notarytool submit "$DIST/$NAME.zip" "${NOTARY_AUTH[@]}" --wait
@@ -54,5 +65,5 @@ for i in {1..40}; do
   sleep 30
 done
 
-tar -C "$STAGE" -czf "$DIST/$NAME.tar.gz" fil
+tar -C "$STAGE" -czf "$DIST/$NAME.tar.gz" fil completions man
 (cd "$DIST" && shasum -a 256 "$NAME.tar.gz") | tee "$DIST/$NAME.tar.gz.sha256"

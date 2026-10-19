@@ -102,13 +102,19 @@ jobs:
         id: sum
         run: echo "sha256=$(cut -d' ' -f1 "dist/fil-$VERSION-arm64.tar.gz.sha256")" >> "$GITHUB_OUTPUT"
 
-      # For a tag, `publish` downloads this; for a manual run it is the result to inspect.
+      - name: List the tarball
+        run: tar -tzvf "dist/fil-$VERSION-arm64.tar.gz"
+
+      # For a tag, `publish` downloads this; for a manual run it is the result to inspect: the tarball plus
+      # its completions and man page unpacked, so they can be read without extracting.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release
           path: |
             dist/fil-${{ env.VERSION }}-arm64.tar.gz
             dist/fil-${{ env.VERSION }}-arm64.tar.gz.sha256
+            dist/fil-${{ env.VERSION }}-arm64/completions
+            dist/fil-${{ env.VERSION }}-arm64/man
           if-no-files-found: error
           retention-days: 7
 

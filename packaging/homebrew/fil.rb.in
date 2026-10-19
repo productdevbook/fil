@@ -16,6 +16,10 @@ cask "fil" do
   depends_on macos: :golden_gate
 
   binary "fil"
+  zsh_completion "completions/_fil"
+  bash_completion "completions/fil.bash"
+  fish_completion "completions/fil.fish"
+  manpage "man/fil.1"
 
   zap trash: "~/Library/Caches/com.vucod.Fil/snapshots"
 end

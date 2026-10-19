@@ -918,7 +918,7 @@ the CLA check on Your first pull request".
   v4.6.2, download-artifact v4.3.0), to avoid untested major jumps; Dependabot proposes the majors.
 - #24: `tap` taps `productdevbook/tap` with the deploy key, renders `packaging/homebrew/fil.rb.in` into it, audits
   and installs from the local tap, smoke-tests `fil --version` and `fil scan --porcelain`, then pushes. The
-  template has no completion/man stanzas until #27/#45.
+  template had no completion/man stanzas until #45.
   - v0.2.0 run 39158157151: `tap` failed at the host-key fetch (`curl https://api.github.com/meta` got 403 from the
     runner). The job now has `contents: read` and `GH_TOKEN: ${{ github.token }}` and uses `gh api meta --jq`;
     host keys are still pinned (`StrictHostKeyChecking=yes`), never trust-on-first-use. `/meta` needs no scope;
@@ -934,6 +934,21 @@ the CLA check on Your first pull request".
     through). The tap is now cloned over HTTPS (public repo, no key) and only the final `git push` goes to
     `git@github.com:productdevbook/homebrew-tap.git` (branch `main`) with the deploy key and the pinned
     `known_hosts`, which `GIT_SSH_COMMAND` carries to plain git.
+- #45: the tarball is `fil`, `completions/_fil`, `completions/fil.bash`, `completions/fil.fish`, `man/fil.1`.
+  `scripts/release.sh` writes the three completions with the signed binary (`fil completion zsh|bash|fish`, from
+  #27, not static files as sections 11.3 and 13.5 planned) and copies `man/fil.1`, after the version check and
+  before the archive; the checksum still covers the tarball.
+  - Names: zsh is `_fil`, not the issue's `fil.zsh`. zsh finds a completion by the file name `_fil` on `fpath`, so
+    a user unpacking the tarball by hand can use it as is. Checked in Homebrew's cask source
+    (`cask/artifact/{zsh,bash,fish}completion.rb`): `zsh_completion` renames a source without a leading `_` to
+    `_<basename without extension>`, so `fil.zsh` would also work, but `_fil` needs no rename. `bash_completion`
+    drops the extension (`fil.bash` is installed as `fil`); `fish_completion` keeps `fil.fish`. `manpage` takes the
+    section from `.1`.
+  - Cask stanzas: `zsh_completion "completions/_fil"`, `bash_completion "completions/fil.bash"`,
+    `fish_completion "completions/fil.fish"`, `manpage "man/fil.1"`, next to `binary "fil"`.
+  - `build` lists the tarball (`tar -tzvf`) in its log, and the `release` artifact also holds the unpacked
+    `completions` and `man` directories, so a manual run shows the files without extracting. `publish` still
+    uploads only the tarball and its `.sha256`.
 
 ## Glossary additions
 
