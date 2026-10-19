@@ -442,20 +442,49 @@ struct TimeoutTests {
         }
     }
 
-    @Test("queries run concurrently: three hanging tools cost one timeout, not three")
+    @Test("queries run concurrently: seven hanging tools cost one timeout, not seven")
     func concurrent() async throws {
         try await Fixture.withAsync("tools") { f in
+            // A tool that really hangs: it ignores its arguments and sleeps. The sleep length is unique to this
+            // run, so `pgrep -f` finds exactly the processes this test started.
+            let marker = "60.\(Int.random(in: 100_000...999_999))"
+            try f.mkdir("bin")
+            let script = f.path("bin/hang")
+            try "#!/bin/sh\nexec /bin/sleep \(marker)\n".write(toFile: script, atomically: true, encoding: .utf8)
+            try f.chmod("bin/hang", 0o755)
+
             let env = ToolEnvironment(
-                home: f.root, runner: SystemCommandRunner(), locate: { _ in "/bin/sleep" },
-                timeout: .seconds(1))
+                home: f.root, runner: SystemCommandRunner(), locate: { _ in script }, timeout: .seconds(1))
             let clock = ContinuousClock()
             let start = clock.now
             let answer = await CacheTools.discover(env)
-            // Three queries one after another would take at least 3 s; the margin is for slow CI runners.
-            #expect(clock.now - start < .milliseconds(2500))
-            // `/bin/sleep --cache` and friends fail at once or time out; either way the defaults are used.
-            #expect(answer.value["brew"] == [f.path("Library/Caches/Homebrew")])
-            #expect(answer.value["npm"] == [f.path(".npm/_cacache")])
+            let elapsed = clock.now - start
+
+            #expect(answer.notes.count == CacheTools.all.count)
+            #expect(answer.notes.count == 7)
+            for note in answer.notes {
+                #expect(note.hasSuffix("timed out after 1 s; using the default location"), "\(note)")
+            }
+            #expect(elapsed >= .seconds(1))
+            // Seven queries one after another would take at least 7 s; the margin is for slow CI runners.
+            #expect(elapsed < .milliseconds(3500))
+            #expect(answer.value.paths["brew"] == [f.path("Library/Caches/Homebrew")])
+            #expect(answer.value.paths["npm"] == [f.path(".npm/_cacache")])
+
+            // No sleep outlives the test (pgrep exits 1 when nothing matches); give the kill a moment to land.
+            let deadline = clock.now + .seconds(3)
+            var running = true
+            while running && clock.now < deadline {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+                p.arguments = ["-f", "sleep \(marker)"]
+                p.standardOutput = FileHandle.nullDevice
+                try p.run()
+                p.waitUntilExit()
+                running = p.terminationStatus == 0
+                if running { try await Task.sleep(for: .milliseconds(50)) }
+            }
+            #expect(!running, "a sleep process is still running")
         }
     }
 }
