@@ -336,6 +336,14 @@ Check: `swift test --filter MapCoreTests` passes; `swift build -c release` has n
 
 ## As built
 
+- **#19.** Built as in section 8. `MapSource` gained `totalCloneAware(of:)` and `ownCloneAware(of:)` with no
+  default implementation (section 8.1), so the change is source-breaking for every external conformer: it must
+  add both methods (a tree without clones can return `totalAlloc`/`ownAlloc`). `MapLayouter.build` gained
+  `mode: MapSizeMode = .cloneAware`, which is source-compatible for callers but changes the sizes they get.
+  `MapLayout.seconds` and the `seconds:` initializer parameter are removed (source-breaking). The five literals
+  became `expandMinWidth`, `expandMinHeight`, `labelMinWidth`, `labelMinHeight` and `innerInset`. The `MapSource`
+  and `owner` doc comments were reworded.
+
 ## Glossary additions
 
 - **Squarified treemap**: a treemap whose rectangles are laid out row by row along the shorter side of the free

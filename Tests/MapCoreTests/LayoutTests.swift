@@ -10,6 +10,8 @@ private struct FakeTree: MapSource {
         var parent: Int32
         var own: Int64 = 0
         var safety: Safety?
+        /// Own clone-aware bytes; nil means equal to `own`.
+        var cloneAware: Int64?
     }
     var nodes: [Node]
 
@@ -21,6 +23,10 @@ private struct FakeTree: MapSource {
         nodes[Int(id)].own + children(of: id).reduce(0) { $0 + totalAlloc(of: $1) }
     }
     func ownAlloc(of id: Int32) -> Int64 { nodes[Int(id)].own }
+    func ownCloneAware(of id: Int32) -> Int64 { nodes[Int(id)].cloneAware ?? nodes[Int(id)].own }
+    func totalCloneAware(of id: Int32) -> Int64 {
+        ownCloneAware(of: id) + children(of: id).reduce(0) { $0 + totalCloneAware(of: $1) }
+    }
     func name(of id: Int32) -> String { nodes[Int(id)].name }
     func parent(of id: Int32) -> Int32? { id == 0 ? nil : nodes[Int(id)].parent }
     func safety(of id: Int32) -> Safety? { nodes[Int(id)].safety }
@@ -123,6 +129,103 @@ struct LayoutTests {
         #expect(MapLayouter.build(sample(), node: 0, size: .zero).tiles.isEmpty)
         let empty = FakeTree(nodes: [.init(name: "~", parent: -1)])
         #expect(MapLayouter.build(empty, node: 0, size: size).tiles.isEmpty)
+    }
+
+    private func clones() -> FakeTree {
+        FakeTree(nodes: [
+            .init(name: "~", parent: -1),
+            .init(name: "clones", parent: 0, own: 9_000_000, cloneAware: 3_000_000),
+            .init(name: "plain", parent: 0, own: 5_000_000),
+        ])
+    }
+
+    @Test("clone-aware sizes rank the tree; allocated mode ranks by du")
+    func cloneAwareRanking() {
+        let tree = clones()
+        let top = MapLayouter.build(tree, node: 0, size: size).tiles.filter { $0.depth == 0 }
+        #expect(top.map(\.kind) == [.folder(2), .folder(1)])
+        #expect(top[1].bytes == 3_000_000)
+        #expect(top.reduce(0) { $0 + $1.bytes } == tree.totalCloneAware(of: 0))
+        #expect(tree.totalCloneAware(of: 0) == 8_000_000)
+        let alloc = MapLayouter.build(tree, node: 0, size: size, mode: .allocated).tiles.filter { $0.depth == 0 }
+        #expect(alloc.map(\.kind) == [.folder(1), .folder(2)])
+        #expect(alloc.map(\.bytes) == [9_000_000, 5_000_000])
+    }
+
+    @Test("a clone family is counted once")
+    func cloneFamilyOnce() {
+        // The family's 6 MB is owned by `a`; `b` holds a clone of it and owns nothing.
+        let tree = FakeTree(nodes: [
+            .init(name: "~", parent: -1),
+            .init(name: "a", parent: 0, own: 6_000_000),
+            .init(name: "b", parent: 0, own: 6_000_000, cloneAware: 0),
+        ])
+        let layout = MapLayouter.build(tree, node: 0, size: size)
+        let top = layout.tiles.filter { $0.depth == 0 }
+        #expect(top.map(\.kind) == [.folder(1)])
+        #expect(top.reduce(0) { $0 + $1.bytes } == 6_000_000)
+        #expect(
+            MapLayouter.build(tree, node: 0, size: size, mode: .allocated).tiles.filter { $0.depth == 0 }.count == 2)
+    }
+
+    @Test("a folder with clone-aware size 0 has no tile, except in allocated mode")
+    func cloneAwareZeroFolderHidden() {
+        let tree = FakeTree(nodes: [
+            .init(name: "~", parent: -1),
+            .init(name: "big", parent: 0, own: 5_000_000),
+            .init(name: "cache", parent: 0, own: 4_000_000, cloneAware: 0),
+        ])
+        #expect(MapLayouter.build(tree, node: 0, size: size).tiles.allSatisfy { $0.kind != .folder(2) })
+        #expect(MapLayouter.build(tree, node: 0, size: size, mode: .allocated).tiles.contains { $0.kind == .folder(2) })
+    }
+
+    @Test("the files tile uses clone-aware bytes by default")
+    func cloneAwareFilesTile() {
+        let tree = FakeTree(nodes: [
+            .init(name: "~", parent: -1, own: 2_000_000, cloneAware: 500_000),
+            .init(name: "d", parent: 0, own: 1_000_000),
+        ])
+        let files = MapLayouter.build(tree, node: 0, size: size).tiles.first { $0.kind == .files && $0.depth == 0 }
+        #expect(files?.bytes == 500_000)
+    }
+
+    @Test("a root with clone-aware size 0 gives no tiles by default")
+    func cloneAwareEmptyRoot() {
+        let tree = FakeTree(nodes: [.init(name: "~", parent: -1, own: 1_000_000, cloneAware: 0)])
+        #expect(MapLayouter.build(tree, node: 0, size: size).tiles.isEmpty)
+        #expect(!MapLayouter.build(tree, node: 0, size: size, mode: .allocated).tiles.isEmpty)
+    }
+
+    private func folderTiles(width: CGFloat, height: CGFloat) -> [MapTile] {
+        let tree = FakeTree(nodes: [
+            .init(name: "~", parent: -1),
+            .init(name: "f", parent: 0),
+            .init(name: "g", parent: 1, own: 1_000_000),
+            .init(name: "h", parent: 1, own: 1_000_000),
+        ])
+        return MapLayouter.build(tree, node: 0, size: CGSize(width: width, height: height)).tiles
+    }
+
+    @Test("a folder expands only from 60 x 40 points")
+    func expandThreshold() {
+        #expect(folderTiles(width: 59, height: 100).first?.expanded == false)
+        #expect(folderTiles(width: 100, height: 39).first?.expanded == false)
+        let ok = folderTiles(width: 60, height: 40)
+        #expect(ok.first?.expanded == true)
+        #expect(ok.contains { $0.depth == 1 })
+    }
+
+    @Test("small depth-1 tiles carry no size text")
+    func smallLabels() {
+        var nodes: [FakeTree.Node] = [.init(name: "~", parent: -1), .init(name: "f", parent: 0)]
+        for i in 0..<30 { nodes.append(.init(name: "c\(i)", parent: 1, own: Int64(1_000_000 * (i + 1)))) }
+        let tiles = MapLayouter.build(FakeTree(nodes: nodes), node: 0, size: CGSize(width: 200, height: 150)).tiles
+        let inner = tiles.filter { $0.depth == 1 }
+        #expect(!inner.isEmpty)
+        for t in inner {
+            let small = t.rect.width < MapLayouter.labelMinWidth || t.rect.height < MapLayouter.labelMinHeight
+            #expect(t.sizeText.isEmpty == small)
+        }
     }
 
     @Test("tile ids are their positions")
