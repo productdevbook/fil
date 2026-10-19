@@ -39,11 +39,16 @@ public enum Scanner {
             crossDevices: options.crossDevices, nodes: [DirNode(parent: -1, name: path)], eventId: eventId,
             volumeUUID: volumeUUID(st.st_dev), scanStart: scanStart, hardlinks: HardlinkRegistry(),
             clones: CloneRegistry(), aliases: options.firmlinks.aliases(for: path))
+        // Laps (FIL_TIMINGS=1) go around whole phases; with timings off no clock is read.
+        var t = Timings.enabled ? Timings.Lap("scan") : nil
         _ = rescanSubtrees([0], in: tree, options: options, progress: progress)
         // Folders that vanished during the walk are dead nodes; nothing else may see them.
         tree.compact()
+        t?.lap("walk")
         _ = applyPreferredOriginals(tree)
+        t?.lap("originals")
         tree.computeTotals()
+        t?.lap("totals")
         return tree
     }
 

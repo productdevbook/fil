@@ -503,7 +503,7 @@ prints `[timing] <scope>.<name> <ms with 1 decimal> ms` to stderr, measuring sin
 (`ContinuousClock`). Scopes in use: `update`, `apply`, `save`, `load`. Disabled cost: one `Bool` check per lap.
 The CLI's `-v` timing line is separate (`Scan.swift`) and always available.
 
-**[New]** The full scan gets laps too, scope `scan`: `walk` (after `rescanSubtrees`), `originals` (after
+**[Exists]** (#44) The full scan gets laps too, scope `scan`: `walk` (after `rescanSubtrees`), `originals` (after
 `applyPreferredOriginals`), `totals` (after `computeTotals`). Needed to attribute regressions in section 12.
 
 ## 12. Performance budget
@@ -545,6 +545,11 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
 
 ## As built
 
+- #44 (2026-10-19): `Scanner.scan` prints `[timing] scan.walk`, `scan.originals` and `scan.totals` with
+  `FIL_TIMINGS=1` (`walk` includes `compact()`). With timings off the `Lap` is never created, so no clock is read;
+  laps surround phases only. `--timings` (list/clean) is the CLI's own phase report and independent of
+  `FIL_TIMINGS`; chapter 05 does not link them, so they stay separate (a reading). Test:
+  `SnapshotCLITests.fullScanPrintsEngineLapsWithFILTimings`.
 - #43 (2026-10-19): `scripts/bench.sh` builds a deterministic fixture of 1,000,000 file names under
   `/private/tmp/fil-bench.*` (37 s with `mkdir -p`/`touch`/`cp`/`ln` batched by `xargs`): 40% in wide folders (2,000
   files each), 30% in 16-deep chains, 30% in a three-level tree; one file in eight holds 1-8 KB; 5,000 plain 1-64 KB

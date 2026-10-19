@@ -23,6 +23,21 @@ struct SnapshotCLITests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: snap).filter { $0.hasSuffix(".bin") }.count == 2)
     }
 
+    @Test func fullScanPrintsEngineLapsWithFILTimings() throws {
+        let dir = try ErrorHandlingTests.tempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let root = dir + "/root", snap = dir + "/snap"
+        try FileManager.default.createDirectory(atPath: root + "/a", withIntermediateDirectories: true)
+        try Data(count: 4096).write(to: URL(fileURLWithPath: root + "/a/file"))
+        let args = ["scan", root, "--full", "--porcelain"]
+        let on = try cli.run(args, snapshotDir: snap, env: ["FIL_TIMINGS": "1"])
+        for lap in ["scan.walk", "scan.originals", "scan.totals"] {
+            #expect(on.stderr.contains("[timing] \(lap) "), "\(on.stderr)")
+        }
+        let off = try cli.run(args, snapshotDir: snap, env: ["FIL_TIMINGS": "0"])
+        #expect(!off.stderr.contains("[timing] scan."), "\(off.stderr)")
+    }
+
     @Test func saysWhyASnapshotWasNotUsed() throws {
         let dir = try ErrorHandlingTests.tempDir()
         defer { try? FileManager.default.removeItem(atPath: dir) }
