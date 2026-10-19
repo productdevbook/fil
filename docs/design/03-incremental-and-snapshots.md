@@ -783,16 +783,30 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   `IncrementalFSEventsTests` now accept `historyGap` as a correct fallback.
   Where it lives: the barrier directory is `$TMPDIR/Fil-fsevents.XXXXXX` (`/var/folders/…/T`), never under the
   scanned root unless the root holds the temporary folder. It is removed on every return path; a process killed during
-  `fetch` leaves it behind, as before #51. `FIL_TIMINGS=1` prints `update.premarker history|live` and
-  `update.failed <why>`. `scripts/bench.sh --rounds N --wait S` runs N update rounds (the three change sets repeat)
-  and counts reported fallbacks, with their reason, as allowed. Measured: 30 rounds with `--wait 0` and `yes` × 28
-  (load average 47) gave 30 incremental updates equal to `--full`, 0 fallbacks, 0 `DIFFERS`. The pre-marker came
-  live in 18 of them. The baseline binary under the same load also gave 30 of 30, so on this machine the bench did not
-  reproduce the original miss. Cost of an idle update's history step, 30 runs alternating: median 24.0 ms before,
-  25.1 ms after.
-  Open: a pre-marker that comes live proves only the live part. A change numbered at or below the stream start
-  while the pre-marker is numbered after it could still be missing from the log. The logs above saw no such case;
-  they did see events below the start id delivered live.
+  `fetch` leaves it behind, as before #51. `FIL_TIMINGS=1` prints `update.premarker history|live, N confirming
+  replays` and `update.failed <why>`. `scripts/bench.sh --rounds N --wait S` runs N update rounds (the three change sets
+  repeat) and counts reported fallbacks, with their reason, as allowed.
+- #51 review fixes (2026-10-19): (1) A pre-marker that comes only live says nothing about the log. A change numbered
+  between `since` and the stream start and not yet logged is missing from the replay, while the pre-marker, numbered
+  after the start, still arrives live. So §4.2 step 3 is not enough. The pre-marker must also arrive in the history
+  phase of some replay. When the main stream got it only live, `fetch` replays the log again from the same `since`
+  (a replay-only stream that ends at HistoryDone, without a barrier). It repeats this every 50 ms until a replay
+  delivers the pre-marker from the log, adding that replay's events. If none does within 2 s, the update fails with
+  `historyGap`. Debug faults: `HistoryFaults.preMarkerOnlyLive = N` (the first N streams miss everything below the
+  pre-marker; the main stream gets it live) and `confirmLimit`. With N = max the update fails with `historyGap`;
+  without the confirming replay it succeeds with 1 file instead of 6. With N = 1 the first confirming replay recovers
+  the changes, and the update equals the full scan. (2) A live barrier-path event that comes before the pre-marker is
+  remembered (highest id). It becomes the barrier as soon as the pre-marker arrives with a lower id, instead of
+  being dropped, which gave a false gap after 2 s. Debug fault `holdPreMarker`: without the fix the update times out.
+  (3) The pre-marker lives on the volume of `$TMPDIR` (the data volume) and vouches only for fseventsd's log of that
+  volume. For a root on another volume (an external disk) it gives no guarantee about that volume's log. Behaviour is
+  the same there (pre-marker, confirming replays, barrier), but only the barrier says anything about that volume.
+  Measured: 30 rounds with `--wait 0` and `yes` × 28 (load average 56) gave 30 incremental updates equal to
+  `--full`, 0 fallbacks, 0 `DIFFERS`. The pre-marker came only live in 22 rounds, and in each of them the first
+  confirming replay found it in the log. The baseline binary under the same load also gave 30 of 30 before the fix,
+  so on this machine the bench did not reproduce the original miss. Cost: the pre-marker usually comes live even on an
+  idle machine (8 of 10 idle updates), so most updates pay one confirming replay. An idle update's history step, 40 runs
+  alternating with the baseline: median 12.7 ms before, 21.2 ms after (+8.5 ms).
 
 ## Glossary additions
 

@@ -226,6 +226,64 @@ struct UpdateFailureTests {
         }
     }
 
+    @Test("historyGap: a pre-marker that comes only live, never from the log, fails the update (#51)")
+    func historyGapLiveOnly() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("a/b", bytes: 5000)
+                let tree = try loadedTree(f.root, in: dir)
+                for i in 0..<5 { try f.mk("a/new\(i)", bytes: 0) }
+                var o = ScanOptions()
+                o.faults.history.preMarkerOnlyLive = .max
+                o.faults.history.confirmLimit = .milliseconds(300)
+                let result = Incremental.update(tree, options: o)
+                let full = try Scanner.scan(f.root)
+                guard case .historyGap? = failure(result) else {
+                    let got = failure(result).map { "\($0)" } ?? "success"
+                    Issue.record(
+                        "expected historyGap, got \(got): files \(tree.root.totalFiles), full \(full.root.totalFiles)")
+                    return
+                }
+            }
+        }
+    }
+
+    @Test("a pre-marker that came only live is confirmed by a later replay of the log, whose events count (#51)")
+    func liveOnlyPreMarkerConfirmed() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("a/b", bytes: 5000)
+                let tree = try loadedTree(f.root, in: dir)
+                for i in 0..<5 { try f.mk("a/new\(i)", bytes: 0) }
+                var o = ScanOptions()
+                // Only the main stream misses the log; the first confirming replay reads it.
+                o.faults.history.preMarkerOnlyLive = 1
+                let result = Incremental.update(tree, options: o)
+                // fseventsd may itself lose the log under load (#51): a gap is a correct answer too.
+                if case .historyGap? = failure(result) { return }
+                #expect(failure(result) == nil, "\(String(describing: failure(result)))")
+                #expect(tree.root.totalFiles == (try Scanner.scan(f.root)).root.totalFiles)
+            }
+        }
+    }
+
+    @Test("a barrier delivered before the pre-marker is accepted once the pre-marker arrives (#51)")
+    func barrierBeforePreMarker() throws {
+        try withSnapshotDir { dir in
+            try Fixture.with { f in
+                try f.mk("a/b", bytes: 5000)
+                let tree = try loadedTree(f.root, in: dir)
+                try f.mk("a/new", bytes: 0)
+                var o = ScanOptions()
+                o.faults.history.holdPreMarker = true
+                o.faults.history.barrierLimit = 1
+                // Without the held barrier this is a historyGap after the 1 s barrier limit.
+                let result = Incremental.update(tree, options: o)
+                #expect(failure(result) == nil, "\(String(describing: failure(result)))")
+            }
+        }
+    }
+
     @Test("after a failed update the tree is released and can be updated again")
     func failureReleasesTheTree() throws {
         try withSnapshotDir { dir in

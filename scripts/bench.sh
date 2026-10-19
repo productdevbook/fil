@@ -378,7 +378,7 @@ apply_changes() {
 NROUNDS=$((ROUNDS > 0 ? ROUNDS : 3))
 echo "--- incremental updates ($NROUNDS rounds x 1,000 changes, each compared with --full; wait ${FSEVENTS_WAIT}s)"
 INC_T=()
-FELLBACK=0 DIFFERED=0 PRE_LIVE=0
+FELLBACK=0 DIFFERED=0 PRE_LIVE=0 CONFIRMS=0
 for r in $(seq 1 "$NROUNDS"); do
   k=$(((r - 1) % 3 + 1))
   # A repeated change set first puts back its deleted files and drops older additions.
@@ -398,6 +398,8 @@ for r in $(seq 1 "$NROUNDS"); do
   T_REAL=$(awk '/ real / { print $1; exit }' "$BENCH/out/time.txt")
   why=$(sed -n 's/^\[timing\] update\.failed //p' "$BENCH/out/inc-timings.txt" | head -1)
   grep -q '^\[timing\] update\.premarker live' "$BENCH/out/inc-timings.txt" && PRE_LIVE=$((PRE_LIVE + 1))
+  n=$(sed -n 's/^\[timing\] update\.premarker [a-z]*, \([0-9]*\) confirming.*/\1/p' "$BENCH/out/inc-timings.txt")
+  CONFIRMS=$((CONFIRMS + ${n:-0}))
   parse "$T_OUT" || continue
   inc_mode=$P_mode inc_alloc=$P_alloc inc_files=$P_files inc_dirs=$P_dirs inc_logical=$P_logical
   # --full replaces the snapshot, so it runs after the incremental one.
@@ -436,7 +438,7 @@ echo "full scan:         ${full_med} s"
 echo "files per second:  $fps"
 echo "incremental:       ${inc_med} s"
 if [[ $ROUNDS -gt 0 ]]; then
-  echo "update rounds:     $NROUNDS, fell back $FELLBACK, differed $DIFFERED, pre-marker live in $PRE_LIVE"
+  echo "update rounds:     $NROUNDS, fell back $FELLBACK, differed $DIFFERED, pre-marker live in $PRE_LIVE ($CONFIRMS confirming replays)"
 fi
 echo "peak RSS:          $((${rss_med%.*} / 1048576)) MB"
 echo "snapshot size:     $((snap_bytes / 1048576)) MB ($snap_bytes bytes)"

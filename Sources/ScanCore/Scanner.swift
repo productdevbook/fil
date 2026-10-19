@@ -856,6 +856,15 @@ struct DirReader {
         /// Every pre-marker event and every event numbered below the pre-marker's is dropped, in any phase (HistoryDone
         /// still arrives): a log that misses everything numbered before the stream started.
         var dropThroughPreMarker = false
+        /// For the first N streams of a fetch (the main stream is the first; each confirming replay is the next): as
+        /// `dropThroughPreMarker`, except that the main stream still gets the pre-marker, as a live event. A log that
+        /// misses everything numbered before the stream started while the pre-marker is numbered after it.
+        var preMarkerOnlyLive = 0
+        /// The main stream's pre-marker event is held back and handed over right after the first live barrier-path
+        /// event numbered above it: a barrier delivered before the pre-marker.
+        var holdPreMarker = false
+        /// How long the confirming replays may run instead of the real limit (2 s).
+        var confirmLimit: Duration?
         /// OR-ed into the flags of every event of the replay (a `kFSEventStreamEventFlag...` lost-history flag).
         var extraFlags: FSEventStreamEventFlags = 0
     }

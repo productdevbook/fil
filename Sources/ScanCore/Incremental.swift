@@ -117,7 +117,9 @@ public enum Incremental {
         }
         if Timings.enabled {
             FileHandle.standardError.write(
-                Data("[timing] update.premarker \(history.preMarkerLive ? "live" : "history")\n".utf8))
+                Data(
+                    ("[timing] update.premarker \(history.preMarkerLive ? "live" : "history")"
+                        + ", \(history.confirmReplays) confirming replays\n").utf8))
             for e in history.events {
                 FileHandle.standardError.write(
                     Data("[timing] update.event \(e.mustScanSubDirs ? "(subdirs) " : "")\(e.path)\n".utf8))
@@ -754,10 +756,18 @@ final class EventHistory: @unchecked Sendable {
     var untrusted: (flags: [String], path: String)?
     /// Id of the barrier event: every change made before `fetch` was called has an id at or below it.
     private(set) var barrierId: FSEventStreamEventId = 0
-    /// The pre-marker's event was delivered, and whether it came in the live phase rather than from the log.
+    /// The pre-marker's event was delivered, and whether its first delivery came in the live phase.
     private(set) var preMarkerSeen = false
     private(set) var preMarkerLive = false
+    /// A replay delivered the pre-marker from fseventsd's log (in its history phase).
+    private(set) var preMarkerInHistory = false
+    /// Replays run after the main stream because the pre-marker came only live.
+    private(set) var confirmReplays = 0
     private var preMarkerId: FSEventStreamEventId = 0
+    /// Highest live barrier-path event seen before the pre-marker.
+    private var pendingBarrierId: FSEventStreamEventId = 0
+    /// The stream ends at HistoryDone: no barrier, no live phase.
+    private var replayOnly = false
     private var phase = Phase.history
     private var barrierPaths: Set<String> = []
     private var preMarkerPaths: Set<String> = []
@@ -775,9 +785,14 @@ final class EventHistory: @unchecked Sendable {
     ///
     /// That covers only the live part. A change numbered at or below the stream's start id comes only from the
     /// replay of fseventsd's log, which fseventsd writes late under load. So before the stream is created we make a
-    /// pre-marker file in the same private directory: its id is above every change the update must see, and the log is
-    /// written in id order, so once its event arrives (from the log or live) nothing below it is missing. The barrier
-    /// is accepted only after it; without it the update fails with `historyGap`.
+    /// pre-marker file in the same private directory: it is made after every change the update must see, so its id is
+    /// above theirs, and the log is written in id order. A replay that delivers the pre-marker from the log (in its
+    /// history phase) has therefore delivered every change below it. A pre-marker that comes only live proves nothing
+    /// about the log: then the history is replayed again, from the same id and without a barrier, until a replay
+    /// delivers the pre-marker from the log (its events are added), or `historyGap` after the confirm limit.
+    ///
+    /// The pre-marker lives on the volume of the temporary folder: it vouches for fseventsd's log of that volume
+    /// only. For a root on another volume it gives no guarantee about that volume's log.
     static func fetch(root: String, since: FSEventStreamEventId) -> Result<EventHistory, UpdateFailure> {
         fetch(root: root, since: since, into: EventHistory())
     }
@@ -792,7 +807,10 @@ final class EventHistory: @unchecked Sendable {
         }
 
         var faults = HistoryFaults()
+        /// Index of this stream in one `fetch`: 0 for the main stream, 1... for the confirming replays.
+        private var streamIndex = 0
         private var droppedPreMarkerId: FSEventStreamEventId?
+        private var heldPreMarker: (id: FSEventStreamEventId, live: Bool)?
     #endif
 
     private static func fetch(root: String, since: FSEventStreamEventId, into history: EventHistory) -> Result<
@@ -809,8 +827,10 @@ final class EventHistory: @unchecked Sendable {
             unlink(marker)
             rmdir(barrierDir)
         }
-        history.barrierPaths = Set(Incremental.rootPrefixes(barrierDir))
-        history.preMarkerPaths = Set(Incremental.rootPrefixes(preDir))
+        let barrierPaths = Set(Incremental.rootPrefixes(barrierDir))
+        let preMarkerPaths = Set(Incremental.rootPrefixes(preDir))
+        history.barrierPaths = barrierPaths
+        history.preMarkerPaths = preMarkerPaths
         // After every change the update must see, before the stream starts.
         guard mkdir(preDir, 0o700) == 0 else {
             return .failure(.streamFailed("pre-marker: \(String(cString: strerror(errno)))"))
@@ -818,106 +838,80 @@ final class EventHistory: @unchecked Sendable {
         let preFd = open(preMarker, O_WRONLY | O_CREAT | O_EXCL, 0o600)
         guard preFd >= 0 else { return .failure(.streamFailed("pre-marker: \(String(cString: strerror(errno)))")) }
         close(preFd)
-        var context = FSEventStreamContext(
-            version: 0, info: Unmanaged.passUnretained(history).toOpaque(),
-            retain: nil, release: nil, copyDescription: nil)
-        let callback: FSEventStreamCallback = { _, info, count, paths, flags, ids in
-            let h = Unmanaged<EventHistory>.fromOpaque(info!).takeUnretainedValue()
-            guard h.phase != .finished else { return }
-            let paths = unsafeBitCast(paths, to: NSArray.self)
-            for i in 0..<count {
+
+        // 30 s for the history replay; the barrier event, made after it, gets its own short timeout.
+        #if DEBUG
+            let historyLimit = history.faults.historyLimit ?? 30, barrierLimit = history.faults.barrierLimit ?? 2
+            let confirmLimit = history.faults.confirmLimit ?? .seconds(2)
+        #else
+            let historyLimit = 30, barrierLimit = 2
+            let confirmLimit = Duration.seconds(2)
+        #endif
+        var failure = history.run(
+            paths: [root, barrierDir], since: since, historyLimit: historyLimit, barrier: (marker, barrierLimit))
+        if history.untrusted == nil && failure == nil && !history.preMarkerInHistory {
+            // The pre-marker came only live: replay the log again until it holds the pre-marker.
+            let deadline = ContinuousClock.now + confirmLimit
+            var confirmed = false
+            repeat {
+                history.confirmReplays += 1
+                let replay = EventHistory()
+                replay.barrierPaths = barrierPaths
+                replay.preMarkerPaths = preMarkerPaths
                 #if DEBUG
-                    let f = flags[i] | h.faults.extraFlags
-                #else
-                    let f = flags[i]
+                    replay.faults = history.faults
+                    replay.streamIndex = history.confirmReplays
                 #endif
-                let path = paths[i] as! String
-                if f & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 {
-                    #if DEBUG
-                        if h.faults.dropHistoryDone { continue }
-                    #endif
-                    if h.phase == .history {
-                        h.phase = .live
-                        h.historyDone.signal()
-                    }
-                    continue
-                }
-                #if DEBUG
-                    // A log that misses everything numbered up to the pre-marker. By id, not by arrival: fseventsd may
-                    // deliver the replay out of id order and deliver an event again in the live phase.
-                    if h.faults.dropThroughPreMarker {
-                        if h.isPreMarker(path) {
-                            h.droppedPreMarkerId = max(h.droppedPreMarkerId ?? 0, ids[i])
-                            continue
-                        }
-                        guard let dropped = h.droppedPreMarkerId, ids[i] > dropped else { continue }
-                    }
-                #endif
-                let lost = FSEventStreamEventFlags(
-                    kFSEventStreamEventFlagUserDropped
-                        | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped
-                        | kFSEventStreamEventFlagRootChanged)
-                // Untrusted history means a full scan anyway, so there is no barrier to wait for.
-                let untrusted = f & lost != 0
-                if !untrusted && h.isPreMarker(path) {
-                    if !h.preMarkerSeen { h.preMarkerLive = h.phase == .live }
-                    h.preMarkerSeen = true
-                    h.preMarkerId = max(h.preMarkerId, ids[i])
-                    continue
-                }
-                var isBarrier = false
-                if !untrusted && h.isBarrier(path) {
-                    // Before the pre-marker, an event here is the `mkdir` of `pre`, never the barrier; so is one
-                    // numbered below it (fseventsd may deliver an event of the replay again in the live phase).
-                    isBarrier = h.phase == .live && h.preMarkerSeen && ids[i] > h.preMarkerId
-                    #if DEBUG
-                        isBarrier = isBarrier && !h.faults.dropBarrier
-                    #endif
-                    if !isBarrier { continue }
-                }
-                if untrusted || isBarrier {
-                    if untrusted { h.untrusted = (EventHistory.lostFlagNames(f), path) } else { h.barrierId = ids[i] }
-                    if h.phase == .history { h.historyDone.signal() }
-                    h.phase = .finished
-                    h.done.signal()
-                    return
-                }
-                let must = f & FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs) != 0
-                h.events.append(Event(path: path, mustScanSubDirs: must))
-            }
+                failure = replay.run(paths: [root, barrierDir], since: since, historyLimit: historyLimit, barrier: nil)
+                if let lost = replay.untrusted { history.untrusted = lost }
+                if history.untrusted != nil || failure != nil { break }
+                history.events += replay.events
+                confirmed = replay.preMarkerInHistory
+                if !confirmed { usleep(50_000) }
+            } while !confirmed && ContinuousClock.now < deadline
+            if failure == nil && !confirmed { failure = .historyGap }
         }
+        if let lost = history.untrusted { return .failure(.historyUntrusted(flags: lost.flags, path: lost.path)) }
+        // A barrier wait that ended without the pre-marker: part of the history below the stream start is missing.
+        if case .barrierTimeout? = failure, !history.preMarkerSeen { return .failure(.historyGap) }
+        if let failure { return .failure(failure) }
+        return .success(history)
+    }
+
+    /// Runs one stream over `paths` from `since`. With `barrier`, after HistoryDone the barrier file is made and the
+    /// stream runs until its event (or the limit); without, the stream ends at HistoryDone (a replay of the log only).
+    private func run(
+        paths: [String], since: FSEventStreamEventId, historyLimit: Int, barrier: (path: String, limit: Int)?
+    ) -> UpdateFailure? {
+        replayOnly = barrier == nil
+        var context = FSEventStreamContext(
+            version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil, release: nil, copyDescription: nil)
         let flags = FSEventStreamCreateFlags(
             kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer
                 | kFSEventStreamCreateFlagWatchRoot)
         guard
             let stream = FSEventStreamCreate(
-                kCFAllocatorDefault, callback, &context,
-                [root, barrierDir] as CFArray, since, 0, flags)
+                kCFAllocatorDefault, EventHistory.callback, &context, paths as CFArray, since, 0, flags)
         else {
-            return .failure(.streamFailed("FSEventStreamCreate"))
+            return .streamFailed("FSEventStreamCreate")
         }
         let queue = DispatchQueue(label: "Fil.fsevents")
         FSEventStreamSetDispatchQueue(stream, queue)
         guard FSEventStreamStart(stream) else {
             FSEventStreamInvalidate(stream)
             FSEventStreamRelease(stream)
-            return .failure(.streamFailed("FSEventStreamStart"))
+            return .streamFailed("FSEventStreamStart")
         }
-        // 30 s for the history replay; the barrier event, made after it, gets its own short timeout.
-        #if DEBUG
-            let historyLimit = history.faults.historyLimit ?? 30, barrierLimit = history.faults.barrierLimit ?? 2
-        #else
-            let historyLimit = 30, barrierLimit = 2
-        #endif
         var failure: UpdateFailure?
-        if history.historyDone.wait(timeout: .now() + .seconds(historyLimit)) != .success {
+        if historyDone.wait(timeout: .now() + .seconds(historyLimit)) != .success {
             failure = .historyTimeout(seconds: historyLimit)
-        } else {
-            let fd = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        } else if let barrier {
+            let fd = open(barrier.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
             if fd >= 0 {
                 close(fd)
-                if history.done.wait(timeout: .now() + .seconds(barrierLimit)) != .success {
-                    failure = .barrierTimeout(seconds: barrierLimit)
+                if done.wait(timeout: .now() + .seconds(barrier.limit)) != .success {
+                    failure = .barrierTimeout(seconds: barrier.limit)
                 }
             } else {
                 failure = .streamFailed("barrier file: \(String(cString: strerror(errno)))")
@@ -927,11 +921,114 @@ final class EventHistory: @unchecked Sendable {
         FSEventStreamInvalidate(stream)
         FSEventStreamRelease(stream)
         queue.sync {}  // the callback runs on `queue`; drain it before reading `events`
-        if let lost = history.untrusted { return .failure(.historyUntrusted(flags: lost.flags, path: lost.path)) }
-        // A barrier wait that ended without the pre-marker: part of the history below the stream start is missing.
-        if case .barrierTimeout? = failure, !history.preMarkerSeen { return .failure(.historyGap) }
-        if let failure { return .failure(failure) }
-        return .success(history)
+        return failure
+    }
+
+    private static let callback: FSEventStreamCallback = { _, info, count, paths, flags, ids in
+        let h = Unmanaged<EventHistory>.fromOpaque(info!).takeUnretainedValue()
+        guard h.phase != .finished else { return }
+        let paths = unsafeBitCast(paths, to: NSArray.self)
+        for i in 0..<count {
+            #if DEBUG
+                let f = flags[i] | h.faults.extraFlags
+            #else
+                let f = flags[i]
+            #endif
+            let path = paths[i] as! String
+            if f & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 {
+                #if DEBUG
+                    if h.faults.dropHistoryDone { continue }
+                #endif
+                if h.phase == .history {
+                    h.phase = h.replayOnly ? .finished : .live
+                    h.historyDone.signal()
+                    if h.replayOnly { return }
+                }
+                continue
+            }
+            #if DEBUG
+                // A log that misses everything numbered up to the pre-marker. By id, not by arrival: fseventsd may
+                // deliver the replay out of id order and deliver an event again in the live phase.
+                let liveOnly = h.streamIndex < h.faults.preMarkerOnlyLive
+                if h.faults.dropThroughPreMarker || liveOnly {
+                    if h.isPreMarker(path) {
+                        h.droppedPreMarkerId = max(h.droppedPreMarkerId ?? 0, ids[i])
+                        // The main stream still gets the pre-marker, live (numbered after the stream started); a
+                        // replay of the log does not get it.
+                        if liveOnly && h.streamIndex == 0 && h.markPreMarker(id: ids[i], live: true) { return }
+                        continue
+                    }
+                    guard let dropped = h.droppedPreMarkerId, ids[i] > dropped else { continue }
+                }
+            #endif
+            let lost = FSEventStreamEventFlags(
+                kFSEventStreamEventFlagUserDropped
+                    | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped
+                    | kFSEventStreamEventFlagRootChanged)
+            // Untrusted history means a full scan anyway, so there is no barrier to wait for.
+            if f & lost != 0 {
+                h.untrusted = (EventHistory.lostFlagNames(f), path)
+                h.finish()
+                return
+            }
+            if h.isPreMarker(path) {
+                #if DEBUG
+                    if h.faults.holdPreMarker && h.streamIndex == 0 {
+                        h.heldPreMarker = (ids[i], h.phase == .live)
+                        continue
+                    }
+                #endif
+                if h.markPreMarker(id: ids[i], live: h.phase == .live) { return }
+                continue
+            }
+            if h.isBarrier(path) {
+                var candidate = h.phase == .live
+                #if DEBUG
+                    candidate = candidate && !h.faults.dropBarrier
+                #endif
+                guard candidate else { continue }
+                #if DEBUG
+                    if let held = h.heldPreMarker, ids[i] > held.id {
+                        // The barrier came first: note it, then hand over the pre-marker.
+                        h.heldPreMarker = nil
+                        h.pendingBarrierId = max(h.pendingBarrierId, ids[i])
+                        if h.markPreMarker(id: held.id, live: held.live) { return }
+                        continue
+                    }
+                #endif
+                // Before the pre-marker, an event here may be the `mkdir` of `pre` or the barrier itself: its id is
+                // kept until the pre-marker's tells which. One numbered below the pre-marker is never the barrier
+                // (fseventsd may deliver an event of the replay again in the live phase).
+                if h.preMarkerSeen && ids[i] > h.preMarkerId {
+                    h.barrierId = ids[i]
+                    h.finish()
+                    return
+                }
+                if !h.preMarkerSeen { h.pendingBarrierId = max(h.pendingBarrierId, ids[i]) }
+                continue
+            }
+            let must = f & FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs) != 0
+            h.events.append(Event(path: path, mustScanSubDirs: must))
+        }
+    }
+
+    /// Records the pre-marker's event. True when a barrier-path event that came before it is numbered above it: that
+    /// event is the barrier, and the stream is finished.
+    private func markPreMarker(id: FSEventStreamEventId, live: Bool) -> Bool {
+        if !preMarkerSeen { preMarkerLive = live }
+        preMarkerSeen = true
+        if !live { preMarkerInHistory = true }
+        preMarkerId = max(preMarkerId, id)
+        guard phase == .live, pendingBarrierId > preMarkerId else { return false }
+        barrierId = pendingBarrierId
+        finish()
+        return true
+    }
+
+    private func finish() {
+        if phase == .history { historyDone.signal() }
+        phase = .finished
+        done.signal()
     }
 
     private static func lostFlagNames(_ f: FSEventStreamEventFlags) -> [String] {
