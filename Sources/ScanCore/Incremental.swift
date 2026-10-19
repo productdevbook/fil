@@ -862,11 +862,16 @@ final class EventHistory: @unchecked Sendable {
                     replay.faults = history.faults
                     replay.streamIndex = history.confirmReplays
                 #endif
-                failure = replay.run(paths: [root, barrierDir], since: since, historyLimit: historyLimit, barrier: nil)
+                // A replay waits at most the confirm time left (whole seconds, at least 1), not the full history limit.
+                let left = Int((deadline - ContinuousClock.now).components.seconds) + 1
+                failure = replay.run(
+                    paths: [root, barrierDir], since: since, historyLimit: min(historyLimit, max(1, left)), barrier: nil
+                )
                 if let lost = replay.untrusted { history.untrusted = lost }
                 if history.untrusted != nil || failure != nil { break }
-                history.events += replay.events
                 confirmed = replay.preMarkerInHistory
+                // Only the replay that holds the pre-marker adds events; the ones before it are partial copies of it.
+                if confirmed { history.events += replay.events }
                 if !confirmed { usleep(50_000) }
             } while !confirmed && ContinuousClock.now < deadline
             if failure == nil && !confirmed { failure = .historyGap }
