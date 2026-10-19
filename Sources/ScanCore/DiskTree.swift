@@ -107,6 +107,58 @@ public struct ScanStats: Sendable {
     }
 }
 
+/// A registry's keys by directory, so that `forget` finds what a directory holds without walking the table.
+/// Built in two passes over the table into one flat array grouped by directory id (a counting sort: no hashing and one
+/// allocation per array, not one per directory); keys recorded later go to a small dictionary. Stale and repeated
+/// keys are allowed: the registry checks an entry before it changes it.
+struct RegistryIndex {
+    /// The keys of directory `d` are `keys[start[d]..<start[d + 1]]` for `d < start.count - 1`.
+    private var start: [Int32] = [0]
+    private var keys: [UInt64] = []
+    /// Keys recorded since the build, and every key of a directory created since.
+    private var added: [Int32: [UInt64]] = [:]
+
+    /// `pairs` calls its argument once per (directory, key) of the table, the same pairs in the same order each time.
+    init(_ pairs: ((Int32, UInt64) -> Void) -> Void) {
+        var count: [Int32] = []
+        var total = 0
+        pairs { d, _ in
+            let d = Int(d)
+            if d >= count.count { count.append(contentsOf: repeatElement(0, count: d + 1 - count.count)) }
+            count[d] += 1
+            total += 1
+        }
+        var start = [Int32](repeating: 0, count: count.count + 1)
+        for d in count.indices { start[d + 1] = start[d] + count[d] }
+        var fill = start
+        var keys = [UInt64](repeating: 0, count: total)
+        keys.withUnsafeMutableBufferPointer { out in
+            pairs { d, k in
+                out[Int(fill[Int(d)])] = k
+                fill[Int(d)] += 1
+            }
+        }
+        self.start = start
+        self.keys = keys
+    }
+
+    /// From (directory, key) pairs collected while the table was decoded (`Snapshot.load`).
+    init(pairs: [(dir: Int32, key: UInt64)]) {
+        self.init { visit in for p in pairs { visit(p.dir, p.key) } }
+    }
+
+    mutating func add(_ key: UInt64, to dir: Int32) { added[dir, default: []].append(key) }
+
+    /// Calls `body` with every key recorded for `dir`, and drops the ones recorded since the build. The built ones stay
+    /// (they are only read): a later call for `dir` meets them again, as stale keys.
+    mutating func take(_ dir: Int32, _ body: (UInt64) -> Void) {
+        if Int(dir) + 1 < start.count {
+            for k in keys[Int(start[Int(dir)])..<Int(start[Int(dir) + 1])] { body(k) }
+        }
+        if let more = added.removeValue(forKey: dir) { more.forEach(body) }
+    }
+}
+
 /// Tracks every multiply-linked inode so each hard link is counted once. Per inode it keeps the directory
 /// that owns (counts) it, its sizes, and every other directory where a link was seen. This lets a directory's
 /// records be dropped when it is re-read, and lets ownership move to another live link when the owner loses its own.
@@ -124,7 +176,12 @@ final class HardlinkRegistry: @unchecked Sendable {
 
     private let lock = NSLock()
     private(set) var table: [UInt64: Entry]
-    private var hasOrphans = false
+    /// Per directory, the inodes it owns or links (`owner` or `others`), so that `forget` touches only the directories
+    /// it is given. Nil until `buildIndex` (a full scan never forgets, so it never pays for it); then kept up to date.
+    /// Stale or repeated keys are allowed and skipped on use: an entry is checked before it is changed.
+    private var byDir: RegistryIndex?
+    /// Ownerless inodes that still have links elsewhere; `resolveOrphans` settles them.
+    private var orphans = Set<UInt64>()
     /// Set only during an incremental update (`beginUpdate`): scan-start time (ns since epoch) of the snapshot.
     private(set) var birthCutoff: Int64?
     private var strict = true
@@ -140,7 +197,27 @@ final class HardlinkRegistry: @unchecked Sendable {
     /// Non-nil only during an incremental update; see `trackDrift`.
     private var drift: [Int32: (alloc: Int64, logical: Int64, cloneAware: Int64)]?
 
-    init(_ table: [UInt64: Entry] = [:]) { self.table = table }
+    init(_ table: [UInt64: Entry] = [:], index: RegistryIndex? = nil) {
+        self.table = table
+        byDir = index
+    }
+
+    /// Builds the per-directory index from the table, O(table). `Snapshot.load` hands the registry an index made while
+    /// decoding instead; a tree scanned in this process gets one on its first `forget`.
+    func buildIndex() {
+        lock.lock()
+        defer { lock.unlock() }
+        buildIndexLocked()
+    }
+
+    private func buildIndexLocked() {
+        byDir = RegistryIndex { visit in
+            for (inode, e) in table {
+                if e.owner >= 0 { visit(e.owner, inode) }
+                for d in e.others { visit(d, inode) }
+            }
+        }
+    }
 
     /// Records a link to `inode` seen in `dir`. True if `dir` should count the size (it is, or just became, the owner).
     func claim(_ inode: UInt64, by dir: Int32, alloc: Int64, logical: Int64, cloneAware: Int64) -> Bool {
@@ -148,6 +225,7 @@ final class HardlinkRegistry: @unchecked Sendable {
         defer { lock.unlock() }
         guard let i = table.index(forKey: inode) else {
             table[inode] = Entry(owner: dir, alloc: alloc, logical: logical, cloneAware: cloneAware)
+            byDir?.add(inode, to: dir)
             return true
         }
         let owner = table.values[i].owner
@@ -158,9 +236,14 @@ final class HardlinkRegistry: @unchecked Sendable {
             table.values[i].logical = logical
             table.values[i].cloneAware = cloneAware
             if !table.values[i].others.isEmpty { table.values[i].others.removeAll { $0 == dir } }
+            byDir?.add(inode, to: dir)
+            orphans.remove(inode)
             return true
         }
-        if !table.values[i].others.contains(dir) { table.values[i].others.append(dir) }
+        if !table.values[i].others.contains(dir) {
+            table.values[i].others.append(dir)
+            byDir?.add(inode, to: dir)
+        }
         // Sizes differ only when the file changed since the owner counted it (incremental updates).
         let e = table.values[i]
         if e.alloc != alloc || e.logical != logical || e.cloneAware != cloneAware {
@@ -236,54 +319,56 @@ final class HardlinkRegistry: @unchecked Sendable {
         }
     }
 
-    /// Drops every link recorded in a directory for which `shouldForget` is true (it is about to be re-read or is gone).
-    /// An inode whose owner is dropped is left ownerless; `resolveOrphans` settles it after the re-read.
-    /// Entries are changed in place; only the ones that lose their last link are removed.
-    func forget(where shouldForget: (Int32) -> Bool) {
+    /// Drops every link recorded in `dirs` (each is about to be re-read or is gone). Touches only the entries those
+    /// directories hold (`byDir`), not the table. An inode whose owner is dropped is left ownerless; `resolveOrphans`
+    /// settles it after the re-read. Entries are changed in place; only the ones that lose their last link are removed.
+    func forget(_ dirs: Set<Int32>) {
+        guard !dirs.isEmpty else { return }
         lock.lock()
         defer { lock.unlock() }
-        var orphaned = false
-        var gone: [UInt64] = []
-        var i = table.startIndex
-        while i != table.endIndex {
-            let owner = table.values[i].owner
-            if owner >= 0 && shouldForget(owner) { table.values[i].owner = -1 }
-            if !table.values[i].others.isEmpty && table.values[i].others.contains(where: shouldForget) {
-                table.values[i].others.removeAll(where: shouldForget)
+        if byDir == nil { buildIndexLocked() }
+        for d in dirs {
+            byDir?.take(d) { inode in
+                guard let i = table.index(forKey: inode) else { return }
+                if table.values[i].owner == d {
+                    table.values[i].owner = -1
+                } else if let k = table.values[i].others.firstIndex(of: d) {
+                    table.values[i].others.remove(at: k)
+                } else {
+                    return  // stale or repeated key
+                }
+                guard table.values[i].owner < 0 else { return }
+                if table.values[i].others.isEmpty {
+                    table.remove(at: i)
+                    orphans.remove(inode)
+                } else {
+                    orphans.insert(inode)
+                }
             }
-            if table.values[i].owner < 0 {
-                if table.values[i].others.isEmpty { gone.append(table.keys[i]) } else { orphaned = true }
-            }
-            table.formIndex(after: &i)
         }
-        for k in gone { table.removeValue(forKey: k) }
-        hasOrphans = hasOrphans || orphaned
     }
 
     /// Gives every ownerless inode to another live directory that still links it, or drops it if none is left.
-    /// Returns the sizes each new owner must now count.
+    /// Returns the sizes each new owner must now count. Walks only the orphans, not the table.
     func resolveOrphans() -> [(dir: Int32, alloc: Int64, logical: Int64, cloneAware: Int64)] {
         lock.lock()
         defer { lock.unlock() }
-        guard hasOrphans else { return [] }
-        hasOrphans = false
+        guard !orphans.isEmpty else { return [] }
         var moved: [(dir: Int32, alloc: Int64, logical: Int64, cloneAware: Int64)] = []
-        var gone: [UInt64] = []
-        var i = table.startIndex
-        while i != table.endIndex {
-            if table.values[i].owner < 0 {
-                if let next = table.values[i].others.first {
-                    table.values[i].others.removeFirst()
-                    table.values[i].owner = next
-                    let e = table.values[i]
-                    moved.append((next, e.alloc, e.logical, e.cloneAware))
-                } else {
-                    gone.append(table.keys[i])
-                }
+        // In inode order: the result does not depend on the set's iteration order.
+        for inode in orphans.sorted() {
+            guard let i = table.index(forKey: inode), table.values[i].owner < 0 else { continue }
+            if let next = table.values[i].others.first {
+                // `next` keeps its index key: it moves from `others` to `owner`.
+                table.values[i].others.removeFirst()
+                table.values[i].owner = next
+                let e = table.values[i]
+                moved.append((next, e.alloc, e.logical, e.cloneAware))
+            } else {
+                table.remove(at: i)
             }
-            table.formIndex(after: &i)
         }
-        for k in gone { table[k] = nil }
+        orphans.removeAll()
         return moved
     }
 
@@ -309,6 +394,9 @@ final class HardlinkRegistry: @unchecked Sendable {
             table.formIndex(after: &i)
         }
         for k in gone { table.removeValue(forKey: k) }
+        // Every ownerless entry was dropped above. The index is O(table) to renumber, like the table: rebuilt.
+        orphans.removeAll()
+        if byDir != nil { buildIndexLocked() }
     }
 }
 
@@ -364,6 +452,9 @@ public final class DiskTree: @unchecked Sendable {
     /// Raw bytes of the directory names that are not valid UTF-8; `DirNode.name` then holds a display form with
     /// U+FFFD, which no syscall can open. Rare: empty for most trees.
     public internal(set) var rawNames: [Int32: [UInt8]] = [:]
+    /// Live folders flagged `incomplete`, which every update reads again. Nil after a full scan or a load (the next
+    /// update finds them with one pass over the nodes); then kept by each update, so that later ones skip the pass.
+    var incompleteDirs: [Int32]?
     /// An update changed the tree since it was loaded, scanned or saved: `Snapshot.advance` must not be used.
     var changedSinceSave = false
     let exclusions: [String: Set<String>]
@@ -534,6 +625,7 @@ public final class DiskTree: @unchecked Sendable {
         mountPoints = mountPoints.compactMap { m in
             map[Int(m.parent)] < 0 ? nil : MountPoint(parent: map[Int(m.parent)], name: m.name)
         }
+        incompleteDirs = incompleteDirs?.compactMap { map[Int($0)] < 0 ? nil : map[Int($0)] }
         if !rawNames.isEmpty {
             rawNames = Dictionary(
                 uniqueKeysWithValues: rawNames.compactMap { id, bytes in

@@ -680,6 +680,27 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   (the first run after the rename, followed by the full scan that writes the new file), not by every `save`; a root
   only ever scanned with `--full` keeps its old file.
 
+- #16 (2026-10-19): §5.5 is built: the registries keep per-directory indexes (chapter 01 As built) and `affected`
+  is a `Set<Int32>` (the re-read, rescanned, emptied and removed folders). The `retry` pass over every node (§5.2
+  incomplete folders) runs only on the first update after a load or a full scan. After that the folders are kept in
+  `DiskTree.incompleteDirs`: those of the previous update plus the ones this update read, filtered by their flags, and
+  remapped by `compact`. What stays O(tree) in each `fil scan` update is per process, not per change: decoding the
+  snapshot and `computeTotals` (load), the first `syncLinks` after a load, and `compact`, encoding and the atomic
+  write (`save`). On the 1 M-file fixture (21 k folders) these are 1.6 + 0.5 + 0.5 ms (load), 0.3 ms (links) and
+  1.7 ms (save), about 1% of the update. Profile of one bench update after 1,000 changes (`FIL_TIMINGS=1`, load 4.5):
+  history 181 ms, `apply.map` 22 ms (sibling walks, #17), `apply.reread(481)` 329 ms, everything else under 1 ms. The
+  cost is listing the changed folders again: 1,000 changes spread over the tree touch about 480 folders, and most of
+  them are 2,000-file folders, so about 40% of the tree's entries are listed again. Directory-level events give no
+  cheaper way to do this, and `DirNode` keeps no per-file sizes. So the issue's "5x faster" target is not met on
+  this fixture. `scripts/bench.sh`, baseline `f2be7c9` and #16 alternating on one kept fixture, 3 runs each, load
+  average 3-11:
+
+  | Metric (median of the runs' medians) | Before | After |
+  |---|---|---|
+  | Full scan, 0.996 M files | 1.88 s (1.93 / 1.88 / 1.86) | 1.87 s (1.87 / 1.91 / 1.87) |
+  | Update after 1,000 changes | 0.46 s (0.54 / 0.46 / 0.40) | 0.41 s (0.37 / 0.41 / 0.41) |
+  | Incremental = `--full`, alloc = `du` | 9 of 9 | 9 of 9 |
+
 ## Glossary additions
 
 - **event id** — FSEvents id stored in the tree (`DiskTree.eventId`); replay starts after it.

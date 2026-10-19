@@ -189,10 +189,10 @@ struct CloneRegistryTests {
         let moves = r.preferOriginals()
         #expect(moves.count == 1 && moves[0].from == 3 && moves[0].to == 2 && moves[0].alloc == 100)
         #expect(r.entry(7)?.owner == 2)
-        r.forget { $0 == 2 }
+        r.forget([2])
         let orphans = r.resolveOrphans()
         #expect(orphans.count == 1 && orphans[0].dir == 3 && orphans[0].alloc == 100)
-        r.forget { $0 == 3 }
+        r.forget([3])
         #expect(r.entry(7) == nil)
     }
 
@@ -201,7 +201,7 @@ struct CloneRegistryTests {
         let r = CloneRegistry()
         let m = CloneMember(cloneID: 9, alloc: 50, isOriginal: true)
         #expect(r.claim([m, CloneMember(cloneID: 9, alloc: 50, isOriginal: false)], by: 1) == (50, 1))
-        r.forget { $0 == 1 }
+        r.forget([1])
         #expect(r.claim([m], by: 1).bytes == 50)
         #expect(r.resolveOrphans().isEmpty)
     }

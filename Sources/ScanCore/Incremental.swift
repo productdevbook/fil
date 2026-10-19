@@ -157,7 +157,7 @@ public enum Incremental {
             tree.stats = fullScanStats
             tree.hardlinks.endUpdate()
             _ = tree.hardlinks.takeDrift()
-            _ = tree.clones.takeCreated()
+            tree.clones.endUpdate()
         }
         return apply(events, to: tree, options: options, report: &report)
     }
@@ -178,12 +178,16 @@ public enum Incremental {
             ? MountChanges()
             : mountChanges(tree, prefixes: prefixes, aliases: aliases, firmlinks: options.firmlinks)
         // A folder read only in part is read again on every update until a read is complete: the error may be gone
-        // without any event. One pass over the flags; empty for almost every tree.
-        let retry: [Int32] = tree.nodes.withUnsafeBufferPointer { nodes in
-            var ids: [Int32] = []
-            for i in nodes.indices where nodes[i].incomplete && !nodes[i].isDead { ids.append(Int32(i)) }
-            return ids
-        }
+        // without any event. Empty for almost every tree. Known from the previous update of this tree; after a load or a
+        // full scan, one pass over the flags.
+        let retry: [Int32] =
+            tree.incompleteDirs?.filter { tree.nodes[Int($0)].incomplete && !tree.nodes[Int($0)].isDead }
+            ?? tree.nodes.withUnsafeBufferPointer { nodes in
+                var ids: [Int32] = []
+                for i in nodes.indices where nodes[i].incomplete && !nodes[i].isDead { ids.append(Int32(i)) }
+                return ids
+            }
+        tree.incompleteDirs = retry
         // A mount point left out of the scan counts the volume root's own blocks in its parent. No event reaches the parent
         // when the volume under it is swapped or its root grows, so the parents of the recorded mount points are read
         // again on every update (few mounts; none with `--cross-devices`, which enters them).
@@ -338,10 +342,9 @@ public enum Incremental {
 
         // 3. Mark removed directories and the old contents of fully rescanned ones, walking only those subtrees.
         tree.syncLinks()
-        var affected = [Bool](repeating: false, count: tree.nodes.count)
-        for id in shallow { affected[Int(id)] = true }
-        for id in full { affected[Int(id)] = true }
-        for id in unreadable { affected[Int(id)] = true }
+        // Sparse: proportional to the changed directories, not to the tree.
+        var affected = shallow.union(full)
+        affected.formUnion(unreadable)
         var stack: [Int32] = []
         func kill(_ root: Int32) {
             stack.append(root)
@@ -349,7 +352,7 @@ public enum Incremental {
                 guard !tree.nodes[Int(i)].isDead else { continue }
                 tree.forEachChild(of: i) { stack.append($0) }
                 tree.nodes[Int(i)].parent = DirNode.dead
-                affected[Int(i)] = true
+                affected.insert(i)
                 report.dirsRemoved += 1
             }
         }
@@ -365,10 +368,10 @@ public enum Incremental {
         }
         t.lap("dead")
         // Every record of a re-read, rescanned or removed directory is dropped; the re-read puts back what is still there.
-        tree.hardlinks.forget { Int($0) < affected.count && affected[Int($0)] }
-        tree.clones.forget { Int($0) < affected.count && affected[Int($0)] }
+        tree.hardlinks.forget(affected)
+        tree.clones.forget(affected)
         // Likewise the mount points listed by those directories; the re-reads and rescans record the current ones.
-        tree.mountPoints.removeAll { Int($0.parent) < affected.count && affected[Int($0.parent)] }
+        tree.mountPoints.removeAll { affected.contains($0.parent) }
         tree.mountPoints += newMounts
         t.lap("forget")
 
@@ -431,7 +434,7 @@ public enum Incremental {
         tree.syncLinks()
         let adopted = adoptOriginals(
             tree.clones.takeCreated(), in: tree, prefixes: prefixes,
-            settled: { Int($0) < firstNew && !affected[Int($0)] })
+            settled: { Int($0) < firstNew && !affected.contains($0) })
         changed += adopted
         changed += Scanner.applyPreferredOriginals(tree)
         t.lap("links+orphans(\(adopted.count) clone originals adopted)")
@@ -442,6 +445,12 @@ public enum Incremental {
 
         tree.updateTotals(changed: changed, firstNew: firstNew)
         t.lap("totals")
+        // Only folders read in this update can have become incomplete.
+        var flagged = Set(retry)
+        flagged.formUnion(reread)
+        flagged.formUnion(targets)
+        for i in firstNew..<tree.nodes.count where tree.nodes[i].incomplete { flagged.insert(Int32(i)) }
+        tree.incompleteDirs = flagged.filter { tree.nodes[Int($0)].incomplete && !tree.nodes[Int($0)].isDead }.sorted()
         return nil
     }
 

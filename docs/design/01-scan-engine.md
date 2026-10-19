@@ -577,6 +577,22 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
   <= 60 s: not measured (the harness stays inside its fixture); per-file and per-directory costs and `--private`: not
   measurable from outside (code review or `FIL_TIMINGS`). The incremental figure has no budget line. Elapsed time
   includes process start and snapshot load and save.
+- #16 (2026-10-19): built as §6.4 with these readings. (1) The index is not a `[Int32: [UInt64]]` but
+  `RegistryIndex`: one flat key array grouped by directory id (a counting sort, two passes) plus a small dictionary for
+  keys recorded later. A dictionary of arrays cost more to build (6.6 ms for 100 k links) than the whole-table
+  `forget` it replaced (5.2 ms). `Snapshot.load` collects the (directory, key) pairs while it decodes the tables; a
+  tree scanned in the same process builds its index on its first `forget`, so a full scan never pays for it.
+  `claim` and `adopt` add keys; stale and repeated keys are skipped because each entry is checked before it changes.
+  `remap` rebuilds the index: it is O(table) and runs only in `compact` (`save`). (2) `forget(_ dirs: Set<Int32>)`
+  replaces `forget(where:)`. `orphans: Set<UInt64>` replaces `hasOrphans`, and `resolveOrphans` walks the orphans in
+  key order. (3) `CloneRegistry.preferOriginals` (`Scanner.applyPreferredOriginals`) also walked the table on every
+  update. Between `beginUpdate` and the new `endUpdate` it now looks only at families whose owner or original changed
+  (`touched`); the other families already had their original's directory as owner. A full scan still walks the
+  table once. Memory: no change per folder (`DirNode` stays 96 bytes). The index costs 8 bytes per (directory, key)
+  pair plus 4 bytes per directory id up to the largest one in the tables, only on loaded or updated trees.
+  Measured with `FIL_TIMINGS=1`, 100 k hard-linked inodes (200 + 200 folders) and one new file, the same binary
+  alternating: `apply.forget` 3.7 / 6.1 / 6.5 / 27.5 ms before, 0.2 / 0.2 / 0.2 / 0.3 ms after (§6.4 asks for under
+  5 ms). On the bench fixture the registries hold 5 k keys and `forget` was already 0.1 ms.
 - #48 (2026-10-18): the request carries `ATTR_DIR_ALLOCSIZE` and `ATTR_DIR_DATALENGTH` (after `MOUNTSTATUS` in bit
   order). `DirOutcome.childAllocs` holds the non-zero folder allocations by child index (empty on APFS and HFS+: no
   allocation); `WorkItem.selfAlloc` carries one to the child's read, `DirOutcome.selfAlloc` is the `fstat`

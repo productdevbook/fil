@@ -311,6 +311,10 @@ public enum Snapshot {
             var nodes: [DirNode] = []
             var table: [UInt64: HardlinkRegistry.Entry] = [:]
             var families: [UInt64: CloneRegistry.Entry] = [:]
+            // A loaded tree is about to be updated: the registries' per-directory indexes are collected while their
+            // tables are decoded, so that an update's `forget` touches only the directories it re-reads.
+            var linkPairs: [(dir: Int32, key: UInt64)] = []
+            var familyPairs: [(dir: Int32, key: UInt64)] = []
             var mountPoints: [MountPoint] = []
             var stats: (ScanStats, start: Int64)?
             var rawNames: [Int32: [UInt8]] = [:]
@@ -333,8 +337,9 @@ public enum Snapshot {
                 let ok: Bool
                 switch section {
                 case .nodes: ok = r.getNodes(into: &nodes)
-                case .hardlinks: ok = r.getHardlinks(into: &table, nodeCount: nodes.count)
-                case .cloneFamilies: ok = r.getCloneFamilies(into: &families, nodeCount: nodes.count)
+                case .hardlinks: ok = r.getHardlinks(into: &table, pairs: &linkPairs, nodeCount: nodes.count)
+                case .cloneFamilies:
+                    ok = r.getCloneFamilies(into: &families, pairs: &familyPairs, nodeCount: nodes.count)
                 case .mountPoints: ok = r.getMountPoints(into: &mountPoints, nodeCount: nodes.count)
                 case .stats:
                     // At least the 9 values known today; a later writer may append counters, which are skipped.
@@ -354,7 +359,8 @@ public enum Snapshot {
             let tree = DiskTree(
                 rootPath: rootPath, rootDev: dev, privateSize: privateSize, crossDevices: crossDevices,
                 nodes: nodes, eventId: eventId, volumeUUID: uuid, scanStart: scanStart,
-                hardlinks: HardlinkRegistry(table), clones: CloneRegistry(families), aliases: aliases,
+                hardlinks: HardlinkRegistry(table, index: RegistryIndex(pairs: linkPairs)),
+                clones: CloneRegistry(families, index: RegistryIndex(pairs: familyPairs)), aliases: aliases,
                 mountPoints: mountPoints)
             tree.uncertainBytes = max(uncertainBytes, 0)
             tree.stats = stats?.0 ?? ScanStats()
@@ -476,10 +482,15 @@ private struct Reader {
     }
 
     /// inode u64, owner i32, alloc i64, logical i64, cloneAware i64, others count u32, others i32 × n.
-    mutating func getHardlinks(into table: inout [UInt64: HardlinkRegistry.Entry], nodeCount count: Int) -> Bool {
+    /// `pairs` gets (directory, inode) for the owner and each other directory (`RegistryIndex`).
+    mutating func getHardlinks(
+        into table: inout [UInt64: HardlinkRegistry.Entry], pairs: inout [(dir: Int32, key: UInt64)],
+        nodeCount count: Int
+    ) -> Bool {
         let linkCount = Int(get(UInt32.self))
         guard ok, linkCount <= (raw.count - offset) / 40 else { return false }
         table.reserveCapacity(linkCount)
+        pairs.reserveCapacity(linkCount * 2)
         for _ in 0..<linkCount {
             let inode = get(UInt64.self)
             var e = HardlinkRegistry.Entry(
@@ -491,16 +502,23 @@ private struct Reader {
             }
             for _ in 0..<others { e.others.append(get(Int32.self)) }
             guard ok, e.others.allSatisfy({ $0 >= 0 && $0 < count }) else { return false }
+            pairs.append((e.owner, inode))
+            for d in e.others { pairs.append((d, inode)) }
             table[inode] = e
         }
         return true
     }
 
     /// cloneID u64, owner i32, original i32 (-1 if unknown), alloc i64, others count u32, others i32 × n.
-    mutating func getCloneFamilies(into families: inout [UInt64: CloneRegistry.Entry], nodeCount count: Int) -> Bool {
+    /// `pairs` gets (directory, clone id) for the owner, the original's directory and each other directory.
+    mutating func getCloneFamilies(
+        into families: inout [UInt64: CloneRegistry.Entry], pairs: inout [(dir: Int32, key: UInt64)],
+        nodeCount count: Int
+    ) -> Bool {
         let cloneCount = Int(get(UInt32.self))
         guard ok, cloneCount <= (raw.count - offset) / 28 else { return false }
         families.reserveCapacity(cloneCount)
+        pairs.reserveCapacity(cloneCount * 2)
         for _ in 0..<cloneCount {
             let cid = get(UInt64.self)
             var e = CloneRegistry.Entry(owner: get(Int32.self), original: get(Int32.self), alloc: get(Int64.self))
@@ -511,6 +529,9 @@ private struct Reader {
             e.others.reserveCapacity(others)
             for _ in 0..<others { e.others.append(get(Int32.self)) }
             guard ok, e.others.allSatisfy({ $0 >= 0 && $0 < count }) else { return false }
+            pairs.append((e.owner, cid))
+            if e.original >= 0 && e.original != e.owner { pairs.append((e.original, cid)) }
+            for d in e.others where d != e.original { pairs.append((d, cid)) }
             families[cid] = e
         }
         return true
