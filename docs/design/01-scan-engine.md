@@ -168,7 +168,7 @@ not been seen in practice; no change planned.
 | `cloneMembers` | `[CloneMember]` | Full-clone files, claimed by the caller in one `CloneRegistry.claim`. |
 | `childDirs` | `[String]` | Child directories to walk. |
 | `deniedChildDirs` | `[String]` | Child directories the user may not list (only with `Config.userAccess`). |
-| `deferredLinks` | `[(inode, alloc, logical, cloneAware)]` | Hard links whose claim returned nil (incremental re-reads). |
+| `deferredLinks` | `[(inode, alloc, logical, cloneAware)]` | Hard links of an incremental re-read, claimed after `forget` (#18: filled from the worker's `LinkBatch`). |
 | `stats` | `ScanStats` | This directory's counters. |
 | `opened` | `Bool` | `open` succeeded. |
 | `openError` | `Int32` | errno of the failed `open`, 0 if opened. |
@@ -195,7 +195,8 @@ not been seen in practice; no change planned.
 - Local ids: `0..<roots.count` are the roots; nodes found below are appended. `globalId(local)` maps a local id
   to the id it will have in the tree, so registries record final ids during the walk.
 - A worker's hard-link claim closure calls `HardlinkRegistry.vet` then `HardlinkRegistry.claim` per
-  multiply-linked file (section 6).
+  multiply-linked file (section 6). **Built (#18):** the worker claims the directory's links as one batch after the
+  read (section 4.4, As built).
 
 ### 4.2 Live progress
 
@@ -544,6 +545,28 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
 `rootUnreadable`, snapshot rejection on `privateSize` or version, non-ASCII and case-only renames) belong to chapter 03.
 
 ## As built
+
+- #18 (2026-10-19): built as §4.4 with these readings. (1) `DirReader.read` takes an `inout LinkBatch` instead of
+  the claim closure: every multiply-linked `VREG` goes there (inode, sizes, and its name only while an update vets),
+  not into the outcome's sizes. The batch belongs to the worker and is emptied with `removeAll(keepingCapacity:)`,
+  so once warm it allocates nothing per file. (2) `HardlinkRegistry.claim(_ batch: inout LinkBatch, by:, dirPath:)`
+  returns `LinkTotals` (alloc, logical, cloneAware, files, dupes) instead of `[Bool]`: no array per directory. Under
+  one lock it applies, per link in listing order, the same vet check and the same claim rule as before, so ownership,
+  `others`, drift and the `byDir` index are unchanged. (3) `vet(_ batch:, dirPath:)` (update re-reads) looks the
+  batch up under one lock. A link with no record costs its `fstatat` outside the lock. A second acquisition for that
+  directory happens only when such a link was born before the cutoff: an unattributed hard link, the fallback path
+  (strict fails the update, tolerant counts it as uncertain). (4) The deferred claims of an update (after `forget`)
+  take one lock for all re-read directories, not one per link. The single-link `claim` stays for tests only.
+  Lock count: `HardlinkRegistry.debugLockCount` (`#if DEBUG`, absent from the release binary: `strings` and `nm`
+  find nothing). Tests (`HardlinkBatchTests`): a full scan takes exactly one lock per folder that holds hard links
+  (`-j 1` and `-j 8`); an update re-read of 12 link folders takes 12 locks, plus 1 for its one unattributed link;
+  hard links over 60 folders scanned 6 times (`-j 1`, `-j 8`) equal `du`. `scripts/bench.sh --links N` builds N/2
+  files of three names (250 per folder; 1,205 folders for 200,000 links), runs 5 full scans interleaved with `du`
+  and 3 updates that each add a file to 100 link folders. Main (`56cb311`) and #18 alternating, 25 pairs, load
+  average 11-15 (other agents running): links fixture full scan 737 ms before, 734 ms after (user CPU 66 ms before,
+  49 ms after); 1 M-file fixture 1,874 ms before, 1,862 ms after (-0.6%). The links fixture's full scan is spent in
+  the kernel (7-10 s of system time at `-j 8`, 1 s at `-j 1`): `getattrlistbulk` on multiply-linked files dominates,
+  and the registry lock was never the bottleneck there.
 
 - #44 (2026-10-19): `Scanner.scan` prints `[timing] scan.walk`, `scan.originals` and `scan.totals` with
   `FIL_TIMINGS=1` (`walk` includes `compact()`). With timings off the `Lap` is never created, so no clock is read;

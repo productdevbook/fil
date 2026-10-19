@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Scan benchmark for fil: full scan (3x, interleaved with du -skx) and incremental update after 1,000 changes
 # (3 rounds), on a generated fixture of at least 1 M files. Budget: docs/design/01-scan-engine.md section 12.
-# Usage: scripts/bench.sh [--files N] [--wide] [--keep] [--reuse DIR] [--fil PATH]
+# Usage: scripts/bench.sh [--files N] [--wide] [--links N] [--keep] [--reuse DIR] [--fil PATH]
 #   --files N    fixture size in files (default 1000000)
 #   --wide       instead: one folder of 100,000 subfolders, 3 updates of 10,000 events each (budget: < 1 s each)
+#   --links N    instead: N hard links (N/2 files of three names, 250 per folder), 5 full scans and 3 updates
 #   --keep       keep the bench directory (fixture, snapshots) on exit
 #   --reuse DIR  use an earlier kept /private/tmp/fil-bench.* directory whose marker says it is complete
 #   --fil PATH   fil binary (default .build/release/fil)
@@ -22,6 +23,8 @@ FIXTURE_VERSION=2
 WIDE=0
 WIDE_CHILDREN=100000
 WIDE_EVENTS=10000
+LINKS=0
+LINKS_PER_DIR=250
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -30,11 +33,14 @@ while [[ $# -gt 0 ]]; do
     --keep) KEEP=1; shift ;;
     --reuse) REUSE=${2:?--reuse needs a directory}; KEEP=1; shift 2 ;;
     --fil) FIL=${2:?--fil needs a path}; shift 2 ;;
-    -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    --links) LINKS=${2:?--links needs a number}; shift 2 ;;
+    -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 [[ $FILES =~ ^[0-9]+$ && $FILES -ge 20000 ]] || { echo "--files needs a number >= 20000" >&2; exit 2; }
+[[ $LINKS =~ ^[0-9]+$ && ($LINKS -eq 0 || $LINKS -ge 2000) ]] || { echo "--links needs a number >= 2000" >&2; exit 2; }
+[[ $WIDE -eq 0 || $LINKS -eq 0 ]] || { echo "--wide and --links are separate modes" >&2; exit 2; }
 [[ -x $FIL ]] || { echo "no fil binary at $FIL (swift build -c release)" >&2; exit 2; }
 
 if [[ -n $REUSE ]]; then
@@ -141,8 +147,8 @@ build_fixture() {
 
 T0=$SECONDS
 FIXTURE_NOTE=reused
-if [[ $WIDE -eq 1 ]]; then
-  : # the wide fixture is built below
+if [[ $WIDE -eq 1 || $LINKS -gt 0 ]]; then
+  : # the wide and links fixtures are built below
 elif [[ -f $MARKER && "$(cat "$MARKER")" == "version=$FIXTURE_VERSION files=$FILES" ]]; then
   echo "fixture: reusing $FIX"
 else
@@ -152,7 +158,7 @@ else
   FIXTURE_NOTE=built
 fi
 FIXTURE_SECS=$((SECONDS - T0))
-[[ $WIDE -eq 1 ]] || echo "fixture: $FIXTURE_NOTE in ${FIXTURE_SECS}s, load: $(sysctl -n vm.loadavg)"
+[[ $WIDE -eq 1 || $LINKS -gt 0 ]] || echo "fixture: $FIXTURE_NOTE in ${FIXTURE_SECS}s, load: $(sysctl -n vm.loadavg)"
 
 # ---------------------------------------------------------------- measuring
 
@@ -173,6 +179,94 @@ parse() {
 }
 
 # ---------------------------------------------------------------- --wide: child lookup in a folder of 100,000
+
+# ---------------------------------------------------------------- --links N: hard-link claims (issue #18)
+
+# LINKS/2 files in folders of LINKS_PER_DIR under src/, each linked once into links/a/ and once into links/b/ (same
+# folder names): LINKS hard links, every file with three names. One file in eight holds 4 KB. Full scans 5x interleaved
+# with du; then 3 updates, each adding one file to 100 link folders, so that each re-reads 100 x LINKS_PER_DIR links.
+if [[ $LINKS -gt 0 ]]; then
+  LFIX="$BENCH/links/fixture"
+  LMARKER="$BENCH/links/complete"
+  T0=$SECONDS
+  if [[ -f $LMARKER && "$(cat "$LMARKER")" == "links=$LINKS per=$LINKS_PER_DIR" ]]; then
+    echo "links fixture: reusing $LFIX"
+  else
+    echo "links fixture: building $LINKS hard links under $LFIX"
+    rm -rf -- "$BENCH/links"
+    mkdir -p "$LFIX/src" "$LFIX/links/a" "$LFIX/links/b" "$BENCH/links/lists"
+    awk -v fix="$LFIX" -v n="$((LINKS / 2))" -v per="$LINKS_PER_DIR" \
+      -v dirs="$BENCH/links/lists/dirs.txt" -v files="$BENCH/links/lists/files.txt" 'BEGIN {
+        for (i = 0; i < n; i++) {
+          if (i % per == 0) { d = sprintf("s%05d", i / per); print d > dirs }
+          print fix "/src/" d "/f" (i % per) > files
+        } }'
+    sed "s|^|$LFIX/src/|" "$BENCH/links/lists/dirs.txt" | xargs -n 4000 mkdir -p
+    sed "s|^|$LFIX/links/a/|" "$BENCH/links/lists/dirs.txt" | xargs -n 4000 mkdir -p
+    sed "s|^|$LFIX/links/b/|" "$BENCH/links/lists/dirs.txt" | xargs -n 4000 mkdir -p
+    awk 'NR % 8 != 0' "$BENCH/links/lists/files.txt" | xargs -n 8000 -P 4 touch
+    awk 'NR % 8 == 0' "$BENCH/links/lists/files.txt" | xargs -n 2000 -P 4 sh -c \
+      'for f; do printf "%04096d" 0 > "$f"; done' _
+    # One ln per folder and side: ln SRC... DIR links every file of the folder.
+    awk '{ print $0; print $0 }' "$BENCH/links/lists/dirs.txt" | awk -v fix="$LFIX" \
+      '{ side = (NR % 2) ? "a" : "b"; print fix "/src/" $0 " " fix "/links/" side "/" $0 }' |
+      xargs -n 2 -P 4 sh -c 'ln "$0"/* "$1"/'
+    printf 'links=%s per=%s\n' "$LINKS" "$LINKS_PER_DIR" > "$LMARKER"
+  fi
+  echo "links fixture: ready in $((SECONDS - T0))s, load: $(sysctl -n vm.loadavg)"
+  find "$LFIX/links" -name 'benchlinks-*' -type f -delete
+  echo "--- full scans (fil scan --full -j $JOBS --top 0 --porcelain, 5x, interleaved with du -skx)"
+  LFULL_T=()
+  for i in 1 2 3 4 5; do
+    du_kb=$(du -skx "$LFIX" | awk '{ print $1 }')
+    timed "$FIL" scan "$LFIX" --full -j "$JOBS" --top 0 --porcelain
+    parse "$T_OUT" || continue
+    LFULL_T+=("$T_REAL")
+    verdict=ok
+    if [[ $P_alloc -ne $((du_kb * 1024)) ]]; then
+      verdict=MISMATCH
+      fail "links full run $i: alloc $P_alloc != du*1024 $((du_kb * 1024))"
+    fi
+    echo "run $i: ${T_REAL}s files=$P_files dirs=$P_dirs alloc=$P_alloc du=$((du_kb * 1024)) $verdict"
+  done
+  echo "--- updates (one new file in 100 link folders, 3 rounds, each compared with --full)"
+  LINC_T=()
+  ndirs=$(wc -l < "$BENCH/links/lists/dirs.txt" | tr -d ' ')
+  for r in 1 2 3; do
+    "$FIL" scan "$LFIX" --full -j "$JOBS" --top 0 --porcelain > /dev/null
+    sleep "$FSEVENTS_WAIT"
+    awk -v fix="$LFIX" -v r="$r" -v n="$ndirs" '{ if ((NR + r) % int((n + 99) / 100) == 0)
+      printf "%s/links/a/%s/benchlinks-r%d\n", fix, $0, r }' "$BENCH/links/lists/dirs.txt" | xargs -n 500 touch
+    sleep "$FSEVENTS_WAIT"
+    timed "$FIL" scan "$LFIX" -j "$JOBS" --top 0 --porcelain
+    parse "$T_OUT" || continue
+    inc_mode=$P_mode inc_alloc=$P_alloc inc_files=$P_files inc_dirs=$P_dirs inc_logical=$P_logical
+    full_out=$("$FIL" scan "$LFIX" --full -j "$JOBS" --top 0 --porcelain)
+    parse "$full_out" || continue
+    verdict=ok
+    if [[ $inc_mode != incremental ]]; then
+      verdict=FELL-BACK
+      fail "links update $r ran as $inc_mode, not incremental"
+    fi
+    if [[ $inc_alloc -ne $P_alloc || $inc_files -ne $P_files || $inc_dirs -ne $P_dirs || $inc_logical -ne $P_logical ]]; then
+      verdict=DIFFERS
+      fail "links update $r: incremental alloc/logical/files/dirs $inc_alloc/$inc_logical/$inc_files/$inc_dirs, full $P_alloc/$P_logical/$P_files/$P_dirs"
+    fi
+    LINC_T+=("$T_REAL")
+    echo "update $r: ${T_REAL}s mode=$inc_mode files=$inc_files (full: $P_files) $verdict"
+  done
+  [[ ${#LFULL_T[@]} -gt 0 && ${#LINC_T[@]} -gt 0 ]] || { echo "RESULT: no measurements"; exit 1; }
+  echo
+  echo "=== medians"
+  echo "machine:           $(sysctl -n hw.model), $(sysctl -n hw.ncpu) cpu, $(($(sysctl -n hw.memsize) / 1073741824)) GB, macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
+  echo "load average:      $(sysctl -n vm.loadavg)"
+  echo "hard links:        $LINKS ($((LINKS / 2)) files with three names, $LINKS_PER_DIR per folder)"
+  echo "full scan:         $(printf '%s\n' "${LFULL_T[@]}" | median) s"
+  echo "incremental:       $(printf '%s\n' "${LINC_T[@]}" | median) s"
+  if [[ $FAILS -gt 0 ]]; then echo "RESULT: $FAILS check(s) FAILED"; exit 1; fi
+  echo "RESULT: all checks passed"
+  exit 0
+fi
 
 # One folder with WIDE_CHILDREN subfolders. Each round adds one file in WIDE_EVENTS of them (every tenth, shifted per
 # round), so the update replays WIDE_EVENTS events whose paths all resolve through the wide folder (issue #17).

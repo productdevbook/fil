@@ -159,6 +159,59 @@ struct RegistryIndex {
     }
 }
 
+/// The multiply-linked files of one directory listing, claimed or vetted by `HardlinkRegistry` under one lock
+/// acquisition (chapter 01 §4.4). One per worker, emptied for each directory with its capacity kept: once its arrays
+/// have grown, collecting a link allocates nothing.
+struct LinkBatch {
+    struct Link {
+        var inode: UInt64
+        var alloc: Int64
+        var logical: Int64
+        var cloneAware: Int64
+        /// Offset of the entry's NUL-terminated name in `names`; -1 when names are not kept.
+        var name: Int32
+    }
+
+    private(set) var links: [Link] = []
+    /// Names are needed only to vet links during an update (a birth-time `fstatat`); a full scan copies none.
+    let keepNames: Bool
+    private var names: [CChar] = []
+    /// Scratch for the registry: indices into `links` whose birth time `vet` must check.
+    var suspects: [Int32] = []
+
+    init(keepNames: Bool) { self.keepNames = keepNames }
+
+    mutating func reset() {
+        links.removeAll(keepingCapacity: true)
+        names.removeAll(keepingCapacity: true)
+    }
+
+    @inline(__always)
+    mutating func append(
+        _ inode: UInt64, alloc: Int64, logical: Int64, cloneAware: Int64, name: UnsafePointer<CChar>?
+    ) {
+        var offset: Int32 = -1
+        if keepNames, let name {
+            offset = Int32(names.count)
+            names.append(contentsOf: UnsafeBufferPointer(start: name, count: strlen(name) + 1))
+        }
+        links.append(Link(inode: inode, alloc: alloc, logical: logical, cloneAware: cloneAware, name: offset))
+    }
+
+    func name(at offset: Int32) -> String {
+        names.withUnsafeBufferPointer { String(cString: $0.baseAddress! + Int(offset)) }
+    }
+}
+
+/// What the counted links of a `LinkBatch` add to their directory; `dupes` were counted elsewhere.
+struct LinkTotals: Equatable {
+    var alloc: Int64 = 0
+    var logical: Int64 = 0
+    var cloneAware: Int64 = 0
+    var files: Int64 = 0
+    var dupes = 0
+}
+
 /// Tracks every multiply-linked inode so each hard link is counted once. Per inode it keeps the directory
 /// that owns (counts) it, its sizes, and every other directory where a link was seen. This lets a directory's
 /// records be dropped when it is re-read, and lets ownership move to another live link when the owner loses its own.
@@ -175,6 +228,10 @@ final class HardlinkRegistry: @unchecked Sendable {
     }
 
     private let lock = NSLock()
+    #if DEBUG
+        /// Lock acquisitions so far, for tests of the per-directory budget. Not compiled into release builds.
+        let debugLockCount = Atomic<Int>(0)
+    #endif
     private(set) var table: [UInt64: Entry]
     /// Per directory, the inodes it owns or links (`owner` or `others`), so that `forget` touches only the directories
     /// it is given. Nil until `buildIndex` (a full scan never forgets, so it never pays for it); then kept up to date.
@@ -202,10 +259,19 @@ final class HardlinkRegistry: @unchecked Sendable {
         byDir = index
     }
 
+    /// Takes the lock; every acquisition goes through here (counted in debug builds).
+    @inline(__always)
+    private func acquire() {
+        lock.lock()
+        #if DEBUG
+            debugLockCount.wrappingAdd(1, ordering: .relaxed)
+        #endif
+    }
+
     /// Builds the per-directory index from the table, O(table). `Snapshot.load` hands the registry an index made while
     /// decoding instead; a tree scanned in this process gets one on its first `forget`.
     func buildIndex() {
-        lock.lock()
+        acquire()
         defer { lock.unlock() }
         buildIndexLocked()
     }
@@ -219,10 +285,54 @@ final class HardlinkRegistry: @unchecked Sendable {
         }
     }
 
-    /// Records a link to `inode` seen in `dir`. True if `dir` should count the size (it is, or just became, the owner).
-    func claim(_ inode: UInt64, by dir: Int32, alloc: Int64, logical: Int64, cloneAware: Int64) -> Bool {
-        lock.lock()
+    /// Claims every link of `batch`, all listed in `dir` (at `dirPath`), under one lock acquisition: per link, in
+    /// listing order, the same decision as `claimLocked`. During an update each link is first vetted as `vet` does.
+    /// Returns what the counted links add to `dir`; the others are `dupes`.
+    func claim(_ batch: inout LinkBatch, by dir: Int32, dirPath: String) -> LinkTotals {
+        var totals = LinkTotals()
+        guard !batch.links.isEmpty else { return totals }
+        batch.suspects.removeAll(keepingCapacity: true)
+        let vetting = birthCutoff != nil
+        acquire()
+        for k in batch.links.indices {
+            let l = batch.links[k]
+            if vetting && l.name >= 0 && isSuspectLocked(l.inode) { batch.suspects.append(Int32(k)) }
+            if claimLocked(l.inode, by: dir, alloc: l.alloc, logical: l.logical, cloneAware: l.cloneAware) {
+                totals.alloc += l.alloc
+                totals.logical += l.logical
+                totals.cloneAware += l.cloneAware
+                totals.files += 1
+            } else {
+                totals.dupes += 1
+            }
+        }
+        lock.unlock()
+        if !batch.suspects.isEmpty { vetSuspects(batch, dirPath: dirPath) }
+        return totals
+    }
+
+    /// Claims the links an update deferred (`DirOutcome.deferredLinks`), each in its own directory, under one lock
+    /// acquisition. `result[k]` is true when `links[k].dir` counts the size.
+    func claim(_ links: [(dir: Int32, inode: UInt64, alloc: Int64, logical: Int64, cloneAware: Int64)]) -> [Bool] {
+        guard !links.isEmpty else { return [] }
+        acquire()
         defer { lock.unlock() }
+        return links.map {
+            claimLocked($0.inode, by: $0.dir, alloc: $0.alloc, logical: $0.logical, cloneAware: $0.cloneAware)
+        }
+    }
+
+    /// One link, under its own lock acquisition (tests). Scans and updates claim batches.
+    func claim(_ inode: UInt64, by dir: Int32, alloc: Int64, logical: Int64, cloneAware: Int64) -> Bool {
+        acquire()
+        defer { lock.unlock() }
+        return claimLocked(inode, by: dir, alloc: alloc, logical: logical, cloneAware: cloneAware)
+    }
+
+    /// Records a link to `inode` seen in `dir`. True if `dir` should count the size (it is, or just became, the owner).
+    /// Lock held.
+    @inline(__always)
+    private func claimLocked(_ inode: UInt64, by dir: Int32, alloc: Int64, logical: Int64, cloneAware: Int64) -> Bool {
         guard let i = table.index(forKey: inode) else {
             table[inode] = Entry(owner: dir, alloc: alloc, logical: logical, cloneAware: cloneAware)
             byDir?.add(inode, to: dir)
@@ -259,14 +369,14 @@ final class HardlinkRegistry: @unchecked Sendable {
 
     /// Incremental only: starts recording size changes seen through a link outside the owning directory.
     func trackDrift() {
-        lock.lock()
+        acquire()
         drift = [:]
         lock.unlock()
     }
 
     /// Returns, per owner directory, how much its counted size must change, and stops recording.
     func takeDrift() -> [Int32: (alloc: Int64, logical: Int64, cloneAware: Int64)] {
-        lock.lock()
+        acquire()
         defer { lock.unlock() }
         let out = drift ?? [:]
         drift = nil
@@ -275,7 +385,7 @@ final class HardlinkRegistry: @unchecked Sendable {
 
     /// Starts an incremental update of a tree scanned at `cutoff`; clears what the previous update found.
     func beginUpdate(cutoff: Int64, strict: Bool) {
-        lock.lock()
+        acquire()
         birthCutoff = cutoff
         self.strict = strict
         unattributed = false
@@ -286,37 +396,56 @@ final class HardlinkRegistry: @unchecked Sendable {
     }
 
     func endUpdate() {
-        lock.lock()
+        acquire()
         birthCutoff = nil
         unattributedInodes = []
         lock.unlock()
     }
 
-    /// Incremental only: flags a multiply-linked file that predates the snapshot but has no record.
-    /// `name` is the entry inside `dirPath`; the birth time costs one `fstatat` and only for such rare entries.
-    /// Strict mode stops looking once `maxUnattributedPaths` are known (the update fails anyway); tolerant mode
-    /// keeps going so that every such file's `alloc` is in `unattributedAlloc`, but keeps only the first paths.
-    func vet(_ inode: UInt64, alloc: Int64, dirPath: String, name: UnsafePointer<CChar>?) {
-        guard let cutoff = birthCutoff, let name else { return }
-        lock.lock()
-        let skip =
-            table[inode] != nil || unattributedInodes.contains(inode)
-            || (strict && unattributedPaths.count >= maxUnattributedPaths)
-        lock.unlock()
-        if skip { return }
-        var st = stat()
-        let path = (dirPath == "/" ? "" : dirPath) + "/" + String(cString: name)
-        guard fstatat(AT_FDCWD, path, &st, AT_SYMLINK_NOFOLLOW) == 0 else { return }
-        let born = Int64(st.st_birthtimespec.tv_sec) * 1_000_000_000 + Int64(st.st_birthtimespec.tv_nsec)
-        if born < cutoff {
-            lock.lock()
-            if unattributedInodes.insert(inode).inserted {
-                unattributed = true
-                unattributedAlloc += alloc
-                if unattributedPaths.count < maxUnattributedPaths { unattributedPaths.append(path) }
-            }
-            lock.unlock()
+    /// Incremental only: flags the multiply-linked files of `batch` (listed in `dirPath`) that predate the snapshot but
+    /// have no record. One lock acquisition looks them all up; only the unknown ones cost an `fstatat` for their birth
+    /// time (`vetSuspects`). Strict mode stops looking once `maxUnattributedPaths` are known (the update fails anyway);
+    /// tolerant mode keeps going so that every such file's `alloc` is in `unattributedAlloc`, but keeps only the first
+    /// paths.
+    func vet(_ batch: inout LinkBatch, dirPath: String) {
+        guard birthCutoff != nil, !batch.links.isEmpty else { return }
+        batch.suspects.removeAll(keepingCapacity: true)
+        acquire()
+        for k in batch.links.indices where batch.links[k].name >= 0 && isSuspectLocked(batch.links[k].inode) {
+            batch.suspects.append(Int32(k))
         }
+        lock.unlock()
+        if !batch.suspects.isEmpty { vetSuspects(batch, dirPath: dirPath) }
+    }
+
+    /// An update met `inode`: it has no record and is not yet known to be unattributed. Lock held.
+    @inline(__always)
+    private func isSuspectLocked(_ inode: UInt64) -> Bool {
+        table[inode] == nil && !unattributedInodes.contains(inode)
+            && !(strict && unattributedPaths.count >= maxUnattributedPaths)
+    }
+
+    /// Checks the birth time of `batch.suspects` (one `fstatat` each, without the lock) and records those born before
+    /// `birthCutoff`. Only then is the lock taken a second time for the directory: an unattributed hard link was met.
+    private func vetSuspects(_ batch: LinkBatch, dirPath: String) {
+        guard let cutoff = birthCutoff else { return }
+        var found: [(inode: UInt64, alloc: Int64, path: String)] = []
+        for k in batch.suspects {
+            let l = batch.links[Int(k)]
+            var st = stat()
+            let path = (dirPath == "/" ? "" : dirPath) + "/" + batch.name(at: l.name)
+            guard fstatat(AT_FDCWD, path, &st, AT_SYMLINK_NOFOLLOW) == 0 else { continue }
+            let born = Int64(st.st_birthtimespec.tv_sec) * 1_000_000_000 + Int64(st.st_birthtimespec.tv_nsec)
+            if born < cutoff { found.append((l.inode, l.alloc, path)) }
+        }
+        guard !found.isEmpty else { return }
+        acquire()
+        for f in found where unattributedInodes.insert(f.inode).inserted {
+            unattributed = true
+            unattributedAlloc += f.alloc
+            if unattributedPaths.count < maxUnattributedPaths { unattributedPaths.append(f.path) }
+        }
+        lock.unlock()
     }
 
     /// Drops every link recorded in `dirs` (each is about to be re-read or is gone). Touches only the entries those
@@ -324,7 +453,7 @@ final class HardlinkRegistry: @unchecked Sendable {
     /// settles it after the re-read. Entries are changed in place; only the ones that lose their last link are removed.
     func forget(_ dirs: Set<Int32>) {
         guard !dirs.isEmpty else { return }
-        lock.lock()
+        acquire()
         defer { lock.unlock() }
         if byDir == nil { buildIndexLocked() }
         for d in dirs {
@@ -351,7 +480,7 @@ final class HardlinkRegistry: @unchecked Sendable {
     /// Gives every ownerless inode to another live directory that still links it, or drops it if none is left.
     /// Returns the sizes each new owner must now count. Walks only the orphans, not the table.
     func resolveOrphans() -> [(dir: Int32, alloc: Int64, logical: Int64, cloneAware: Int64)] {
-        lock.lock()
+        acquire()
         defer { lock.unlock() }
         guard !orphans.isEmpty else { return [] }
         var moved: [(dir: Int32, alloc: Int64, logical: Int64, cloneAware: Int64)] = []
@@ -375,7 +504,7 @@ final class HardlinkRegistry: @unchecked Sendable {
     /// Renumbers directories after `DiskTree.compact`; `map[old]` is the new id, or -1 for a dropped directory.
     /// Updates entries in place instead of rebuilding the table.
     func remap(_ map: [Int32]) {
-        lock.lock()
+        acquire()
         defer { lock.unlock() }
         var gone: [UInt64] = []
         var i = table.startIndex

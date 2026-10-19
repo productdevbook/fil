@@ -245,6 +245,8 @@ private final class ParallelScan: @unchecked Sendable {
     private func workerLoop() {
         let reader = DirReader(config)
         defer { reader.deallocate() }
+        // Reused for every directory this worker reads. Set before the workers start, the cutoff is fixed meanwhile.
+        var links = LinkBatch(keepNames: hardlinks.birthCutoff != nil)
 
         cond.lock()
         while true {
@@ -267,11 +269,15 @@ private final class ParallelScan: @unchecked Sendable {
             let ownStat = isRoot || item.volumeRoot
             var out = reader.read(
                 item.path, cPath: item.cPath, checkOwnDevice: checkRootDevice && isRoot, statSelf: ownStat,
-                allocUnit: item.allocUnit
-            ) {
-                inode, alloc, logical, cloneAware, name in
-                self.hardlinks.vet(inode, alloc: alloc, dirPath: item.path, name: name)
-                return self.hardlinks.claim(inode, by: gid, alloc: alloc, logical: logical, cloneAware: cloneAware)
+                allocUnit: item.allocUnit, links: &links)
+            if !links.links.isEmpty {
+                // One lock per directory, not per file (chapter 01 §4.4).
+                let c = hardlinks.claim(&links, by: gid, dirPath: item.path)
+                out.alloc += c.alloc
+                out.logical += c.logical
+                out.cloneAware += c.cloneAware
+                out.files += c.files
+                out.stats.hardlinkDupes += c.dupes
             }
             if !out.cloneMembers.isEmpty {
                 // One lock per directory, not per file.
@@ -391,7 +397,8 @@ struct DirOutcome {
     var deniedChildDirs: [Int] = []
     /// Child directories skipped because another volume is mounted on them (not with `crossDevices`).
     var mountPoints: [String] = []
-    /// Multiply-linked files whose claim was deferred (the claim closure returned nil).
+    /// Multiply-linked files of an update re-read (`Incremental.readDirectories`), claimed after the old records are
+    /// dropped. Empty in a scan, which claims its `LinkBatch` right after the read.
     var deferredLinks: [(inode: UInt64, alloc: Int64, logical: Int64, cloneAware: Int64)] = []
     var stats = ScanStats()
     var opened = true
@@ -457,14 +464,15 @@ struct DirReader {
 
     func deallocate() { buf.deallocate() }
 
-    /// `claim(inode, alloc, logical, cloneAware, name)` decides whether a multiply-linked inode is counted here;
-    /// returning nil defers it. `checkOwnDevice` overrides `Config.checkOwnDevice` for this directory.
-    /// `cPath`, when set, is what is opened (NUL-terminated bytes; `path` is then only a display form).
+    /// Multiply-linked regular files are not counted in the outcome: `links` (emptied first) receives them, and the
+    /// caller claims or defers them as one batch (chapter 01 §4.4). `checkOwnDevice` overrides `Config.checkOwnDevice`
+    /// for this directory. `cPath`, when set, is what is opened (NUL-terminated bytes; `path` is then only a display
+    /// form).
     func read(
         _ path: String, cPath: [CChar]? = nil, checkOwnDevice: Bool? = nil, statSelf: Bool = false,
-        allocUnit: Int64? = nil,
-        claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?
+        allocUnit: Int64? = nil, links: inout LinkBatch
     ) -> DirOutcome {
+        links.reset()
         var out = DirOutcome()
         #if DEBUG
             if config.faults.removeBeforeOpen.contains(path) { try? FileManager.default.removeItem(atPath: path) }
@@ -561,7 +569,8 @@ struct DirReader {
             var entry = UnsafeRawPointer(buf)
             for _ in 0..<count {
                 let length = Int(entry.loadUnaligned(as: UInt32.self))
-                parseEntry(entry + 4, into: &out, dirPath: path, dirCPath: cPath, skip: skip, unit: unit, claim: claim)
+                parseEntry(
+                    entry + 4, into: &out, dirPath: path, dirCPath: cPath, skip: skip, unit: unit, batch: &links)
                 entry += length
             }
         }
@@ -595,8 +604,7 @@ struct DirReader {
     @inline(__always)
     private func parseEntry(
         _ start: UnsafeRawPointer, into out: inout DirOutcome, dirPath: String, dirCPath: [CChar]?,
-        skip: Set<String>?, unit: Int64,
-        claim: (UInt64, Int64, Int64, Int64, UnsafePointer<CChar>?) -> Bool?
+        skip: Set<String>?, unit: Int64, batch: inout LinkBatch
     ) {
         var f = start
         let returned = f.loadUnaligned(as: attribute_set_t.self)
@@ -761,17 +769,12 @@ struct DirReader {
             return
         }
         if links > 1 && type == UInt32(VREG.rawValue) {
-            // A hard-linked file counts once with its full size; it is not deduplicated as a clone.
-            switch claim(fileID, alloc, logical, realAlloc, namePtr?.assumingMemoryBound(to: CChar.self)) {
-            case nil:
-                out.deferredLinks.append((fileID, alloc, logical, realAlloc))
-                return
-            case false?:
-                out.stats.hardlinkDupes += 1
-                return
-            case true?:
-                out.cloneAware += realAlloc
-            }
+            // A hard-linked file counts once with its full size; it is not deduplicated as a clone. The caller claims
+            // the whole batch after the read and adds what is counted here.
+            batch.append(
+                fileID, alloc: alloc, logical: logical, cloneAware: realAlloc,
+                name: namePtr?.assumingMemoryBound(to: CChar.self))
+            return
         } else if extFlags & UInt64(EF_SHARES_ALL_BLOCKS) != 0 && cloneID != 0 && type == UInt32(VREG.rawValue) {
             out.cloneMembers.append(CloneMember(cloneID: cloneID, alloc: realAlloc, isOriginal: cloneID == fileID))
         } else {

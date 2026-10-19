@@ -155,7 +155,8 @@ struct FATVolumeTests {
                 DirReader.Config(
                     rootDev: st.st_dev, options: ScanOptions(), allocUnit: Scanner.allocationUnit(of: mnt)))
             defer { reader.deallocate() }
-            let out = reader.read(mnt, statSelf: true) { _, _, _, _, _ in true }
+            var links = LinkBatch(keepNames: false)
+            let out = reader.read(mnt, statSelf: true, links: &links)
             #expect(out.childDirs == ["sub"])
             #expect(out.childAllocs.map(\.index) == [0])
             #expect(

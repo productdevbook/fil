@@ -375,10 +375,9 @@ public enum Incremental {
         tree.mountPoints += newMounts
         t.lap("forget")
 
-        for l in pendingLinks
-        where !tree.nodes[Int(l.dir)].isDead
-            && tree.hardlinks.claim(l.inode, by: l.dir, alloc: l.alloc, logical: l.logical, cloneAware: l.cloneAware)
-        {
+        // One registry lock for every deferred link of the re-reads.
+        let liveLinks = pendingLinks.filter { !tree.nodes[Int($0.dir)].isDead }
+        for (l, counted) in zip(liveLinks, tree.hardlinks.claim(liveLinks)) where counted {
             tree.nodes[Int(l.dir)].ownAlloc += l.alloc
             tree.nodes[Int(l.dir)].ownLogical += l.logical
             tree.nodes[Int(l.dir)].ownCloneAware += l.cloneAware
@@ -546,8 +545,9 @@ public enum Incremental {
     }
 
     /// Reads each directory once with up to `options.threads` workers; results are in input order.
-    /// Invariant: nothing mutates the hard-link table while this runs. Workers only call `vet`, which reads the
-    /// table under its lock; every claim is deferred (the closure returns nil) and made after `forget`, on one thread.
+    /// Invariant: nothing mutates the hard-link table while this runs. Workers only call `vet`, once per directory,
+    /// which reads the table under its lock; every claim is deferred (`DirOutcome.deferredLinks`) and made after
+    /// `forget`, on one thread.
     /// `cPaths[k]`, when set, is what is opened for `paths[k]` (`DiskTree.cPath(of:)`).
     static func readDirectories(
         _ paths: [String], cPaths: [[CChar]?], tree: DiskTree,
@@ -567,14 +567,17 @@ public enum Incremental {
             DispatchQueue.concurrentPerform(iterations: workers) { _ in
                 let reader = DirReader(config)
                 defer { reader.deallocate() }
+                var links = LinkBatch(keepNames: true)
                 while true {
                     let k = nextIndex.wrappingAdd(1, ordering: .relaxed).oldValue
                     guard k < paths.count else { break }
                     let dirPath = paths[k]
                     var t0 = Timings.enabled ? Timings.Lap("apply") : nil
-                    out[k] = reader.read(dirPath, cPath: cPaths[k], statSelf: true) { inode, alloc, _, _, name in
-                        hardlinks.vet(inode, alloc: alloc, dirPath: dirPath, name: name)
-                        return nil
+                    out[k] = reader.read(dirPath, cPath: cPaths[k], statSelf: true, links: &links)
+                    if !links.links.isEmpty {
+                        // One registry lock for the directory's links (chapter 01 §4.4); their claims are deferred.
+                        hardlinks.vet(&links, dirPath: dirPath)
+                        out[k].deferredLinks = links.links.map { ($0.inode, $0.alloc, $0.logical, $0.cloneAware) }
                     }
                     if let mark = t0?.mark, ContinuousClock.now - mark > .milliseconds(20) {
                         t0?.lap("  slow read: \(out[k].files) files, \(dirPath)")

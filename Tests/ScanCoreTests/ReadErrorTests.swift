@@ -40,7 +40,8 @@ struct RawNameTests {
             #expect(lstat(box.path("mnt"), &st) == 0)
             let reader = DirReader(DirReader.Config(rootDev: st.st_dev, options: ScanOptions()))
             defer { reader.deallocate() }
-            let out = reader.read(box.path("mnt")) { _, _, _, _, _ in true }
+            var links = LinkBatch(keepNames: false)
+            let out = reader.read(box.path("mnt"), links: &links)
             let raw = Array("longname_ab".utf8) + [0xED, 0xA0, 0x80]
             #expect(out.rawChildDirs.map(\.bytes) == [raw])
             let k = try #require(out.rawChildDirs.first?.index)
