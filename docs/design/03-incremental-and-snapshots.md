@@ -760,9 +760,12 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   kills it and appends `DirNode(name:, fileID: st_ino)` to `newDirs`. Readings: (1) a known child with `fileID = 0`
   (a snapshot without tag 7) learns the listed id, so the check starts with the folder's parent's next read; (2) the
   retried incomplete folder's own `lstat` (§5.2 of #7's second review) also compares identities, so a recreated
-  folder has its parent read; (3) firmlink sources are never compared with `lstat` (chapter 01 As built #49);
+  folder has its parent read; (3) mount points and firmlink sources have `fileID = 0` (chapter 01 As built #49);
   (4) a node's `fileID` changes only through its parent's listing, never through its own `fstat`, so the root
-  keeps its scan-time `st_ino`. Snapshot: section 7 sits after the mount points and before stats, written when any
+  keeps its scan-time `st_ino`; (5) a `full` target other than the root gets `fileID = 0` when it is rescanned (it
+  may be a recreated folder whose parent had no event), and its parent's next listing sets it, so that listing does
+  not walk it again. Known limit: on FAT and exFAT a recreated folder often gets its old id back (msdosfs derives it
+  from the first cluster) and is not detected, as before #49; network volumes never update incrementally. Snapshot: section 7 sits after the mount points and before stats, written when any
   node has a non-zero id; `count != nodes` is `corrupt`; a file without it loads with every `fileID = 0`. Tests:
   `FolderIdentityTests` (the incomplete-parent case fails on the old diff).
 

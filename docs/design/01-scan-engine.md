@@ -253,7 +253,7 @@ directory. `MemoryLayout<DirNode>.stride == 104` bytes (96 before #49); names of
 | 72 | `totalFiles` | `Int64` | Own + all live descendants. |
 | 80 | `totalDirs` | `Int64` | Number of live descendant directories (not counting itself). |
 | 88 | `totalCloneAware` | `Int64` | Own + all live descendants. |
-| 96 | `fileID` | `UInt64` | Identity: `ATTR_CMN_FILEID` from the listing that found it (root: `st_ino`); 0 = unknown (#49). |
+| 96 | `fileID` | `UInt64` | Identity: `ATTR_CMN_FILEID` from the listing that found it (root: `st_ino`); 0 = unknown: mount points, firmlink sources, folders rescanned in full until their parent's next listing (#49). |
 
 **[Change] (#7)** Add `incomplete: Bool` at offset 5 (padding; stride unchanged).
 
@@ -695,9 +695,13 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
   every listing already returns, kept for each child directory (`DirOutcome.childIDs`, parallel to `childDirs`); the
   root's comes from the `lstat` of `Scanner.scan`. No attribute and no syscall added. Fact: the id of a firmlink in its
   parent's listing (`/Users` in `/`) is the system volume's, while `lstat`/`fstat` give the data-volume folder's inode
-  on the same `st_dev`. So a folder's identity is only ever taken from its parent's listing, never from the `fstat`
-  of its own read (a re-read of `/Users` would otherwise make the next read of `/` see another folder and walk the
-  whole home again), and the `lstat` comparison of chapter 03 §5.2 skips firmlink sources. Measured
+  on the same `st_dev`; a mount point is listed with the covered folder's id, also on the same device
+  (`/System/Volumes/Data` in `/System/Volumes`). So a folder's identity is only ever taken from its parent's listing,
+  never from the `fstat` of its own read, and two kinds of child get none (`fileID = 0`, never compared): mount points
+  (`DIR_MNTSTATUS_MNTPOINT`) and firmlink sources (`DirReader.Config.firmlinkNames`, parent path -> names, looked up
+  once per directory and only where firmlinks are; their sealed-volume ids may change with a system update). Known
+  limit: msdosfs (FAT, exFAT) derives a folder's id from its first cluster, which a recreated folder often gets back,
+  so a recreate there may go undetected, as before #49; network volumes never update incrementally. Measured
   (`scripts/bench.sh`, `main` and #49 alternating on one kept fixture, load average 9-20): full scan median of the
   runs' medians 2.44 s before (2.44 / 1.91 / 2.71), 2.24 s after (2.24 / 1.93 / 2.76 / 2.78); update after 1,000
   changes 1.43 s before (0.71 / 1.43 / 1.64), 0.82 s after (0.49 / 1.55 / 0.82 / 1.17), both noise at that load. One
