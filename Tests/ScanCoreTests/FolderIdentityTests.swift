@@ -87,6 +87,36 @@ struct FolderIdentityTests {
         }
     }
 
+    @Test("a folder rescanned in full is not walked again by its parent's next re-read")
+    func rescannedNotWalkedTwice() throws {
+        try Fixture.with { f in
+            try f.mk("P/X/old", bytes: 300_000)
+            try f.mk("P/X/deep/old", bytes: 200_000)
+            let tree = try Scanner.scan(f.root)
+            try f.remove("P/X")
+            try f.mk("P/X/new", bytes: 40_000)
+            // Only X's own event, with its subtree flagged: P is not re-read.
+            var report = UpdateReport()
+            #expect(
+                Incremental.applyTracked(
+                    [EventHistory.Event(path: f.path("P/X"), mustScanSubDirs: true)],
+                    to: tree, options: ScanOptions(), report: &report) == nil)
+            let x = try #require(tree.node(at: f.path("P/X")))
+            #expect(tree.nodes[x].totalAlloc == f.duBytes("P/X"))
+            #expect(tree.nodes[x].fileID == 0)
+            // P's next re-read keeps X (no second walk) and learns its id.
+            report = UpdateReport()
+            #expect(
+                Incremental.applyTracked(
+                    [EventHistory.Event(path: f.path("P"), mustScanSubDirs: false)],
+                    to: tree, options: ScanOptions(), report: &report) == nil)
+            #expect(report.dirsRemoved == 0 && report.subtreesScanned == 0)
+            #expect(tree.node(at: f.path("P/X")) == x)
+            #expect(tree.nodes[x].fileID == inode(f.path("P/X")))
+            #expect(Totals(tree) == Totals(try Scanner.scan(f.root)))
+        }
+    }
+
     @Test("a complete re-read of the parent walks a folder recreated under the same name as new")
     func recreatedUnderListedParent() throws {
         try Fixture.with { f in

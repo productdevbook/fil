@@ -391,6 +391,10 @@ public enum Incremental {
             tree.forEachChild(of: id) { kids.append($0) }
             kids.forEach(kill)
         }
+        // A rescanned folder may be another one under the same name (deleted and recreated, with no event on the
+        // parent): its identity is unknown until the parent's next listing sets it, so that listing does not walk it
+        // again. The root keeps its `st_ino`.
+        for id in full where id != 0 { tree.nodes[Int(id)].fileID = 0 }
         t.lap("dead")
         // Every record of a re-read, rescanned or removed directory is dropped; the re-read puts back what is still there.
         tree.hardlinks.forget(affected)
