@@ -28,6 +28,10 @@ public struct DirNode: Sendable {
     public var totalFiles: Int64 = 0
     public var totalDirs: Int64 = 0
     public var totalCloneAware: Int64 = 0
+    /// The directory's identity: `ATTR_CMN_FILEID` from the listing that found it (the root: `st_ino`). An update tells
+    /// a folder deleted and recreated under the same name from the old one by it. 0 = unknown, never compared.
+    /// At offset 96; the stride is 104 bytes.
+    public var fileID: UInt64 = 0
 
     public var isDead: Bool { parent == DirNode.dead }
 }

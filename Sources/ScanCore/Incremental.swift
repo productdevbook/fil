@@ -230,7 +230,9 @@ public enum Incremental {
         // too, so that the folder under its new name is found.
         for id in retry {
             shallow.insert(id)
-            if id != 0 && !stillDirectory(id, in: tree) { shallow.insert(tree.nodes[Int(id)].parent) }
+            if id != 0 && !stillSameDirectory(id, in: tree, options.firmlinks) {
+                shallow.insert(tree.nodes[Int(id)].parent)
+            }
         }
         func underFull(_ id: Int32, includingSelf: Bool) -> Bool {
             var i = includingSelf ? id : tree.nodes[Int(id)].parent
@@ -297,20 +299,40 @@ public enum Incremental {
             let rawAt = Dictionary(out.rawChildDirs.map { ($0.index, $0.bytes) }, uniquingKeysWith: { a, _ in a })
             let listed = out.childDirs.indices.map { ChildKey(name: out.childDirs[$0], raw: rawAt[$0]) }
             var known = Set<ChildKey>()
-            let onDisk = Set(listed)
+            // Listed name -> its `ATTR_CMN_FILEID` (0 when not returned).
+            let onDisk = Dictionary(zip(listed, out.childIDs), uniquingKeysWith: { a, _ in a })
             let denied = Set(out.deniedChildDirs.map { listed[$0] })
+            // Unlisted children of an incomplete read that are another folder now: (old node, its `st_ino`).
+            var recreated: [(old: Int32, fileID: UInt64)] = []
             tree.forEachChild(of: id) { c in
                 let n = tree.nodes[Int(c)]
                 let key = ChildKey(name: n.name, raw: tree.rawNames.isEmpty ? nil : tree.rawNames[c])
-                known.insert(key)
-                if !onDisk.contains(key) {
+                guard let listedID = onDisk[key] else {
+                    known.insert(key)
                     // An incomplete listing proves nothing about what it did not list: the child keeps its last result
-                    // if it is still there as a directory of this volume. A rename shows up only as an event on the
-                    // parent, so a child that is gone must go now, or it would be counted next to its new name.
+                    // if it is still there as the same directory of this volume. A rename shows up only as an event on
+                    // the parent, so a child that is gone must go now, or it would be counted next to its new name.
+                    // A folder deleted and recreated under the name is a new one (chapter 03 §5.2): walked as new.
                     // One `lstat` per unlisted child, only on this error path.
-                    if !out.incomplete || !stillDirectory(c, in: tree) { killRoots.append(c) }
+                    guard out.incomplete, let now = directoryID(c, in: tree) else {
+                        killRoots.append(c)
+                        return
+                    }
+                    if n.fileID != 0 && now != n.fileID && !isFirmlink(c, in: tree, options.firmlinks) {
+                        killRoots.append(c)
+                        recreated.append((c, now))
+                    }
                     return
                 }
+                // Another folder under the same name (deleted and recreated since): the old node goes, and the name is
+                // handled below as a new child, walked in full. 0 on either side is unknown: no check.
+                if n.fileID != 0 && listedID != 0 && listedID != n.fileID {
+                    killRoots.append(c)
+                    return
+                }
+                // Unknown so far (a snapshot written without identities): learned from this listing.
+                if n.fileID == 0 { tree.nodes[Int(c)].fileID = listedID }
+                known.insert(key)
                 // A permission change shows up only as an event on the parent. A child we can no longer list is
                 // emptied like a full scan leaves it; one that became listable again is walked.
                 // A child re-read or rescanned on its own is settled there.
@@ -332,7 +354,12 @@ public enum Incremental {
             for (k, name) in out.childDirs.enumerated() where !known.contains(listed[k]) {
                 newDirs.append(Int32(tree.nodes.count))
                 if let r = rawAt[k] { tree.rawNames[Int32(tree.nodes.count)] = r }
-                tree.nodes.append(DirNode(parent: id, name: name))
+                tree.nodes.append(DirNode(parent: id, name: name, fileID: out.childIDs[k]))
+            }
+            for r in recreated {
+                newDirs.append(Int32(tree.nodes.count))
+                if let raw = tree.rawNames[r.old] { tree.rawNames[Int32(tree.nodes.count)] = raw }
+                tree.nodes.append(DirNode(parent: id, name: tree.nodes[Int(r.old)].name, fileID: r.fileID))
             }
             for name in out.mountPoints { newMounts.append(MountPoint(parent: id, name: name)) }
             for l in out.deferredLinks { pendingLinks.append((id, l.inode, l.alloc, l.logical, l.cloneAware)) }
@@ -537,11 +564,27 @@ public enum Incremental {
         return out
     }
 
-    /// `c` is still a directory on the tree's volume at its path (one `lstat`, by bytes when it has a raw name).
-    private static func stillDirectory(_ c: Int32, in tree: DiskTree) -> Bool {
+    /// `st_ino` of the directory at `c`'s path, or nil when there is none on the tree's volume (one `lstat`, by bytes
+    /// when it has a raw name).
+    private static func directoryID(_ c: Int32, in tree: DiskTree) -> UInt64? {
         var st = stat()
         let found = tree.cPath(of: Int(c)).map { lstat($0, &st) } ?? lstat(tree.path(of: Int(c)), &st)
-        return found == 0 && st.st_mode & S_IFMT == S_IFDIR && st.st_dev == tree.rootDev
+        return found == 0 && st.st_mode & S_IFMT == S_IFDIR && st.st_dev == tree.rootDev ? st.st_ino : nil
+    }
+
+    /// `c`'s path still holds a directory on the tree's volume, and the same one when its identity is known.
+    private static func stillSameDirectory(_ c: Int32, in tree: DiskTree, _ firmlinks: FirmlinkTable) -> Bool {
+        guard let now = directoryID(c, in: tree) else { return false }
+        let id = tree.nodes[Int(c)].fileID
+        return id == 0 || now == id || isFirmlink(c, in: tree, firmlinks)
+    }
+
+    /// `c` is a firmlink (`/Users`): its parent's listing gives the system volume's id for it, while `lstat` gives the
+    /// data-volume folder's, so the two never match. Its identity is checked only against listings.
+    private static func isFirmlink(_ c: Int32, in tree: DiskTree, _ firmlinks: FirmlinkTable) -> Bool {
+        guard !firmlinks.links.isEmpty else { return false }
+        let path = tree.path(of: Int(c))
+        return firmlinks.links.contains { $0.source == path }
     }
 
     /// Reads each directory once with up to `options.threads` workers; results are in input order.

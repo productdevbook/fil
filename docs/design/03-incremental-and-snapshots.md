@@ -753,6 +753,18 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   hold at most about 940 children, and the time goes to path handling, not to lookups. `scripts/bench.sh --wide` adds
   the §10-style check for this issue: 10,000 events in one folder of 100,000 subfolders take 0.51 s (median; 9.24 s
   before).
+- #49 (2026-10-19): §5.2 [Change] and §6.5 tag 7 are built. Child diff: a listed known child whose stored and listed
+  `fileID` are both non-zero and differ is killed and its name appended as new (walked in full), also when it is in
+  `shallow` or `full` itself (its own re-read then lands on a dead node and is dropped, as for a deleted child). An
+  unlisted known child of an incomplete re-read gets its `st_ino` from the `lstat` it already had; a different one
+  kills it and appends `DirNode(name:, fileID: st_ino)` to `newDirs`. Readings: (1) a known child with `fileID = 0`
+  (a snapshot without tag 7) learns the listed id, so the check starts with the folder's parent's next read; (2) the
+  retried incomplete folder's own `lstat` (§5.2 of #7's second review) also compares identities, so a recreated
+  folder has its parent read; (3) firmlink sources are never compared with `lstat` (chapter 01 As built #49);
+  (4) a node's `fileID` changes only through its parent's listing, never through its own `fstat`, so the root
+  keeps its scan-time `st_ino`. Snapshot: section 7 sits after the mount points and before stats, written when any
+  node has a non-zero id; `count != nodes` is `corrupt`; a file without it loads with every `fileID = 0`. Tests:
+  `FolderIdentityTests` (the incomplete-parent case fails on the old diff).
 
 ## Glossary additions
 

@@ -93,7 +93,7 @@ except that `ERROR` always follows `RETURNED_ATTRS`). All loads are `loadUnalign
 | 5 | common | `ATTR_CMN_OBJTYPE` | 0x00000008 | 4 | `fsobj_type_t` | always | `VDIR`, `VREG`, other |
 | 6 | common | `ATTR_CMN_FLAGS` | 0x00040000 | 4 | `u32` | always | `SF_DATALESS` (0x40000000) |
 | 7 | common | `ATTR_CMN_USERACCESS` | 0x00200000 | 4 | `u32` | only `Config.userAccess` (incremental re-reads) | `R_OK|X_OK` on child dirs (default both if absent) |
-| 8 | common | `ATTR_CMN_FILEID` | 0x02000000 | 8 | `u64` | always | hard-link key; clone original test |
+| 8 | common | `ATTR_CMN_FILEID` | 0x02000000 | 8 | `u64` | always | hard-link key; clone original test; a child directory's identity (#49) |
 | 9 | file | `ATTR_FILE_LINKCOUNT` | 0x00000001 | 4 | `u32` | always | `> 1` means hard-linked (default 1) |
 | 10 | file | `ATTR_FILE_ALLOCSIZE` | 0x00000004 | 8 | `off_t` | always | `alloc`, `realAlloc` |
 | 11 | file | `ATTR_FILE_DATALENGTH` | 0x00000200 | 8 | `off_t` | always | `logical` |
@@ -236,7 +236,7 @@ of 200k hard links, `-j 8` full scan not slower than today.
 ### 5.1 `DirNode` layout
 
 **[Exists]** (`DiskTree.swift:6`). One record per directory; files are never stored, they roll up into their
-directory. `MemoryLayout<DirNode>.stride == 96` bytes; names of up to 15 UTF-8 bytes are stored inline in the
+directory. `MemoryLayout<DirNode>.stride == 104` bytes (96 before #49); names of up to 15 UTF-8 bytes are stored inline in the
 `String`, longer names add one heap allocation.
 
 | Offset | Field | Type | Meaning |
@@ -253,6 +253,7 @@ directory. `MemoryLayout<DirNode>.stride == 96` bytes; names of up to 15 UTF-8 b
 | 72 | `totalFiles` | `Int64` | Own + all live descendants. |
 | 80 | `totalDirs` | `Int64` | Number of live descendant directories (not counting itself). |
 | 88 | `totalCloneAware` | `Int64` | Own + all live descendants. |
+| 96 | `fileID` | `UInt64` | Identity: `ATTR_CMN_FILEID` from the listing that found it (root: `st_ino`); 0 = unknown (#49). |
 
 **[Change] (#7)** Add `incomplete: Bool` at offset 5 (padding; stride unchanged).
 
@@ -528,7 +529,7 @@ Budget **[New]**, checked by `scan-tester` before any engine change is merged:
 | Throughput floor | >= 190k files/s on a warm cache tree of >= 1 M files |
 | Per-file cost | no syscall, lock or heap allocation per file, except per multiply-linked file (one registry claim, batched per directory after #18) and `vet` during updates |
 | Per-directory cost | one `open`, one `close`, `getattrlistbulk` calls, one `cond` round-trip, <= 1 `CloneRegistry` lock, <= 1 `HardlinkRegistry` lock (after #18); plus one `fstat` for incremental reads (#4) |
-| Memory | 96 bytes per directory (104 after #49) + names > 15 bytes + registries; 256 KB buffer per worker |
+| Memory | 104 bytes per directory (`DirNode` stride, 96 before #49) + names > 15 bytes + registries; 256 KB buffer per worker |
 | `--private` | allowed to exceed the budget (opt-in) |
 
 ## 13. Tests
@@ -690,6 +691,20 @@ totals equal a single-thread scan); `-j 0` rejected (section 4.3); a directory r
   flags per update); a flagged folder whose own path is gone has its parent read too. (3) Names identify children by UTF-8 bytes: `ChildKey` compares bytes, and
   `DiskTree.child(of:named:)` prefers a byte-equal name and falls back to a canonically equal one, so events and
   typed paths in another normalization still find their folder.
+- #49 (2026-10-19): `DirNode.fileID` (offset 96, `MemoryLayout<DirNode>.stride == 104`) is the `ATTR_CMN_FILEID`
+  every listing already returns, kept for each child directory (`DirOutcome.childIDs`, parallel to `childDirs`); the
+  root's comes from the `lstat` of `Scanner.scan`. No attribute and no syscall added. Fact: the id of a firmlink in its
+  parent's listing (`/Users` in `/`) is the system volume's, while `lstat`/`fstat` give the data-volume folder's inode
+  on the same `st_dev`. So a folder's identity is only ever taken from its parent's listing, never from the `fstat`
+  of its own read (a re-read of `/Users` would otherwise make the next read of `/` see another folder and walk the
+  whole home again), and the `lstat` comparison of chapter 03 §5.2 skips firmlink sources. Measured
+  (`scripts/bench.sh`, `main` and #49 alternating on one kept fixture, load average 9-20): full scan median of the
+  runs' medians 2.44 s before (2.44 / 1.91 / 2.71), 2.24 s after (2.24 / 1.93 / 2.76 / 2.78); update after 1,000
+  changes 1.43 s before (0.71 / 1.43 / 1.64), 0.82 s after (0.49 / 1.55 / 0.82 / 1.17), both noise at that load. One
+  update of the seven #49 runs missed 36 empty added files (alloc and folders equal, `--full` agreed after), a late
+  FSEvents delivery at load 14-20; the rerun passed. Peak RSS of `--full` (scan plus save): 16.6 MB -> 19.0 MB on the
+  21,018-folder bench tree, 51.5 MB -> 55.2 MB on 200,401 empty folders, i.e. about 18 bytes per folder at the peak
+  (8 in `DirNode`, 8 in the snapshot buffer while it is written).
 
 ## Glossary additions
 

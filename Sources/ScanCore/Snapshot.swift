@@ -12,7 +12,7 @@ public enum Snapshot {
     /// per hard-link entry; the clone-family table at the end.
     /// 6: byte 8 is the mode byte (bit 0 `privateSize`, bit 1 `crossDevices`); after the aliases the body is a list of
     /// sections (`Section`), each `tag u32 | size u64 | payload`, ended by tag 0; adds the skipped mount points.
-    /// Later additions without a version bump: the optional `stats` section (#15).
+    /// Later additions without a version bump: the optional `stats` section (#15), the optional `fileIDs` section (#49).
     /// Directory names that are not UTF-8 go in a must-understand section (`rawNames`), present only when there are any.
     /// Older versions are not read: a full scan rebuilds what they lack.
     private static let version: UInt32 = 6
@@ -34,6 +34,10 @@ public enum Snapshot {
         /// Raw bytes of directory names that are not valid UTF-8 (`DiskTree.rawNames`); written only when there are
         /// any. Must be understood: without it those directories could not be opened again.
         case rawNames = 0x8000_0006
+        /// Optional: `DirNode.fileID` of every node (count u32, equal to the node count; then u64 per node in id order).
+        /// Written when any node has one. A file without it loads with `fileID = 0` everywhere: no identity check until
+        /// the next read of the folder (chapter 03 §6.5).
+        case fileIDs = 7
         static let mustUnderstand: UInt32 = 0x8000_0000
     }
 
@@ -84,7 +88,7 @@ public enum Snapshot {
 
     // Header layout: magic u32 | version u32 | mode u8 | rootDev i32 | eventId u64 | scanStart i64 |
     // uncertainBytes i64 | volumeUUID | rootPath | aliases | sections (nodes, hard links, clone families,
-    // mount points, stats if known, end). Chapter 03 §6.2 and §6.5 "As built".
+    // mount points, folder identities if known, stats if known, raw names if any, end). Chapter 03 §6.2 and §6.5.
     private static let eventIdOffset = 13
 
     /// Records a new event id and scan start in an existing snapshot without rewriting the tree.
@@ -123,7 +127,7 @@ public enum Snapshot {
         let table = tree.hardlinks.table
         let clones = tree.clones.table
         // Names average well under 20 bytes; the buffer grows if the estimate is short.
-        var w = Writer(capacity: 1024 + tree.nodes.count * 60 + table.count * 48 + clones.count * 32)
+        var w = Writer(capacity: 1024 + tree.nodes.count * 68 + table.count * 48 + clones.count * 32)
         w.put(magic)
         w.put(version)
         w.put(modeByte(privateSize: tree.privateSize, crossDevices: tree.crossDevices))
@@ -184,6 +188,13 @@ public enum Snapshot {
             w.put(m.name)
         }
         w.end(section)
+
+        if tree.nodes.contains(where: { $0.fileID != 0 }) {
+            section = w.begin(.fileIDs)
+            w.put(UInt32(tree.nodes.count))
+            for n in tree.nodes { w.put(n.fileID) }
+            w.end(section)
+        }
 
         if let fullScanStart = tree.fullScanStart {
             section = w.begin(.stats)
@@ -349,6 +360,7 @@ public enum Snapshot {
                     ok = r.ok
                     r.offset = sectionEnd
                 case .rawNames: ok = r.getRawNames(into: &rawNames, nodeCount: nodes.count)
+                case .fileIDs: ok = r.getFileIDs(into: &nodes)
                 case .end: ok = false
                 }
                 guard ok, r.ok, r.offset == sectionEnd else { return .failure(.corrupt) }
@@ -547,6 +559,18 @@ private struct Reader {
             guard ok, parent >= 0, parent < count, !name.isEmpty else { return false }
             mountPoints.append(MountPoint(parent: parent, name: name))
         }
+        return true
+    }
+
+    /// count u32 (the node count), then u64 per node in id order.
+    mutating func getFileIDs(into nodes: inout [DirNode]) -> Bool {
+        let n = Int(get(UInt32.self))
+        guard ok, n == nodes.count, n <= (raw.count - offset) / 8 else { return false }
+        let base = raw.baseAddress! + offset
+        for i in 0..<n {
+            nodes[i].fileID = UInt64(littleEndian: base.loadUnaligned(fromByteOffset: i * 8, as: UInt64.self))
+        }
+        offset += n * 8
         return true
     }
 

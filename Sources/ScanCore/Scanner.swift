@@ -36,7 +36,8 @@ public enum Scanner {
         let eventId = FSEventsGetCurrentEventId()
         let tree = DiskTree(
             rootPath: path, rootDev: st.st_dev, privateSize: options.privateSize,
-            crossDevices: options.crossDevices, nodes: [DirNode(parent: -1, name: path)], eventId: eventId,
+            crossDevices: options.crossDevices, nodes: [DirNode(parent: -1, name: path, fileID: st.st_ino)],
+            eventId: eventId,
             volumeUUID: volumeUUID(st.st_dev), scanStart: scanStart, hardlinks: HardlinkRegistry(),
             clones: CloneRegistry(), aliases: options.firmlinks.aliases(for: path))
         // Laps (FIL_TIMINGS=1) go around whole phases; with timings off no clock is read.
@@ -315,7 +316,7 @@ private final class ParallelScan: @unchecked Sendable {
                 var nextMount = 0
                 for (k, name) in out.childDirs.enumerated() {
                     let id = Int32(nodes.count)
-                    nodes.append(DirNode(parent: item.id, name: name))
+                    nodes.append(DirNode(parent: item.id, name: name, fileID: out.childIDs[k]))
                     var selfAlloc: Int64 = 0
                     if next < out.childAllocs.count && out.childAllocs[next].index == k {
                         selfAlloc = out.childAllocs[next].alloc
@@ -349,7 +350,7 @@ private final class ParallelScan: @unchecked Sendable {
                         nextMount += 1
                     }
                     let id = Int32(nodes.count)
-                    nodes.append(DirNode(parent: item.id, name: name))
+                    nodes.append(DirNode(parent: item.id, name: name, fileID: out.childIDs[k]))
                     if let r = raw[k] { rawNames[id] = r }
                     let bytes = parentBytes + [UInt8(ascii: "/")] + (raw[k] ?? Array(name.utf8)) + [0]
                     queue.append(
@@ -380,6 +381,8 @@ struct DirOutcome {
     /// Full-clone files counted here (not hard-linked); the caller claims them in the `CloneRegistry`.
     var cloneMembers: [CloneMember] = []
     var childDirs: [String] = []
+    /// `ATTR_CMN_FILEID` of each entry of `childDirs` (0 when the listing did not return it), in the same order.
+    var childIDs: [UInt64] = []
     /// Own allocation of the child directories whose listing gave a non-zero one (FAT, exFAT; never on APFS or HFS+),
     /// by index into `childDirs`, in index order.
     var childAllocs: [(index: Int, alloc: Int64)] = []
@@ -722,6 +725,7 @@ struct DirReader {
                 // Entered mount point: the attributes above are the covered folder's; the read asks the volume itself.
                 if mountStatus & UInt32(DIR_MNTSTATUS_MNTPOINT) != 0 { out.crossedMounts.append(out.childDirs.count) }
                 out.childDirs.append(name)
+                out.childIDs.append(fileID)
             }
             return
         }
