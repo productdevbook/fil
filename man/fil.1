@@ -1,0 +1,250 @@
+.Dd October 19, 2026
+.Dt FIL 1
+.Os
+.Sh NAME
+.Nm fil
+.Nd scan disk usage and clean caches on macOS
+.Sh SYNOPSIS
+.Nm
+.Cm scan
+.Op Ar DIR
+.Op Fl j Ar N
+.Op Fl -private
+.Op Fl -full
+.Op Fl -top Ar N
+.Op Fl -naive
+.Op Fl -porcelain
+.Op Fl -tolerant-hardlinks
+.Op Fl q
+.Op Fl v
+.Op Fl -no-color
+.Nm
+.Cm doctor
+.Op Fl -no-open
+.Op Fl -no-color
+.Nm
+.Cm list
+.Op Fl -home Ar DIR
+.Op Fl -json
+.Op Fl -timings
+.Op Fl -no-color
+.Nm
+.Cm clean
+.Ar id | rule ...
+.Op Fl -home Ar DIR
+.Op Fl -yes
+.Op Fl -json
+.Op Fl -timings
+.Op Fl -no-color
+.Nm
+.Cm completion
+.Ar zsh | bash | fish
+.Nm
+.Cm help
+.Op Ar command
+.Nm
+.Op Fl h | -help
+.Op Fl V | -version
+.Sh DESCRIPTION
+.Nm
+is a fast disk scanner and cleaner.
+.Cm scan
+sizes a directory in on-disk bytes, counting each APFS clone family once.
+.Cm list
+and
+.Cm clean
+find and remove caches, build output and other files that can be recreated.
+.Pp
+Options and operands can come in any order.
+.Fl h
+or
+.Fl -help
+after a command prints that command's help.
+A command accepts only its own options; anything else is a usage error.
+.Fl -
+ends option parsing, so a directory whose name starts with a dash
+can be scanned.
+.Pp
+Output is styled (colour, live progress on standard error) only on a terminal.
+.Sh COMMANDS
+.Bl -tag -width Ds
+.It Nm Cm scan Op Ar DIR
+Scan a directory and print its size.
+The default is the home folder.
+.Bl -tag -width Ds
+.It Fl j Ar N
+Worker threads, a whole number from 1 to 64.
+.It Fl -private
+Size in private (non-shared) bytes.
+.It Fl -full
+Ignore the snapshot and scan from scratch.
+.It Fl -top Ar N
+List the N largest directories; 0 lists none.
+The default is 15.
+.It Fl -naive
+Time a plain
+.Li FileManager
+walk instead.
+Cannot be combined with
+.Fl -porcelain .
+.It Fl -porcelain
+Print one machine-readable line.
+See
+.Sx OUTPUT .
+.It Fl -tolerant-hardlinks
+Count unknown hard links and report them as uncertain.
+.It Fl q , Fl -quiet
+No warning about folders that could not be read.
+.It Fl v , Fl -verbose
+Show timing details and skipped-entry counts.
+.It Fl -no-color
+Plain output, also when
+.Ev NO_COLOR
+is set or standard output is not a terminal.
+.El
+.It Nm Cm doctor
+Check whether the terminal app has Full Disk Access.
+Without it, some folders cannot be read and scan sizes come out too low.
+.Bl -tag -width Ds
+.It Fl -no-open
+Only print; do not open System Settings.
+.It Fl -no-color
+Plain output.
+.El
+.It Nm Cm list
+List cleanup candidates in the home folder.
+.Bl -tag -width Ds
+.It Fl -home Ar DIR
+Use
+.Ar DIR
+instead of the home folder.
+.It Fl -json
+Machine-readable output.
+.It Fl -timings
+Phase and rule timings on standard error.
+.It Fl -no-color
+Plain output.
+.El
+.It Nm Cm clean Ar id | rule ...
+Clean candidates.
+This is a dry run unless
+.Fl -yes
+is given.
+A rule id selects its safe and review items;
+name a careful item by its candidate id.
+Most items move to the Trash.
+Some rules run the tool's own removal command, which is permanent;
+a dry run shows it as
+.Dq would run: .
+.Bl -tag -width Ds
+.It Fl -home Ar DIR
+Use
+.Ar DIR
+instead of the home folder.
+.It Fl -yes
+Clean for real.
+.It Fl -json
+Machine-readable output.
+.It Fl -timings
+Phase and rule timings on standard error.
+.It Fl -no-color
+Plain output.
+.El
+.It Nm Cm completion Ar shell
+Print a completion script for zsh, bash or fish on standard output.
+.It Nm Cm help Op Ar command
+Show help for a command.
+.It Fl h , Fl -help
+Show the main help.
+.It Fl V , Fl -version
+Print the version.
+.El
+.Sh OUTPUT
+.Nm Cm scan Fl -porcelain
+prints one line of
+.Ar key Ns = Ns Ar value
+pairs separated by spaces:
+.Bl -tag -width Ds
+.It Li mode
+.Li full
+or
+.Li incremental .
+.It Li alloc
+Allocated bytes, as
+.Xr du 1
+counts them.
+With
+.Fl -private ,
+private bytes.
+.It Li logical
+Sum of logical file sizes.
+.It Li files
+Files counted, hard links once.
+.It Li dirs
+Directories, including the root.
+.It Li uncertain
+Only with
+.Fl -tolerant-hardlinks :
+bytes of hard links that may be counted twice.
+.It Li cloneaware
+Allocated bytes with each APFS clone family counted once.
+.It Li shared
+Not with
+.Fl -private :
+bytes
+.Xr du 1
+counts again for clones.
+.It Li unreadable
+Folders that could not be read.
+.El
+.Pp
+Fields are only ever appended, never removed, renamed or reordered.
+Read them by key, because
+.Li uncertain
+and
+.Li shared
+are conditional.
+.Sh ENVIRONMENT
+.Bl -tag -width Ds
+.It Ev NO_COLOR
+When set and not empty, output has no colour.
+.It Ev TERM
+Output has no colour when it is
+.Li dumb .
+.It Ev FIL_SNAPSHOT_DIR
+Directory for snapshots instead of the user's cache folder.
+Meant for tests.
+.El
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/Library/Caches/com.vucod.Fil/snapshots/
+One snapshot per scanned root, used to update a scan incrementally.
+.It Pa ~/Library/Caches/com.vucod.Fil/snapshots/tool-paths.json
+Cache locations reported by tools such as npm and pip.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds
+.It Li 0
+Success.
+.It Li 1
+Error: a directory is missing or not a directory,
+.Cm clean
+matches nothing, or
+.Cm doctor
+finds Full Disk Access missing or unknown.
+.It Li 2
+Usage error: unknown command or option, missing or invalid value,
+more than one directory,
+an unknown shell for
+.Cm completion .
+.It Li 3
+.Cm clean Fl -yes :
+one or more items failed.
+Others may have succeeded.
+.It Li 130
+.Cm clean Fl -yes
+was interrupted with Ctrl-C.
+The remaining items were not touched.
+.El
+.Sh SEE ALSO
+.Xr du 1

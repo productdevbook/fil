@@ -7,11 +7,7 @@ let mainHelp = """
     Usage: fil <command> [options]
 
     Commands:
-      scan [DIR]          Scan a directory and print its size (default: home folder)
-      doctor              Check Full Disk Access for the terminal app
-      list                List cleanup candidates in the home folder
-      clean <id|rule>...  Clean candidates (dry run unless --yes)
-      help [command]      Show help for a command
+    \(commandListLines())
 
     Options:
       --help, -h          Show this help
@@ -78,8 +74,22 @@ let cleanHelp = """
     Exit status: 0 success, 1 error (nothing matches), 2 usage error, 3 one or more items failed.
     """
 
+let completionHelp = """
+    Usage: fil completion <zsh|bash|fish>
+
+    Prints a completion script for the shell on stdout. It completes commands, options, directories where a
+    directory is expected, and the rule ids of 'fil clean'.
+
+      zsh    fil completion zsh > "${fpath[1]}/_fil"
+      bash   source <(fil completion bash)
+      fish   fil completion fish > ~/.config/fish/completions/fil.fish
+
+    Exit status: 0 success, 2 usage error (no shell, or one that is not listed).
+    """
+
 func helpText(for command: String) -> String? {
     switch command {
+    case "completion": return completionHelp
     case "help": return mainHelp
     case "doctor": return doctorHelp
     case "scan": return scanHelp
@@ -223,6 +233,9 @@ do {
     case "doctor":
         if wantsHelp(arguments) { print(doctorHelp); exit(0) }
         await runDoctor(arguments)
+    case "completion":
+        if wantsHelp(arguments) { print(completionHelp); exit(0) }
+        runCompletion(arguments)
     case "list", "clean":
         if wantsHelp(arguments) { print(helpText(for: command)!); exit(0) }
         try await runCleanup(command, arguments)

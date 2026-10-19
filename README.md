@@ -65,6 +65,7 @@ fil clean <id|rule>...      # dry run: shows what would move to the Trash or whi
 fil clean <id|rule>... --yes
 fil clean <id|rule>... --json
 fil help <command>          # same as fil <command> --help
+fil completion zsh          # print a completion script; also bash and fish
 fil --version               # prints "fil 0.2.0"; also -V
 ```
 
@@ -91,6 +92,8 @@ Options of `fil list`: `--home DIR` uses DIR instead of the home folder, `--json
 
 Options of `fil clean <candidate-id|rule-id>...`: `--home DIR`, `--json`, `--timings` and `--no-color` as for `fil list`, and `--yes` to clean for real (the default is a dry run). A rule id selects its safe and review items; name a careful item by its candidate id.
 
+`fil completion <shell>` takes `zsh`, `bash` or `fish` and prints the completion script on stdout. It completes commands, options, directories and the rule ids of `fil clean`. For zsh, write it to a file named `_fil` in a directory on your `fpath`; for bash, add `source <(fil completion bash)` to `~/.bashrc`; for fish, write it to `~/.config/fish/completions/fil.fish`. The manual page is `man/fil.1`.
+
 `-h` and `--help` work on every command. A command accepts only its own options; anything else is a usage error.
 
 ### Output
@@ -107,7 +110,7 @@ The first line of `fil scan` shows the clone-aware size (each APFS clone family 
 | --- | --- |
 | 0 | success |
 | 1 | error: `DIR` or `--home` missing or not a directory, `clean` matches nothing, or `fil doctor` finds Full Disk Access missing or unknown |
-| 2 | usage error: unknown command or option, missing or invalid value, more than one `DIR`, `--naive` with `--porcelain` |
+| 2 | usage error: unknown command or option, missing or invalid value, more than one `DIR`, `--naive` with `--porcelain`, a `fil completion` shell that is not `zsh`, `bash` or `fish` |
 | 3 | `clean --yes`: one or more items failed (others may have succeeded) |
 | 130 | `clean --yes` interrupted with Ctrl-C; the remaining items were not touched |
 

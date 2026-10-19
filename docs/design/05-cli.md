@@ -747,8 +747,21 @@ Gaps today, all fixed by the change:
   item that was chosen.
 - #26: `fil help help` prints the main help. README "Usage", "Output" and "Exit status" follow the help texts;
   `ReadmeParityTests` fails when an option or command in `--help` is missing from README.md. The check is a unit
-  test instead of the `scripts/check-help.sh` that 10 proposed. The main help still has no `completion` line
-  until #27.
+  test instead of the `scripts/check-help.sh` that 10 proposed. The main help got its `completion` line
+  with #27.
+- #27: `Sources/fil/CommandTable.swift` holds the one table of commands and options (`commandTable`). The main help's
+  "Commands:" block is generated from it (byte-identical to 2.2), and `Completion.swift` generates the three
+  scripts from it plus `Rules.all`. The per-command help texts stay hand-written; `CompletionTests` fails when a
+  command's `--help` options differ from the table, and when a script or `man/fil.1` lacks a command, option, rule
+  id or exit status that the help texts show. `-h`/`--help` are added to every command by the generators, `--version`
+  and `-V` to the top level. `fil completion` has its own help (`fil help completion`, exit 0/2); extra arguments or
+  an option are usage errors (`unexpected argument`, `unknown option`). The zsh script works as an `_fil` file on
+  `fpath` and when sourced (it calls `compdef` then). The bash script uses no bash-completion helpers and works on
+  bash 3.2. The fish script uses its own `__fil_command` helper so that `fil help scan` does not offer scan's options.
+  Reading: option values `-j N` and `--top N` are not completed; `--home` and `DIR` complete directories only.
+  `man/fil.1` is hand-written mdoc (checked with `mandoc -T lint`); fish was not installed when this was built, so
+  `fish --no-execute` is run by the test only where fish exists. The release tarball and cask (#45) still have to
+  ship the files.
 
 ## Glossary additions
 

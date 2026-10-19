@@ -55,7 +55,7 @@ import Testing
         let snap = try ErrorHandlingTests.tempDir()
         defer { try? FileManager.default.removeItem(atPath: snap) }
         let main = try cli.run(["--help"], snapshotDir: snap)
-        for command in ["scan", "doctor", "list", "clean", "help"] {
+        for command in ["scan", "doctor", "list", "clean", "completion", "help"] {
             #expect(Self.readme.contains("fil \(command)"), "README.md never shows 'fil \(command)'")
         }
         #expect(Self.readme.contains("### Exit status"))
