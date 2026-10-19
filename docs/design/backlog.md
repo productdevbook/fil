@@ -432,6 +432,26 @@ settings and secrets only a person with admin rights can change).
     with `fileID = 0` and updates as before; a count other than the node count is `corrupt`.
   - `scripts/bench.sh`: full scan and update within the chapter 01 §12 budget.
 
+### F-051 · An update never misses changes fseventsd has not logged yet
+
+- **Area** scan · **Owner** macos-engineer · **Priority** P1 · **Depends on** — · **Chapters** 03 §1, §4.2, §7.1,
+  §11
+- **Why M5:** M1 is closed, and M5 is the open milestone that owns the update path and the bench under load that
+  shows the bug. Seen once in 7 updates at load average 9–20; it breaks the pillar on stale sizes, hence P1.
+- **Acceptance**
+  - `fetch` makes the pre-marker (`<barrierDir>/pre/marker`) before `FSEventStreamCreate` and accepts the barrier
+    only after the pre-marker's event; otherwise it returns `UpdateFailure.historyGap`, described as
+    `history gap (pre-marker event not delivered)` (chapter 03 §4.2, §7.1).
+  - Test with the debug-only `HistoryFaults.dropThroughPreMarker` (drops every event up to and including the
+    pre-marker's): snapshot, add files to an existing folder, update → `historyGap`. With the pre-marker requirement
+    removed locally (not committed), the same test fails: the update succeeds and its file count differs from
+    `--full`.
+  - `swift test --filter ScanCoreTests` passes (no fault: the pre-marker never fails an update).
+  - Under load (`yes >/dev/null`, 2 per core) with `FSEVENTS_WAIT=0` in `scripts/bench.sh` (local edit, not
+    committed), 10 runs of `scripts/bench.sh --reuse <dir>` give 30 `update N:` lines (each compared with
+    `--full`): none says `DIFFERS`. `FELL-BACK` (a reported full scan, `historyGap` in `fil scan -v`) is allowed
+    and its count is reported.
+
 ---
 
 ## M6 · Map

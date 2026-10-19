@@ -110,11 +110,11 @@ family, original, full / partial clone, firmlink, alias, data root, `FirmlinkTab
 
 ### Incremental updates and snapshots
 
-snapshot, snapshot format (5 today, 6 from v0.2.0), mode byte, event id, barrier, history / live / finished phase,
-lost-history flags, shallow re-read, full rescan, drift, orphan, last-known result. `UpdateFailure` cases:
-`rootUnreadable`, `volumeChanged`, `historyUntrusted`, `historyTimeout`, `barrierTimeout`, `streamFailed`,
-`unattributedHardLink`, `firmlinksChanged`. `Snapshot.LoadFailure` cases (F-035): `missing`, `notSnapshot`,
-`otherVersion`, `otherMode`, `otherRoot`, `corrupt`.
+snapshot, snapshot format (5 today, 6 from v0.2.0), mode byte, event id, barrier, pre-marker (F-051), history /
+live / finished phase, lost-history flags, shallow re-read, full rescan, drift, orphan, last-known result.
+`UpdateFailure` cases: `rootUnreadable`, `volumeChanged`, `historyUntrusted`, `historyTimeout`, `barrierTimeout`,
+`streamFailed`, `unattributedHardLink`, `firmlinksChanged`, `historyGap` (F-051). `Snapshot.LoadFailure` cases
+(F-035): `missing`, `notSnapshot`, `otherVersion`, `otherMode`, `otherRoot`, `corrupt`.
 
 ### Cleanup
 

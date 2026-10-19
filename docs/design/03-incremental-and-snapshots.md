@@ -20,7 +20,8 @@ Status tags: **[Exists]** in the code today (file:line), **[Change]** in the cod
   printed instead (`Scan.swift:70-91`). A snapshot that fails validation is never used (section 6).
 - **[Exists]** A clearly labelled last-known result is allowed; the CLI has no such output today (section 9).
 - **[New]** Gaps where the rule is broken today: Mount/Unmount (section 4.6, #4), the device-crossing mode not
-  stored (section 5.4, #5) and strict runs inheriting tolerant uncertainty (section 8.3).
+  stored (section 5.4, #5), strict runs inheriting tolerant uncertainty (section 8.3), and changes numbered before
+  the stream starts but not yet in fseventsd's log (section 4.2, #51).
 
 ## 2. End-to-end flow in `fil scan`
 
@@ -85,7 +86,7 @@ in order:
 
 ### 4.1 Stream
 
-**[Exists]** `EventHistory.fetch` (`Incremental.swift:474-553`):
+**[Exists]** `EventHistory.fetch` (`Incremental.swift:725-850`):
 
 | Parameter | Value |
 |---|---|
@@ -123,6 +124,45 @@ numbered yet; they arrive as live events, and `FSEventStreamFlushSync` does not 
 Precedence of results: `historyUntrusted` beats any timeout; otherwise the timeout or `streamFailed`; otherwise
 success. An untrusted flag in the `history` phase also signals `historyDone`, so `fetch` does not wait 30 s for a
 replay that is already worthless.
+
+**[Exists] gap:** the barrier proves only that the live part of the stream is complete: every change numbered
+after the stream started reaches it, in id order, before the barrier. A change numbered at or below the stream's
+start id reaches the stream only through the history replay, and the replay reads fseventsd's log, which fseventsd
+writes some time after it numbers an event. Under heavy load that delay grows, so a change can be numbered before
+`FSEventStreamCreate` and still be missing from the log when the replay reads it: it comes neither in the history
+nor live. Folders that were never re-read keep their old file counts and the update succeeds, which breaks §1
+("never present sizes known to be stale or wrong as current").
+
+Seen once: `scripts/bench.sh` at load average 9–20, one update in 7 missed 36 new empty files made about 4 s before
+the update. Sizes and folder counts matched `--full` (empty files add no bytes), file counts did not, and the run
+reported `incremental`. Reproduce: bench rounds with `yes >/dev/null` × 2 per core running, `FSEVENTS_WAIT`
+in the script shortened or 0, `FIL_TIMINGS=1`; compare the folders that got `benchadd-*` files with the logged `update.event`
+paths.
+
+**[Change] (#51)** A pre-marker closes the gap from the other end. In `fetch`, after `makeBarrierDir` and before
+`FSEventStreamCreate`:
+
+1. `mkdir(barrierDir + "/pre", 0o700)`, then create `barrierDir + "/pre/marker"` with
+   `open(O_WRONLY | O_CREAT | O_EXCL, 0o600)`. Either failing → `streamFailed("pre-marker: <strerror>")`.
+2. The pre-marker event is an event, in the history or the live phase, whose path (trailing `/` stripped) is in
+   `rootPrefixes(barrierDir + "/pre")`. It is not appended to `events`; `EventHistory` records that it was seen.
+3. A barrier-path event is the barrier only in the `live` phase **and** after the pre-marker event was seen. A
+   barrier-path event before that (the `mkdir` of `pre` changes `barrierDir` itself) is ignored, not appended.
+4. When the barrier wait (step 4 above, 2 s) ends without the pre-marker seen, the result is the new
+   `UpdateFailure.historyGap` instead of `barrierTimeout`; `historyUntrusted` still beats it.
+5. `defer` also removes `pre/marker` and `pre`, before `barrier` and `barrierDir`.
+
+Why it works: the pre-marker is made after every change the update must see and before the stream starts, so its
+id is above theirs. fseventsd writes its log in id order, so if the pre-marker's event arrives (from the log or
+live), every lower id is in the log too and the replay delivered it. If it does not arrive, some part of the
+history below the stream start is missing, and the update fails into a full scan (`historyGap`, after the 2 s
+barrier limit) instead of returning stale counts. The in-order write is an assumption about fseventsd that no
+API states; the #51 bench check under load is what holds it to account.
+
+Cost: one `mkdir` and one file per update, no extra wait when nothing is missing (the pre-marker comes before the
+barrier). Rejected: a fixed sleep before `FSEventStreamCreate` (the log delay has no bound under load, and every
+update would pay it); comparing `FSEventsGetCurrentEventId()` with the last replayed id (it cannot tell a missing
+event from an event outside the stream's paths).
 
 ### 4.3 Lost-history flags
 
@@ -498,6 +538,7 @@ partly updated tree is dropped and never saved.
 | `historyUntrusted(flags:path:)` | a lost-history flag (section 4.3) | `history untrusted (<flags, comma-separated> at <path>)` |
 | `historyTimeout(seconds:)` | no `HistoryDone` within 30 s | `history replay timed out after 30 s` |
 | `barrierTimeout(seconds:)` | no barrier event within 2 s after creating it | `barrier event timed out after 2 s` |
+| `historyGap` (**[New]**, #51) | the barrier wait ended and the pre-marker event never came (section 4.2) | `history gap (pre-marker event not delivered)` |
 | `streamFailed(String)` | section 4.5 | `FSEvents stream failed: <why>` |
 | `unattributedHardLink(paths:)` | strict mode, section 5.7 | `unattributed hard link: <first 5 paths> (+N more)` |
 | `firmlinksChanged` | `aliases(for: root)` ≠ stored aliases | `firmlinks changed` |
@@ -600,6 +641,11 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
   `historyTimeout`/`barrierTimeout` (injectable limits), `volumeChanged`, `rootUnreadable`; snapshot rejection on
   version and mode-byte mismatch (including `crossDevices` after #5); case-only and NFC/NFD renames; invalid UTF-8
   names in a saved snapshot.
+- **[Change] (#51)** History gap: a debug-only `HistoryFaults.dropThroughPreMarker` drops, in any phase, every
+  event up to and including the pre-marker's (a log that misses everything numbered before the stream started).
+  Test: snapshot, add files to an existing folder, update with the fault → `historyGap`; with the pre-marker
+  requirement removed locally the same test gets a successful update whose file count differs from `--full`.
+  Without the fault, the existing incremental tests still pass.
 
 ## As built
 
@@ -713,6 +759,8 @@ own update succeeds, prints its sizes as exact: `--porcelain` omits `uncertain=`
 - **event id** — FSEvents id stored in the tree (`DiskTree.eventId`); replay starts after it.
 - **barrier event / barrier directory** — the file `barrier` created in `Fil-fsevents.XXXXXX` under the temp folder;
   its event closes the replay and its id becomes the next event id.
+- **pre-marker** (#51) — the file `pre/marker` in the barrier directory, made before the stream starts; the
+  barrier is accepted only after its event, so a gap in the history log fails the update (`historyGap`).
 - **history / live / finished phase** — `EventHistory.Phase`.
 - **lost-history flags** — `UserDropped`, `KernelDropped`, `EventIdsWrapped`, `RootChanged`.
 - **shallow re-read** — one directory listed again, not its subtree (`shallow`, `UpdateReport.dirsRead`).
