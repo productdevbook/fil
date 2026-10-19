@@ -459,7 +459,7 @@ settings and secrets only a person with admin rights can change).
 - **Area** ops · **Owner** release-engineer · **Priority** P2 · **Depends on** F-027, F-024 · **Chapters** 07 §11.3,
   §13.5
 - **Acceptance**
-  - The release tarball contains `completions/fil.zsh`, `completions/fil.bash`, `completions/fil.fish` and
+  - The release tarball contains `completions/_fil`, `completions/fil.bash`, `completions/fil.fish` and
     `man/fil.1`; the cask template installs them with `zsh_completion`, `bash_completion`, `fish_completion`,
     `manpage`.
   - A `workflow_dispatch` artifact shows the files; `brew audit` passes.
