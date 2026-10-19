@@ -66,7 +66,7 @@ fil clean <id|rule>... --yes
 fil clean <id|rule>... --json
 fil help <command>          # same as fil <command> --help
 fil completion zsh          # print a completion script; also bash and fish
-fil --version               # prints "fil 0.2.0"; also -V
+fil --version               # prints "fil 0.3.0"; also -V
 ```
 
 Options of `fil scan [DIR]`:

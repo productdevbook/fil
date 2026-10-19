@@ -7,6 +7,33 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-19
+
+### Added
+
+- `fil completion zsh|bash|fish` and a man page; the tarball and the Homebrew cask install both (#27, #45).
+- `fil clean --json` prints the plan or the result as JSON (#42).
+- `--` ends option parsing (#41).
+- `FIL_TIMINGS=1` prints timing laps of the full scan; `scripts/bench.sh` measures scans and update rounds (#44, #51).
+- The release workflow can push the Homebrew cask again for an existing release (#24).
+
+### Changed
+
+- Each command accepts only its own options (#9); `-j`, `--top` and the number of directories are validated (#10).
+- Exit statuses have one meaning each: 1 error, 2 usage, 3 a failed clean item, 130 interrupted (#12).
+- README and `--help` match the binary (#26).
+- Faster full scans of trees with many folders or hard links: registry records are indexed by directory, children
+  are looked up by name through an index, and hard links are claimed under one lock per directory (#16, #17, #18).
+- The treemap lays out clone-aware sizes (#19).
+
+### Fixed
+
+- An incremental update tells a folder deleted and recreated under the same name from the old one and rescans it
+  (#49).
+- An incremental update fails, and a full scan runs instead, when the fseventsd log is missing changes; before, it
+  could show stale sizes as current (#51).
+- The release workflow pushes the Homebrew cask to the tap (#24).
+
 ## [0.2.0] - 2026-10-18
 
 ### Added
@@ -78,7 +105,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 - `scripts/release.sh` to build, sign with a Developer ID and notarize the arm64 tarball.
 - Homebrew install instructions.
 
-[Unreleased]: https://github.com/productdevbook/fil/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/productdevbook/fil/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/productdevbook/fil/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/productdevbook/fil/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/productdevbook/fil/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/productdevbook/fil/releases/tag/v0.1.0
